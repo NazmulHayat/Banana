@@ -12,13 +12,10 @@ export function PaperCard({ children, style }: PaperCardProps) {
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: Colors.card,
-    borderRadius: 8,
+    backgroundColor: Colors.paper,
+    borderRadius: 4,
     padding: 16,
-    shadowColor: Colors.shadow,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    borderWidth: 0.5,
+    borderColor: Colors.shadow,
   },
 });
