@@ -1,7 +1,7 @@
 import { Colors, Fonts } from '@/constants/theme';
 import { Habit, HabitLog } from '@/lib/storage';
 import { useRef } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View, TouchableOpacity } from 'react-native';
 import { HabitCell } from './ui/habit-cell';
 
 interface HabitGridProps {
@@ -10,13 +10,14 @@ interface HabitGridProps {
   currentMonth: number;
   currentYear: number;
   onToggle: (habitId: string, date: string) => void;
+  onEdit: () => void;
   onHeaderLayout?: (y: number) => void;
   headerRef?: React.RefObject<View | null>;
   onHorizontalScroll?: (offsetX: number) => void;
   stickyHeaderScrollRef?: React.RefObject<ScrollView | null>;
 }
 
-export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, onHeaderLayout, headerRef, onHorizontalScroll, stickyHeaderScrollRef }: HabitGridProps) {
+export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, onEdit, onHeaderLayout, headerRef, onHorizontalScroll, stickyHeaderScrollRef }: HabitGridProps) {
   const daysInMonth = new Date(currentYear, currentMonth, 0).getDate();
   const today = new Date();
   const isCurrentMonth = today.getMonth() + 1 === currentMonth && today.getFullYear() === currentYear;
@@ -72,7 +73,9 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, o
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>HABITS</Text>
-        <Text style={styles.edit}>Edit</Text>
+        <TouchableOpacity onPress={onEdit} activeOpacity={0.7}>
+          <Text style={styles.edit}>Edit</Text>
+        </TouchableOpacity>
       </View>
       <View style={styles.gridWrapper}>
         {/* Header row container */}

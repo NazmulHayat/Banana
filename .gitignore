@@ -43,5 +43,5 @@ app-example
 /android
 
 
-.env*
 .env
+.env.local

@@ -4,8 +4,15 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { PaperBackground } from '@/components/ui/paper-background';
 import { Colors, Fonts } from '@/constants/theme';
 import { DailyEntry, Habit, HabitLog, storage } from '@/lib/storage';
+import {
+  saveEncryptedEntry,
+  saveEncryptedHabits,
+  loadEncryptedHabits,
+  loadEncryptedHabitLogs,
+  toggleEncryptedHabitLog,
+} from '@/lib/e2ee/encrypted-storage';
 import { useEffect, useRef, useState } from 'react';
-import { Animated, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Animated, ScrollView, StyleSheet, Text, TouchableOpacity, View, Modal, TextInput, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function TrackerScreen() {
@@ -13,12 +20,17 @@ export default function TrackerScreen() {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [habits, setHabits] = useState<Habit[]>([]);
   const [logs, setLogs] = useState<HabitLog[]>([]);
-  const [entry, setEntry] = useState<DailyEntry | null>(null);
+  const [todayEntryCount, setTodayEntryCount] = useState(0);
   const scrollY = useRef(new Animated.Value(0)).current;
   const scrollViewRef = useRef<ScrollView>(null);
   const habitGridHeaderRef = useRef<View>(null);
   const stickyHeaderScrollRef = useRef<ScrollView>(null);
   const [headerStickyY, setHeaderStickyY] = useState(0);
+
+  // Habit management state
+  const [showHabitModal, setShowHabitModal] = useState(false);
+  const [editingHabit, setEditingHabit] = useState<Habit | null>(null);
+  const [habitName, setHabitName] = useState('');
 
   const currentMonth = currentDate.getMonth() + 1;
   const currentYear = currentDate.getFullYear();
@@ -29,16 +41,18 @@ export default function TrackerScreen() {
   }, [currentMonth, currentYear]);
 
   const loadData = async () => {
+    // Use encrypted storage if keyring is unlocked, otherwise local
     const [loadedHabits, loadedLogs] = await Promise.all([
-      storage.getHabits(),
-      storage.getHabitLogs(currentMonth, currentYear),
+      loadEncryptedHabits(),
+      loadEncryptedHabitLogs(currentMonth, currentYear),
     ]);
     setHabits(loadedHabits);
     setLogs(loadedLogs);
 
+    // Get count of entries for today
     const today = new Date().toISOString().split('T')[0];
-    const todayEntry = await storage.getDailyEntry(today);
-    setEntry(todayEntry);
+    const todayEntries = await storage.getDailyEntriesForDate(today);
+    setTodayEntryCount(todayEntries.length);
   };
 
   const changeMonth = (direction: number) => {
@@ -50,22 +64,98 @@ export default function TrackerScreen() {
   };
 
   const handleToggleHabit = async (habitId: string, date: string) => {
-    await storage.toggleHabitLog(habitId, date);
-    const updatedLogs = await storage.getHabitLogs(currentMonth, currentYear);
+    // Toggle locally and sync to cloud if encryption is ready
+    await toggleEncryptedHabitLog(habitId, date);
+    const updatedLogs = await loadEncryptedHabitLogs(currentMonth, currentYear);
     setLogs(updatedLogs);
   };
 
   const handleSaveEntry = async (text: string, mediaUrls: string[]) => {
     const today = new Date().toISOString().split('T')[0];
+    
+    // Check if we can add more entries
+    const canAdd = await storage.canAddEntryForDate(today);
+    if (!canAdd) {
+      Alert.alert('Limit reached', 'You can only add 2 entries per day.');
+      return;
+    }
+    
     const newEntry: DailyEntry = {
-      id: entry?.id || Date.now().toString(),
+      id: Date.now().toString(),
       date: today,
       text,
       mediaUrls,
-      createdAt: entry?.createdAt || new Date().toISOString(),
+      createdAt: new Date().toISOString(),
     };
-    await storage.saveDailyEntry(newEntry);
-    setEntry(newEntry);
+    // Save locally and sync encrypted to cloud if keyring unlocked
+    await saveEncryptedEntry(newEntry);
+    setTodayEntryCount(prev => prev + 1);
+  };
+
+  // Habit management handlers
+  const handleOpenHabitModal = (habit?: Habit) => {
+    if (habit) {
+      setEditingHabit(habit);
+      setHabitName(habit.name);
+    } else {
+      setEditingHabit(null);
+      setHabitName('');
+    }
+    setShowHabitModal(true);
+  };
+
+  const handleSaveHabit = async () => {
+    const name = habitName.trim();
+    if (!name) {
+      Alert.alert('Required', 'Please enter a habit name.');
+      return;
+    }
+    if (name.length > 20) {
+      Alert.alert('Too long', 'Habit name must be 20 characters or less.');
+      return;
+    }
+
+    let updatedHabits: Habit[];
+    if (editingHabit) {
+      // Update existing habit
+      updatedHabits = habits.map(h => 
+        h.id === editingHabit.id ? { ...h, name } : h
+      );
+    } else {
+      // Add new habit
+      const newHabit: Habit = {
+        id: Date.now().toString(),
+        name,
+        createdAt: new Date().toISOString(),
+      };
+      updatedHabits = [...habits, newHabit];
+    }
+
+    await saveEncryptedHabits(updatedHabits);
+    setHabits(updatedHabits);
+    setShowHabitModal(false);
+    setHabitName('');
+    setEditingHabit(null);
+  };
+
+  const handleDeleteHabit = async (habit: Habit) => {
+    Alert.alert(
+      'Delete habit',
+      `Are you sure you want to delete "${habit.name}"? This will also delete all logs for this habit.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            const updatedHabits = habits.filter(h => h.id !== habit.id);
+            await saveEncryptedHabits(updatedHabits);
+            setHabits(updatedHabits);
+            setShowHabitModal(false);
+          },
+        },
+      ]
+    );
   };
 
   const handleHeaderLayout = (y: number) => {
@@ -117,7 +207,7 @@ export default function TrackerScreen() {
             </TouchableOpacity>
           </View>
 
-          <HighlightInput entry={entry} onSave={handleSaveEntry} />
+          <HighlightInput todayEntryCount={todayEntryCount} onSave={handleSaveEntry} />
 
           <HabitGrid
             habits={habits}
@@ -125,6 +215,7 @@ export default function TrackerScreen() {
             currentMonth={currentMonth}
             currentYear={currentYear}
             onToggle={handleToggleHabit}
+            onEdit={() => handleOpenHabitModal()}
             onHeaderLayout={handleHeaderLayout}
             headerRef={habitGridHeaderRef}
             onHorizontalScroll={handleHorizontalScroll}
@@ -171,6 +262,109 @@ export default function TrackerScreen() {
             </View>
           </Animated.View>
         )}
+
+        {/* Habit Management Modal */}
+        <Modal
+          visible={showHabitModal}
+          animationType="slide"
+          presentationStyle="pageSheet"
+          onRequestClose={() => setShowHabitModal(false)}
+        >
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <TouchableOpacity onPress={() => setShowHabitModal(false)}>
+                <Text style={styles.modalCancel}>Cancel</Text>
+              </TouchableOpacity>
+              <Text style={styles.modalTitle}>
+                {editingHabit ? 'Edit Habit' : 'Manage Habits'}
+              </Text>
+              <TouchableOpacity onPress={() => handleOpenHabitModal()}>
+                <IconSymbol name="plus" size={24} color={Colors.accent} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.modalContent}>
+              {/* Current habits list */}
+              {habits.length > 0 && !editingHabit && (
+                <View style={styles.habitsList}>
+                  <Text style={styles.habitsListTitle}>Your Habits</Text>
+                  {habits.map((habit) => (
+                    <TouchableOpacity
+                      key={habit.id}
+                      style={styles.habitItem}
+                      onPress={() => handleOpenHabitModal(habit)}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.habitItemName}>{habit.name}</Text>
+                      <IconSymbol name="chevron.right" size={16} color={Colors.textSecondary} />
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+
+              {/* Add/Edit form */}
+              {(editingHabit || habits.length === 0 || habitName !== '') && (
+                <View style={styles.habitForm}>
+                  <Text style={styles.formLabel}>
+                    {editingHabit ? 'Habit Name' : 'Add New Habit'}
+                  </Text>
+                  <TextInput
+                    style={styles.habitInput}
+                    value={habitName}
+                    onChangeText={setHabitName}
+                    placeholder="e.g. Exercise, Read, Meditate"
+                    placeholderTextColor={Colors.textSecondary}
+                    maxLength={20}
+                    autoFocus={editingHabit !== null || habits.length === 0}
+                  />
+                  <Text style={styles.charCount}>{habitName.length}/20</Text>
+
+                  <TouchableOpacity
+                    style={styles.saveButton}
+                    onPress={handleSaveHabit}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.saveButtonText}>
+                      {editingHabit ? 'Save Changes' : 'Add Habit'}
+                    </Text>
+                  </TouchableOpacity>
+
+                  {editingHabit && (
+                    <TouchableOpacity
+                      style={styles.deleteButton}
+                      onPress={() => handleDeleteHabit(editingHabit)}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.deleteButtonText}>Delete Habit</Text>
+                    </TouchableOpacity>
+                  )}
+
+                  {editingHabit && (
+                    <TouchableOpacity
+                      style={styles.backButton}
+                      onPress={() => {
+                        setEditingHabit(null);
+                        setHabitName('');
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.backButtonText}>Back to list</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              )}
+
+              {habits.length === 0 && habitName === '' && (
+                <View style={styles.emptyHabits}>
+                  <Text style={styles.emptyText}>No habits yet</Text>
+                  <Text style={styles.emptyHint}>
+                    Add your first habit to start tracking
+                  </Text>
+                </View>
+              )}
+            </ScrollView>
+          </View>
+        </Modal>
       </View>
     </PaperBackground>
   );
@@ -256,5 +450,148 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwriting,
     textAlign: 'center',
     fontWeight: '700',
+  },
+  // Modal styles
+  modalContainer: {
+    flex: 1,
+    backgroundColor: Colors.paper,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.shadow,
+  },
+  modalCancel: {
+    fontSize: 16,
+    color: Colors.accent,
+    fontFamily: Fonts.handwriting,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: Colors.ink,
+    fontFamily: Fonts.handwriting,
+  },
+  modalContent: {
+    flex: 1,
+    padding: 16,
+  },
+  habitsList: {
+    marginBottom: 24,
+  },
+  habitsListTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    marginBottom: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  habitItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+    backgroundColor: Colors.card,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.shadow,
+    marginBottom: 8,
+  },
+  habitItemName: {
+    fontSize: 16,
+    color: Colors.ink,
+    fontFamily: Fonts.handwriting,
+    fontWeight: '500',
+  },
+  habitForm: {
+    marginBottom: 24,
+  },
+  formLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    marginBottom: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  habitInput: {
+    height: 52,
+    borderWidth: 1.5,
+    borderColor: Colors.ink,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    fontSize: 16,
+    fontFamily: Fonts.handwriting,
+    color: Colors.ink,
+    backgroundColor: Colors.card,
+  },
+  charCount: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    textAlign: 'right',
+    marginTop: 4,
+    marginBottom: 16,
+  },
+  saveButton: {
+    height: 52,
+    backgroundColor: Colors.ink,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  saveButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: Colors.paper,
+    fontFamily: Fonts.handwriting,
+  },
+  deleteButton: {
+    height: 52,
+    backgroundColor: 'transparent',
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: '#d32f2f',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  deleteButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#d32f2f',
+    fontFamily: Fonts.handwriting,
+  },
+  backButton: {
+    alignItems: 'center',
+    marginTop: 16,
+  },
+  backButtonText: {
+    fontSize: 14,
+    color: Colors.accent,
+    fontFamily: Fonts.handwriting,
+  },
+  emptyHabits: {
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  emptyText: {
+    fontSize: 18,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    marginBottom: 8,
+  },
+  emptyHint: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
   },
 });

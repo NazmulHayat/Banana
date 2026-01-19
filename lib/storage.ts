@@ -42,17 +42,36 @@ export const storage = {
     return entries.find((e) => e.date === date) || null;
   },
 
+  async getDailyEntriesForDate(date: string): Promise<DailyEntry[]> {
+    const entries = await storage.getDailyEntries();
+    return entries.filter((e) => e.date === date);
+  },
+
   async getDailyEntries(): Promise<DailyEntry[]> {
     const data = await AsyncStorage.getItem(STORAGE_KEYS.ENTRIES);
     return data ? JSON.parse(data) : [];
   },
 
+  async canAddEntryForDate(date: string): Promise<boolean> {
+    const entriesForDate = await storage.getDailyEntriesForDate(date);
+    return entriesForDate.length < 2; // Max 2 entries per day
+  },
+
   async saveDailyEntry(entry: DailyEntry): Promise<void> {
     const entries = await storage.getDailyEntries();
-    const index = entries.findIndex((e) => e.date === entry.date);
-    if (index >= 0) {
-      entries[index] = entry;
+    
+    // Check if this is an update to existing entry (same id)
+    const existingIndex = entries.findIndex((e) => e.id === entry.id);
+    if (existingIndex >= 0) {
+      // Update existing entry
+      entries[existingIndex] = entry;
     } else {
+      // Adding new entry - check limit (max 2 per day)
+      const entriesForDate = entries.filter((e) => e.date === entry.date);
+      if (entriesForDate.length >= 2) {
+        console.warn('Cannot add more than 2 entries per day');
+        return;
+      }
       entries.push(entry);
     }
     await AsyncStorage.setItem(STORAGE_KEYS.ENTRIES, JSON.stringify(entries));

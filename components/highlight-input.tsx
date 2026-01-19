@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, Image, Alert } from 'react-native';
 import { PaperCard } from './ui/paper-card';
 import { Colors, Fonts } from '@/constants/theme';
@@ -7,15 +7,18 @@ import { DailyEntry } from '@/lib/storage';
 import * as ImagePicker from 'expo-image-picker';
 
 interface HighlightInputProps {
-  entry: DailyEntry | null;
+  todayEntryCount: number; // How many entries exist for today
   onSave: (text: string, mediaUrls: string[]) => void;
 }
 
 const MAX_IMAGES = 4;
+const MAX_ENTRIES_PER_DAY = 2;
 
-export function HighlightInput({ entry, onSave }: HighlightInputProps) {
-  const [text, setText] = useState(entry?.text || '');
-  const [mediaUrls, setMediaUrls] = useState<string[]>(entry?.mediaUrls || []);
+export function HighlightInput({ todayEntryCount, onSave }: HighlightInputProps) {
+  const [text, setText] = useState('');
+  const [mediaUrls, setMediaUrls] = useState<string[]>([]);
+  
+  const canAddEntry = todayEntryCount < MAX_ENTRIES_PER_DAY;
 
   const handleAddPhoto = async () => {
     if (mediaUrls.length >= MAX_IMAGES) {
@@ -58,19 +61,39 @@ export function HighlightInput({ entry, onSave }: HighlightInputProps) {
   };
 
   const handleSave = () => {
+    if (!canAddEntry) {
+      Alert.alert('Limit reached', 'You can only add 2 entries per day.');
+      return;
+    }
     if (text.trim() || mediaUrls.length > 0) {
       onSave(text.trim(), mediaUrls);
-      if (!entry) {
-        setText('');
-        setMediaUrls([]);
-      }
+      setText('');
+      setMediaUrls([]);
     }
   };
+
+  // If limit reached, show message instead of input
+  if (!canAddEntry) {
+    return (
+      <PaperCard style={styles.container}>
+        <Text style={styles.title}>Highlight of the day</Text>
+        <View style={styles.limitReached}>
+          <IconSymbol name="checkmark.circle.fill" size={24} color={Colors.accent} />
+          <Text style={styles.limitText}>You've added 2 entries today!</Text>
+          <Text style={styles.limitHint}>Check the Feed to see them.</Text>
+        </View>
+      </PaperCard>
+    );
+  }
 
   return (
     <PaperCard style={styles.container}>
       <Text style={styles.title}>Highlight of the day</Text>
-      <Text style={styles.placeholder}>Tell me something about today...</Text>
+      <Text style={styles.placeholder}>
+        {todayEntryCount === 0 
+          ? 'Tell me something about today...' 
+          : 'Add another highlight...'}
+      </Text>
       <TextInput
         style={styles.input}
         value={text}
@@ -145,6 +168,23 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     fontFamily: Fonts.handwriting,
     fontStyle: 'italic',
+  },
+  limitReached: {
+    alignItems: 'center',
+    paddingVertical: 20,
+  },
+  limitText: {
+    fontSize: 16,
+    color: Colors.ink,
+    fontFamily: Fonts.handwriting,
+    marginTop: 8,
+    fontWeight: '500',
+  },
+  limitHint: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    marginTop: 4,
   },
   input: {
     fontSize: 16,

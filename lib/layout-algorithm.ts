@@ -1,4 +1,3 @@
-import { Dimensions } from 'react-native';
 import { DailyEntry } from './storage';
 
 export type LayoutType = 'TEXT_ONLY' | 'TEXT_WITH_IMAGES';
