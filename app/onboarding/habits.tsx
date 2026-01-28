@@ -18,8 +18,7 @@ import { PaperBackground } from '@/components/ui/paper-background';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { HabitCell } from '@/components/ui/habit-cell';
 import { Colors, Fonts } from '@/constants/theme';
-import { Habit } from '@/lib/storage';
-import { saveEncryptedHabits } from '@/lib/e2ee/encrypted-storage';
+import { Habit, saveHabits, waitForAuth, getHabits } from '@/lib/db';
 
 const { width, height } = Dimensions.get('window');
 
@@ -255,13 +254,38 @@ export default function HabitsScreen() {
   const handleContinue = async () => {
     if (selectedHabits.length === 0) return;
 
-    const habits: Habit[] = selectedHabits.map((name, index) => ({
-      id: Date.now().toString() + index,
-      name,
-      createdAt: new Date().toISOString(),
-    }));
+    // Wait for auth to be ready before saving
+    console.log('[Onboarding] Waiting for auth before saving habits...');
+    const isReady = await waitForAuth();
+    if (!isReady) {
+      console.error('[Onboarding] Auth not ready, cannot save habits');
+      return;
+    }
 
-    await saveEncryptedHabits(habits);
+    // Get existing habits first to merge with new ones
+    const existingHabits = await getHabits();
+    console.log('[Onboarding] Found', existingHabits.length, 'existing habits');
+
+    // Create new habits only for names that don't exist
+    const existingNames = new Set(existingHabits.map(h => h.name.toLowerCase()));
+    const newHabits: Habit[] = selectedHabits
+      .filter(name => !existingNames.has(name.toLowerCase()))
+      .map((name, index) => ({
+        id: Date.now().toString() + index,
+        name,
+        createdAt: new Date().toISOString(),
+      }));
+
+    // Merge existing and new habits
+    const allHabits = [...existingHabits, ...newHabits];
+    console.log('[Onboarding] Saving', allHabits.length, 'habits (', newHabits.length, 'new)');
+
+    await saveHabits(allHabits);
+    
+    // Verify save worked
+    const savedHabits = await getHabits();
+    console.log('[Onboarding] Verified', savedHabits.length, 'habits saved');
+
     router.push('/onboarding/feed-demo' as Href);
   };
 

@@ -62,8 +62,8 @@ create table if not exists public.entries (
   owner_id uuid not null references auth.users(id) on delete cascade,
   day_bucket text not null,
   month_bucket text not null,
-  ciphertext text not null,
-  nonce text not null,
+  ciphertext bytea not null,
+  nonce bytea not null,
   version int not null default 1,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -84,8 +84,8 @@ create table if not exists public.entry_media (
   entry_id uuid not null references public.entries(id) on delete cascade,
   owner_id uuid not null references auth.users(id) on delete cascade,
   object_path text not null,
-  ciphertext_meta text not null,
-  nonce text not null,
+  ciphertext_meta bytea not null,
+  nonce bytea not null,
   version int not null default 1,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -104,8 +104,8 @@ for each row execute procedure public.set_updated_at();
 create table if not exists public.habits (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid not null references auth.users(id) on delete cascade,
-  ciphertext text not null,
-  nonce text not null,
+  ciphertext bytea not null,
+  nonce bytea not null,
   version int not null default 1,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -118,17 +118,19 @@ create trigger trg_habits_updated_at
 before update on public.habits
 for each row execute procedure public.set_updated_at();
 
--- 5) habit_logs: encrypted daily completion logs (query by month_bucket)
+-- 5) habit_logs: plaintext daily completion logs (query by month_bucket)
 create table if not exists public.habit_logs (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid not null references auth.users(id) on delete cascade,
+  habit_id text not null,
+  date text not null,
+  completed boolean not null default false,
   day_bucket text not null,
   month_bucket text not null,
-  ciphertext text not null,
-  nonce text not null,
   version int not null default 1,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  constraint habit_logs_one_per_day unique (owner_id, day_bucket)
 );
 
 create index if not exists idx_habit_logs_owner_month on public.habit_logs (owner_id, month_bucket);

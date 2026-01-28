@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { View, Text, Image, StyleSheet, Dimensions } from 'react-native';
 import { PaperCard } from './ui/paper-card';
 import { Colors, Fonts } from '@/constants/theme';
-import { DailyEntry } from '@/lib/storage';
+import { DailyEntry } from '@/lib/db';
 import {
   LayoutType,
   ImageDimension,

@@ -1,5 +1,5 @@
 import { Colors, Fonts } from '@/constants/theme';
-import { Habit, HabitLog } from '@/lib/storage';
+import { Habit, HabitLog } from '@/lib/db';
 import { useRef } from 'react';
 import { ScrollView, StyleSheet, Text, View, TouchableOpacity } from 'react-native';
 import { HabitCell } from './ui/habit-cell';

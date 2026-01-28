@@ -1,7 +1,14 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import { Session, User } from '@supabase/supabase-js';
-import { supabase } from './supabase';
-import { keyring } from './e2ee/keyring';
+import { Session, User } from "@supabase/supabase-js";
+import {
+    createContext,
+    ReactNode,
+    useContext,
+    useEffect,
+    useState,
+} from "react";
+import { clearKeyCache } from "./db";
+import { sessionManager } from "./db/session-manager";
+import { supabase } from "./supabase";
 
 interface AuthContextType {
   session: Session | null;
@@ -22,46 +29,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Get initial session
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
-      
-      // Try to restore keyring from secure store if we have a session
-      if (session) {
-        try {
-          await keyring.tryRestoreFromCache();
-        } catch (err) {
-          console.warn('Failed to restore keyring from cache:', err);
-        }
-      }
-      
       setLoading(false);
     });
 
-    // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
-        setSession(session);
-        
-        // Try to restore keyring on session change
-        if (session) {
-          try {
-            await keyring.tryRestoreFromCache();
-          } catch (err) {
-            console.warn('Failed to restore keyring from cache:', err);
-          }
-        }
-        
-        setLoading(false);
-      }
-    );
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      setLoading(false);
+    });
 
     return () => subscription.unsubscribe();
   }, []);
 
   const signOut = async () => {
-    // Clear keyring on sign out
-    await keyring.clearAll();
+    clearKeyCache(); // Clear encryption key on logout
+    sessionManager.clearCache(); // Clear session cache
     await supabase.auth.signOut();
     setSession(null);
   };

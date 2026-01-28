@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, Image, Alert } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, Image, Alert, Platform } from 'react-native';
 import { PaperCard } from './ui/paper-card';
 import { Colors, Fonts } from '@/constants/theme';
 import { IconSymbol } from './ui/icon-symbol';
-import { DailyEntry } from '@/lib/storage';
+import { DailyEntry } from '@/lib/db';
 import * as ImagePicker from 'expo-image-picker';
 
 interface HighlightInputProps {
@@ -12,13 +12,9 @@ interface HighlightInputProps {
 }
 
 const MAX_IMAGES = 4;
-const MAX_ENTRIES_PER_DAY = 2;
-
 export function HighlightInput({ todayEntryCount, onSave }: HighlightInputProps) {
   const [text, setText] = useState('');
   const [mediaUrls, setMediaUrls] = useState<string[]>([]);
-  
-  const canAddEntry = todayEntryCount < MAX_ENTRIES_PER_DAY;
 
   const handleAddPhoto = async () => {
     if (mediaUrls.length >= MAX_IMAGES) {
@@ -33,15 +29,31 @@ export function HighlightInput({ todayEntryCount, onSave }: HighlightInputProps)
         return;
       }
 
+      const remainingSlots = MAX_IMAGES - mediaUrls.length;
+      const allowsMultipleSelection = remainingSlots > 1 && Platform.OS === 'ios';
+
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsMultipleSelection: true,
+        mediaTypes: ['images'],
+        allowsMultipleSelection,
+        selectionLimit: allowsMultipleSelection ? remainingSlots : 1,
         quality: 0.8,
-        selectionLimit: MAX_IMAGES - mediaUrls.length,
       });
 
-      if (!result.canceled && result.assets) {
-        const newUrls = result.assets.map((asset) => asset.uri);
+      if (!result || result.canceled) {
+        return;
+      }
+
+      if (!result.assets || result.assets.length === 0) {
+        Alert.alert('No images found', 'Please select at least one image.');
+        return;
+      }
+
+      const newUrls = result.assets.map((asset) => asset.uri).filter(Boolean);
+      if (newUrls.length === 0) {
+        Alert.alert('Invalid selection', 'Selected images are not available.');
+        return;
+      }
+
         const totalImages = mediaUrls.length + newUrls.length;
         
         if (totalImages > MAX_IMAGES) {
@@ -50,9 +62,9 @@ export function HighlightInput({ todayEntryCount, onSave }: HighlightInputProps)
         } else {
           setMediaUrls([...mediaUrls, ...newUrls]);
         }
-      }
     } catch (error) {
-      Alert.alert('Error', 'Failed to add photo. Please try again.');
+      const message = error instanceof Error ? error.message : 'Failed to add photo.';
+      Alert.alert('Error', message);
     }
   };
 
@@ -61,30 +73,12 @@ export function HighlightInput({ todayEntryCount, onSave }: HighlightInputProps)
   };
 
   const handleSave = () => {
-    if (!canAddEntry) {
-      Alert.alert('Limit reached', 'You can only add 2 entries per day.');
-      return;
-    }
     if (text.trim() || mediaUrls.length > 0) {
       onSave(text.trim(), mediaUrls);
       setText('');
       setMediaUrls([]);
     }
   };
-
-  // If limit reached, show message instead of input
-  if (!canAddEntry) {
-    return (
-      <PaperCard style={styles.container}>
-        <Text style={styles.title}>Highlight of the day</Text>
-        <View style={styles.limitReached}>
-          <IconSymbol name="checkmark.circle.fill" size={24} color={Colors.accent} />
-          <Text style={styles.limitText}>You've added 2 entries today!</Text>
-          <Text style={styles.limitHint}>Check the Feed to see them.</Text>
-        </View>
-      </PaperCard>
-    );
-  }
 
   return (
     <PaperCard style={styles.container}>
@@ -168,23 +162,6 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     fontFamily: Fonts.handwriting,
     fontStyle: 'italic',
-  },
-  limitReached: {
-    alignItems: 'center',
-    paddingVertical: 20,
-  },
-  limitText: {
-    fontSize: 16,
-    color: Colors.ink,
-    fontFamily: Fonts.handwriting,
-    marginTop: 8,
-    fontWeight: '500',
-  },
-  limitHint: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
-    marginTop: 4,
   },
   input: {
     fontSize: 16,

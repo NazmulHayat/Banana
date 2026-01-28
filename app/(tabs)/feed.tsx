@@ -2,11 +2,11 @@ import { PaperBackground } from '@/components/ui/paper-background';
 import { FeedEntryCard } from '@/components/feed-entry-card';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Fonts } from '@/constants/theme';
-import { DailyEntry } from '@/lib/storage';
-import { loadEncryptedEntriesForMonth } from '@/lib/e2ee/encrypted-storage';
-import { useEffect, useState, useRef } from 'react';
+import { DailyEntry, getEntriesForMonth, waitForAuth } from '@/lib/db';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { ScrollView, StyleSheet, Text, View, RefreshControl, Animated, TouchableOpacity } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFocusEffect } from 'expo-router';
 
 export default function FeedScreen() {
   const insets = useSafeAreaInsets();
@@ -19,9 +19,12 @@ export default function FeedScreen() {
   const currentYear = currentDate.getFullYear();
   const monthName = currentDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 
-  useEffect(() => {
-    loadEntries();
-  }, [currentMonth, currentYear]);
+  // Reload entries when screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      loadEntries();
+    }, [currentMonth, currentYear])
+  );
 
   useEffect(() => {
     // Fade in animation for entries
@@ -33,8 +36,16 @@ export default function FeedScreen() {
   }, [entries]);
 
   const loadEntries = async () => {
-    // Load from encrypted cloud storage if unlocked, otherwise local
-    const monthEntries = await loadEncryptedEntriesForMonth(currentYear, currentMonth);
+    // Wait for auth to be ready first
+    const isReady = await waitForAuth();
+    if (!isReady) {
+      console.log('[FeedScreen] Auth not ready, skipping load');
+      return;
+    }
+
+    console.log('[FeedScreen] Loading entries for', currentYear, currentMonth);
+    const monthEntries = await getEntriesForMonth(currentYear, currentMonth);
+    console.log('[FeedScreen] Loaded', monthEntries.length, 'entries');
     const sorted = monthEntries.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
     setEntries(sorted);
   };

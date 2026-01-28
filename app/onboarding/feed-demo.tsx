@@ -17,8 +17,7 @@ import { PaperCard } from '@/components/ui/paper-card';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Fonts } from '@/constants/theme';
 import { useOnboarding } from '@/lib/onboarding-context';
-import { DailyEntry } from '@/lib/storage';
-import { saveEncryptedEntry } from '@/lib/e2ee/encrypted-storage';
+import { DailyEntry, saveEntry, waitForAuth } from '@/lib/db';
 
 const { width, height } = Dimensions.get('window');
 
@@ -80,6 +79,15 @@ export default function FeedDemoScreen() {
 
     setStage('saving');
     
+    // Wait for auth to be ready before saving
+    console.log('[FeedDemo] Waiting for auth before saving entry...');
+    const isReady = await waitForAuth();
+    if (!isReady) {
+      console.error('[FeedDemo] Auth not ready, cannot save entry');
+      setStage('input');
+      return;
+    }
+    
     // Save the entry with today's date
     const entry: DailyEntry = {
       id: 'onboarding-' + Date.now().toString(),
@@ -88,7 +96,9 @@ export default function FeedDemoScreen() {
       mediaUrls: [],
       createdAt: new Date().toISOString(),
     };
-    await saveEncryptedEntry(entry);
+    console.log('[FeedDemo] Saving entry...');
+    await saveEntry(entry);
+    console.log('[FeedDemo] Entry saved');
     
     // Saving animation
     Animated.sequence([

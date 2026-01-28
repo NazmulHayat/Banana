@@ -45,3 +45,6 @@ app-example
 
 .env
 .env.local
+
+# Supabase CLI temp files
+supabase/.temp/

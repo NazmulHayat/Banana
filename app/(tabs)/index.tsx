@@ -3,17 +3,24 @@ import { HighlightInput } from '@/components/highlight-input';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { PaperBackground } from '@/components/ui/paper-background';
 import { Colors, Fonts } from '@/constants/theme';
-import { DailyEntry, Habit, HabitLog, storage } from '@/lib/storage';
 import {
-  saveEncryptedEntry,
-  saveEncryptedHabits,
-  loadEncryptedHabits,
-  loadEncryptedHabitLogs,
-  toggleEncryptedHabitLog,
-} from '@/lib/e2ee/encrypted-storage';
-import { useEffect, useRef, useState } from 'react';
+  // Types
+  DailyEntry,
+  Habit,
+  HabitLog,
+  // Operations
+  saveEntry,
+  saveHabits,
+  getHabits,
+  getHabitLogsForMonth,
+  toggleHabitLog,
+  getEntriesForDate,
+  waitForAuth,
+} from '@/lib/db';
+import { useRef, useState, useCallback } from 'react';
 import { Animated, ScrollView, StyleSheet, Text, TouchableOpacity, View, Modal, TextInput, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFocusEffect } from 'expo-router';
 
 export default function TrackerScreen() {
   const insets = useSafeAreaInsets();
@@ -36,23 +43,36 @@ export default function TrackerScreen() {
   const currentYear = currentDate.getFullYear();
   const monthName = currentDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 
-  useEffect(() => {
-    loadData();
-  }, [currentMonth, currentYear]);
+  // Reload data when screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      loadData();
+    }, [currentMonth, currentYear])
+  );
 
   const loadData = async () => {
-    // Use encrypted storage if keyring is unlocked, otherwise local
+    // Wait for auth to be ready first
+    const isReady = await waitForAuth();
+    if (!isReady) {
+      console.log('[TrackerScreen] Auth not ready, skipping load');
+      return;
+    }
+
+    // Load data from Supabase
+    console.log('[TrackerScreen] Loading data...');
     const [loadedHabits, loadedLogs] = await Promise.all([
-      loadEncryptedHabits(),
-      loadEncryptedHabitLogs(currentMonth, currentYear),
+      getHabits(),
+      getHabitLogsForMonth(currentYear, currentMonth),
     ]);
+    console.log('[TrackerScreen] Loaded', loadedHabits.length, 'habits and', loadedLogs.length, 'logs');
     setHabits(loadedHabits);
     setLogs(loadedLogs);
 
-    // Get count of entries for today
+    // Get count of entries for today (background, do not block)
     const today = new Date().toISOString().split('T')[0];
-    const todayEntries = await storage.getDailyEntriesForDate(today);
-    setTodayEntryCount(todayEntries.length);
+    void getEntriesForDate(today).then((todayEntries) => {
+      setTodayEntryCount(todayEntries.length);
+    });
   };
 
   const changeMonth = (direction: number) => {
@@ -64,22 +84,41 @@ export default function TrackerScreen() {
   };
 
   const handleToggleHabit = async (habitId: string, date: string) => {
-    // Toggle locally and sync to cloud if encryption is ready
-    await toggleEncryptedHabitLog(habitId, date);
-    const updatedLogs = await loadEncryptedHabitLogs(currentMonth, currentYear);
-    setLogs(updatedLogs);
+    const existing = logs.find(
+      (log) => log.habitId === habitId && log.date === date,
+    );
+    const currentCompleted = existing?.completed ?? false;
+
+    // Optimistic toggle based on current logs
+    setLogs((prevLogs) => {
+      const existingIndex = prevLogs.findIndex(
+        (log) => log.habitId === habitId && log.date === date,
+      );
+      if (existingIndex === -1) {
+        return [...prevLogs, { habitId, date, completed: true }];
+      }
+      const next = [...prevLogs];
+      next[existingIndex] = {
+        ...next[existingIndex],
+        completed: !next[existingIndex].completed,
+      };
+      return next;
+    });
+
+    // Fire-and-correct network call
+    try {
+      await toggleHabitLog(habitId, date, currentCompleted);
+    } catch (error) {
+      console.error('[TrackerScreen] Failed to toggle habit log:', error);
+      // On failure, resync from server
+      const updatedLogs = await getHabitLogsForMonth(currentYear, currentMonth);
+      setLogs(updatedLogs);
+    }
   };
 
   const handleSaveEntry = async (text: string, mediaUrls: string[]) => {
     const today = new Date().toISOString().split('T')[0];
-    
-    // Check if we can add more entries
-    const canAdd = await storage.canAddEntryForDate(today);
-    if (!canAdd) {
-      Alert.alert('Limit reached', 'You can only add 2 entries per day.');
-      return;
-    }
-    
+
     const newEntry: DailyEntry = {
       id: Date.now().toString(),
       date: today,
@@ -87,9 +126,18 @@ export default function TrackerScreen() {
       mediaUrls,
       createdAt: new Date().toISOString(),
     };
-    // Save locally and sync encrypted to cloud if keyring unlocked
-    await saveEncryptedEntry(newEntry);
-    setTodayEntryCount(prev => prev + 1);
+    
+    // Optimistic update for speed (no hard limit)
+    setTodayEntryCount((count) => count + 1);
+
+    try {
+      await saveEntry(newEntry);
+    } catch (error) {
+      console.error('[TrackerScreen] Failed to save entry:', error);
+      Alert.alert('Save failed', 'Could not save entry. Please try again.');
+      const updatedEntries = await getEntriesForDate(today);
+      setTodayEntryCount(updatedEntries.length);
+    }
   };
 
   // Habit management handlers
@@ -131,11 +179,27 @@ export default function TrackerScreen() {
       updatedHabits = [...habits, newHabit];
     }
 
-    await saveEncryptedHabits(updatedHabits);
+    // Optimistic UI update for speed
     setHabits(updatedHabits);
     setShowHabitModal(false);
     setHabitName('');
     setEditingHabit(null);
+
+    try {
+      // Save to Supabase
+      await saveHabits(updatedHabits);
+
+      // Refresh logs in background (habits may affect grid rendering)
+      const updatedLogs = await getHabitLogsForMonth(currentYear, currentMonth);
+      setLogs(updatedLogs);
+    } catch (error) {
+      console.error('[TrackerScreen] Failed to save habits:', error);
+      Alert.alert('Save failed', 'Could not save habits. Please try again.');
+
+      // Re-sync state from server on failure
+      const reloadedHabits = await getHabits();
+      setHabits(reloadedHabits);
+    }
   };
 
   const handleDeleteHabit = async (habit: Habit) => {
@@ -149,9 +213,21 @@ export default function TrackerScreen() {
           style: 'destructive',
           onPress: async () => {
             const updatedHabits = habits.filter(h => h.id !== habit.id);
-            await saveEncryptedHabits(updatedHabits);
+            
+            // Optimistic update
             setHabits(updatedHabits);
             setShowHabitModal(false);
+
+            try {
+              await saveHabits(updatedHabits);
+              const updatedLogs = await getHabitLogsForMonth(currentYear, currentMonth);
+              setLogs(updatedLogs);
+            } catch (error) {
+              console.error('[TrackerScreen] Failed to delete habit:', error);
+              Alert.alert('Delete failed', 'Could not delete habit. Please try again.');
+              const reloadedHabits = await getHabits();
+              setHabits(reloadedHabits);
+            }
           },
         },
       ]

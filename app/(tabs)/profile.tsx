@@ -6,9 +6,11 @@ import {
   View,
   TouchableOpacity,
   Alert,
-  TextInput,
-  Modal,
   RefreshControl,
+  Modal,
+  TextInput,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
@@ -19,9 +21,15 @@ import { Colors, Fonts } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
 import { useOnboarding } from '@/lib/onboarding-context';
 import { supabase } from '@/lib/supabase';
-import { storage, Habit, HabitLog } from '@/lib/storage';
-import { keyring, isKeyringUnlocked } from '@/lib/e2ee/keyring';
-import { loadEncryptedHabits } from '@/lib/e2ee/encrypted-storage';
+import {
+  Habit,
+  HabitLog,
+  getHabits,
+  saveHabits,
+  getHabitLogsForMonth,
+  getEntriesForMonth,
+  waitForAuth,
+} from '@/lib/db';
 import { router, Href } from 'expo-router';
 
 export default function ProfileScreen() {
@@ -38,14 +46,10 @@ export default function ProfileScreen() {
     thisMonthCompletion: 0,
   });
   
-  // Privacy password state
-  const [hasPrivacyPassword, setHasPrivacyPassword] = useState(false);
-  const [isUnlocked, setIsUnlocked] = useState(false);
-  const [showPasswordModal, setShowPasswordModal] = useState(false);
-  const [passwordMode, setPasswordMode] = useState<'setup' | 'unlock'>('setup');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [passwordLoading, setPasswordLoading] = useState(false);
+  // Habit management state
+  const [showHabitModal, setShowHabitModal] = useState(false);
+  const [editingHabit, setEditingHabit] = useState<Habit | null>(null);
+  const [habitName, setHabitName] = useState('');
 
   // Reload data when screen comes into focus
   useFocusEffect(
@@ -58,7 +62,6 @@ export default function ProfileScreen() {
     await Promise.all([
       loadProfile(),
       loadStats(),
-      checkKeyringStatus(),
     ]);
   };
 
@@ -83,26 +86,56 @@ export default function ProfileScreen() {
   };
 
   const loadStats = async () => {
-    const [loadedHabits, entries, allLogs] = await Promise.all([
-      loadEncryptedHabits(),
-      storage.getDailyEntries(),
-      storage.getAllHabitLogs(),
-    ]);
+    // Wait for auth to be ready first
+    const isReady = await waitForAuth();
+    if (!isReady) {
+      console.log('[ProfileScreen] Auth not ready, skipping load');
+      return;
+    }
+
+    const today = new Date();
+    const currentMonth = today.getMonth() + 1;
+    const currentYear = today.getFullYear();
     
+    // Load habits first
+    console.log('[ProfileScreen] Loading habits...');
+    const loadedHabits = await getHabits();
+    console.log('[ProfileScreen] Loaded', loadedHabits.length, 'habits');
     setHabits(loadedHabits);
     
-    // Calculate streak (consecutive days with at least one habit completed)
-    const streak = calculateStreak(loadedHabits, allLogs);
+    // Load current month data in parallel
+    const [monthLogs, monthEntries] = await Promise.all([
+      getHabitLogsForMonth(currentYear, currentMonth),
+      getEntriesForMonth(currentYear, currentMonth),
+    ]);
     
-    // Calculate this month's completion rate
-    const thisMonthCompletion = calculateMonthCompletion(loadedHabits, allLogs);
+    // Calculate this month's completion rate (fast)
+    const thisMonthCompletion = calculateMonthCompletion(loadedHabits, monthLogs);
     
+    // Set initial stats (fast)
     setStats({
       totalHabits: loadedHabits.length,
-      totalEntries: entries.length,
-      streak,
+      totalEntries: monthEntries.length,
+      streak: 0, // Will update after loading logs
       thisMonthCompletion,
     });
+    
+    // Load logs for streak calculation (last 3 months)
+    const allLogs: HabitLog[] = [];
+    const logPromises = [];
+    for (let i = 0; i < 3; i++) {
+      const checkDate = new Date(today);
+      checkDate.setMonth(today.getMonth() - i);
+      const month = checkDate.getMonth() + 1;
+      const year = checkDate.getFullYear();
+      logPromises.push(getHabitLogsForMonth(year, month));
+    }
+    const logResults = await Promise.all(logPromises);
+    logResults.forEach(logs => allLogs.push(...logs));
+    
+    // Update streak (non-blocking update)
+    const streak = calculateStreak(loadedHabits, allLogs);
+    setStats(prev => ({ ...prev, streak }));
   };
 
   const calculateStreak = (habits: Habit[], logs: HabitLog[]): number => {
@@ -157,79 +190,6 @@ export default function ProfileScreen() {
     return Math.round((completedCount / totalPossible) * 100);
   };
 
-  const checkKeyringStatus = async () => {
-    if (!user) return;
-    
-    // Check if profile has wrapped key
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('wrapped_master_key')
-      .eq('id', user.id)
-      .single();
-    
-    setHasPrivacyPassword(!!profile?.wrapped_master_key);
-    setIsUnlocked(isKeyringUnlocked());
-  };
-
-  const handleSetupPassword = () => {
-    setPasswordMode('setup');
-    setPassword('');
-    setConfirmPassword('');
-    setShowPasswordModal(true);
-  };
-
-  const handleUnlockPassword = () => {
-    setPasswordMode('unlock');
-    setPassword('');
-    setShowPasswordModal(true);
-  };
-
-  const handlePasswordSubmit = async () => {
-    if (passwordMode === 'setup') {
-      if (password.length < 8) {
-        Alert.alert('Weak password', 'Password must be at least 8 characters.');
-        return;
-      }
-      if (password !== confirmPassword) {
-        Alert.alert('Mismatch', 'Passwords do not match.');
-        return;
-      }
-      
-      setPasswordLoading(true);
-      try {
-        await keyring.setupMasterKey(password);
-        setHasPrivacyPassword(true);
-        setIsUnlocked(true);
-        setShowPasswordModal(false);
-        Alert.alert(
-          'Privacy password set',
-          'Your data is now encrypted. Remember this password - if you forget it, your data cannot be recovered!'
-        );
-      } catch (err: any) {
-        Alert.alert('Error', err.message || 'Failed to set up encryption.');
-      } finally {
-        setPasswordLoading(false);
-      }
-    } else {
-      // Unlock mode
-      setPasswordLoading(true);
-      try {
-        await keyring.unlock(password);
-        setIsUnlocked(true);
-        setShowPasswordModal(false);
-      } catch (err: any) {
-        Alert.alert('Wrong password', 'Please try again.');
-      } finally {
-        setPasswordLoading(false);
-      }
-    }
-  };
-
-  const handleLock = () => {
-    keyring.lock();
-    setIsUnlocked(false);
-  };
-
   const handleSignOut = () => {
     Alert.alert(
       'Sign out',
@@ -240,8 +200,98 @@ export default function ProfileScreen() {
           text: 'Sign out',
           style: 'destructive',
           onPress: async () => {
-            keyring.lock();
             await signOut();
+          },
+        },
+      ]
+    );
+  };
+
+  // Habit management handlers
+  const handleOpenHabitModal = (habit?: Habit) => {
+    if (habit) {
+      setEditingHabit(habit);
+      setHabitName(habit.name);
+    } else {
+      setEditingHabit(null);
+      setHabitName('');
+    }
+    setShowHabitModal(true);
+  };
+
+  const handleCloseModal = () => {
+    setShowHabitModal(false);
+    setEditingHabit(null);
+    setHabitName('');
+  };
+
+  const handleSaveHabit = async () => {
+    const name = habitName.trim();
+    if (!name) {
+      Alert.alert('Required', 'Please enter a habit name.');
+      return;
+    }
+    if (name.length > 20) {
+      Alert.alert('Too long', 'Habit name must be 20 characters or less.');
+      return;
+    }
+
+    let updatedHabits: Habit[];
+    if (editingHabit) {
+      // Update existing habit
+      updatedHabits = habits.map(h => 
+        h.id === editingHabit.id ? { ...h, name } : h
+      );
+    } else {
+      // Add new habit
+      const newHabit: Habit = {
+        id: Date.now().toString(),
+        name,
+        createdAt: new Date().toISOString(),
+      };
+      updatedHabits = [...habits, newHabit];
+    }
+
+    // Save to Supabase
+    await saveHabits(updatedHabits);
+    
+    // Reload from database to ensure sync
+    const reloadedHabits = await getHabits();
+    setHabits(reloadedHabits);
+    setStats(prev => ({ ...prev, totalHabits: reloadedHabits.length }));
+    
+    // Reload all stats to ensure everything is in sync
+    await loadStats();
+    
+    setEditingHabit(null);
+    setHabitName('');
+  };
+
+  const handleDeleteHabit = (habit: Habit) => {
+    Alert.alert(
+      'Delete habit',
+      `Are you sure you want to delete "${habit.name}"? This will also remove it from your tracking history.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            const updatedHabits = habits.filter(h => h.id !== habit.id);
+            
+            // Save to Supabase
+            await saveHabits(updatedHabits);
+            
+            // Reload from database to ensure sync
+            const reloadedHabits = await getHabits();
+            setHabits(reloadedHabits);
+            setStats(prev => ({ ...prev, totalHabits: reloadedHabits.length }));
+            
+            // Reload all stats to ensure everything is in sync
+            await loadStats();
+            
+            setEditingHabit(null);
+            setHabitName('');
           },
         },
       ]
@@ -290,81 +340,71 @@ export default function ProfileScreen() {
 
         {/* Habits */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Your Habits ({habits.length})</Text>
+          <View style={styles.sectionHeader}>
+            <Text style={[styles.sectionTitle, { marginHorizontal: 0, marginBottom: 0 }]}>Your Habits ({habits.length})</Text>
+            <TouchableOpacity 
+              style={styles.editButton}
+              onPress={() => handleOpenHabitModal()}
+              activeOpacity={0.7}
+            >
+              <IconSymbol name="pencil" size={14} color={Colors.accent} />
+              <Text style={styles.editButtonText}>Edit</Text>
+            </TouchableOpacity>
+          </View>
           {habits.length > 0 ? (
             <View style={styles.habitsContainer}>
               {habits.map((habit) => (
-                <View key={habit.id} style={styles.habitChip}>
+                <TouchableOpacity 
+                  key={habit.id} 
+                  style={styles.habitChip}
+                  onPress={() => handleOpenHabitModal(habit)}
+                  activeOpacity={0.7}
+                >
                   <Text style={styles.habitChipText}>{habit.name}</Text>
-                </View>
+                </TouchableOpacity>
               ))}
+              <TouchableOpacity 
+                style={styles.addHabitChip}
+                onPress={() => handleOpenHabitModal()}
+                activeOpacity={0.7}
+              >
+                <IconSymbol name="plus" size={14} color={Colors.accent} />
+                <Text style={styles.addHabitChipText}>Add</Text>
+              </TouchableOpacity>
             </View>
           ) : (
             <PaperCard style={styles.emptyHabitsCard}>
+              <IconSymbol name="sparkles" size={32} color={Colors.accent} style={{ marginBottom: 12 }} />
               <Text style={styles.emptyHabitsText}>No habits yet</Text>
               <Text style={styles.emptyHabitsHint}>
-                Add habits from the Tracker tab
+                Start building your routine by adding habits to track
               </Text>
+              <TouchableOpacity 
+                style={styles.addFirstHabitButton}
+                onPress={() => handleOpenHabitModal()}
+                activeOpacity={0.7}
+              >
+                <IconSymbol name="plus" size={16} color={Colors.paper} />
+                <Text style={styles.addFirstHabitText}>Add Your First Habit</Text>
+              </TouchableOpacity>
             </PaperCard>
           )}
         </View>
 
-        {/* Privacy Password Section */}
+        {/* Privacy & Encryption Section */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Privacy & Encryption</Text>
           
           <PaperCard style={styles.privacyCard}>
-            {!hasPrivacyPassword ? (
-              <>
-                <View style={styles.privacyHeader}>
-                  <IconSymbol name="lock.fill" size={24} color={Colors.ink} />
-                  <Text style={styles.privacyTitle}>Set up encryption</Text>
-                </View>
-                <Text style={styles.privacyDesc}>
-                  Create a privacy password to encrypt your journal entries and photos. 
-                  Only you will be able to read them.
-                </Text>
-                <TouchableOpacity
-                  style={styles.privacyButton}
-                  onPress={handleSetupPassword}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.privacyButtonText}>Set Privacy Password</Text>
-                </TouchableOpacity>
-              </>
-            ) : (
-              <>
-                <View style={styles.privacyHeader}>
-                  <IconSymbol 
-                    name={isUnlocked ? 'lock.open.fill' : 'lock.fill'} 
-                    size={24} 
-                    color={isUnlocked ? Colors.accent : Colors.ink} 
-                  />
-                  <Text style={styles.privacyTitle}>
-                    {isUnlocked ? 'Encryption unlocked' : 'Encryption locked'}
-                  </Text>
-                </View>
-                <Text style={styles.privacyDesc}>
-                  {isUnlocked 
-                    ? 'Your data is encrypted and accessible.' 
-                    : 'Enter your privacy password to access encrypted data.'}
-                </Text>
-                <TouchableOpacity
-                  style={styles.privacyButton}
-                  onPress={isUnlocked ? handleLock : handleUnlockPassword}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.privacyButtonText}>
-                    {isUnlocked ? 'Lock now' : 'Unlock'}
-                  </Text>
-                </TouchableOpacity>
-              </>
-            )}
+            <View style={styles.privacyHeader}>
+              <IconSymbol name="lock.fill" size={24} color={Colors.accent} />
+              <Text style={styles.privacyTitle}>Encryption Enabled</Text>
+            </View>
+            <Text style={styles.privacyDesc}>
+              Your data is encrypted using your account UUID. All entries, habits, and logs 
+              are encrypted before syncing to the cloud. Only you can decrypt your data.
+            </Text>
           </PaperCard>
-          
-          <Text style={styles.warning}>
-            If you forget your privacy password, your encrypted data cannot be recovered.
-          </Text>
         </View>
 
         {/* Sign Out */}
@@ -398,14 +438,20 @@ export default function ProfileScreen() {
               onPress={() => {
                 Alert.alert(
                   'Clear All Data',
-                  'This will delete all habits, entries, and logs. Are you sure?',
+                  'This will delete all habits, entries, and logs from Supabase. Are you sure?',
                   [
                     { text: 'Cancel', style: 'cancel' },
                     {
                       text: 'Clear',
                       style: 'destructive',
                       onPress: async () => {
-                        await storage.clearAll();
+                        // Delete all data from Supabase
+                        const { data: { user } } = await supabase.auth.getUser();
+                        if (user) {
+                          await supabase.from('habits').delete().eq('owner_id', user.id);
+                          await supabase.from('entries').delete().eq('owner_id', user.id);
+                          await supabase.from('habit_logs').delete().eq('owner_id', user.id);
+                        }
                         await resetOnboarding();
                         Alert.alert('Done', 'All data cleared. Restarting onboarding...');
                         router.replace('/onboarding/welcome' as Href);
@@ -425,75 +471,198 @@ export default function ProfileScreen() {
         <View style={{ height: 40 }} />
       </ScrollView>
 
-      {/* Password Modal */}
+      {/* Habit Management Modal */}
       <Modal
-        visible={showPasswordModal}
+        visible={showHabitModal}
         animationType="slide"
         presentationStyle="pageSheet"
-        onRequestClose={() => setShowPasswordModal(false)}
+        onRequestClose={handleCloseModal}
       >
-        <View style={styles.modalContainer}>
+        <KeyboardAvoidingView 
+          style={styles.modalContainer}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
           <View style={styles.modalHeader}>
-            <TouchableOpacity onPress={() => setShowPasswordModal(false)}>
-              <Text style={styles.modalCancel}>Cancel</Text>
+            <TouchableOpacity onPress={handleCloseModal}>
+              <Text style={styles.modalCancel}>Done</Text>
             </TouchableOpacity>
             <Text style={styles.modalTitle}>
-              {passwordMode === 'setup' ? 'Set Privacy Password' : 'Unlock'}
+              {editingHabit ? 'Edit Habit' : 'Manage Habits'}
             </Text>
-            <View style={{ width: 60 }} />
+            <View style={{ width: 50 }} />
           </View>
 
-          <View style={styles.modalContent}>
-            <Text style={styles.modalLabel}>
-              {passwordMode === 'setup' ? 'Create a strong password' : 'Enter your password'}
-            </Text>
-            <TextInput
-              style={styles.modalInput}
-              value={password}
-              onChangeText={setPassword}
-              placeholder="Password"
-              placeholderTextColor={Colors.textSecondary}
-              secureTextEntry
-              autoFocus
-            />
+          <ScrollView style={styles.modalContent} keyboardShouldPersistTaps="handled">
+            {/* Add new habit form */}
+            <View style={styles.addHabitSection}>
+              <Text style={styles.formLabel}>
+                {editingHabit ? 'Edit Habit Name' : 'Add New Habit'}
+              </Text>
+              <View style={styles.inputRow}>
+                <TextInput
+                  style={styles.habitInput}
+                  value={habitName}
+                  onChangeText={setHabitName}
+                  placeholder="Enter habit name..."
+                  placeholderTextColor={Colors.textSecondary}
+                  maxLength={20}
+                  autoCapitalize="words"
+                  returnKeyType="done"
+                  onSubmitEditing={handleSaveHabit}
+                />
+                <TouchableOpacity
+                  style={[
+                    styles.addButton,
+                    !habitName.trim() && styles.addButtonDisabled
+                  ]}
+                  onPress={handleSaveHabit}
+                  activeOpacity={0.7}
+                  disabled={!habitName.trim()}
+                >
+                  <IconSymbol 
+                    name={editingHabit ? "checkmark" : "plus"} 
+                    size={20} 
+                    color={habitName.trim() ? Colors.paper : Colors.textSecondary} 
+                  />
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.charCount}>{habitName.length}/20 characters</Text>
 
-            {passwordMode === 'setup' && (
-              <TextInput
-                style={styles.modalInput}
-                value={confirmPassword}
-                onChangeText={setConfirmPassword}
-                placeholder="Confirm password"
-                placeholderTextColor={Colors.textSecondary}
-                secureTextEntry
-              />
+              {editingHabit && (
+                <View style={styles.editActions}>
+                  <TouchableOpacity
+                    style={styles.deleteHabitButton}
+                    onPress={() => handleDeleteHabit(editingHabit)}
+                    activeOpacity={0.7}
+                  >
+                    <IconSymbol name="trash" size={16} color="#d32f2f" />
+                    <Text style={styles.deleteHabitText}>Delete this habit</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.backToListButton}
+                    onPress={() => {
+                      setEditingHabit(null);
+                      setHabitName('');
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.backToListText}>Back to list</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+
+            {/* Existing habits list */}
+            {!editingHabit && habits.length > 0 && (
+              <View style={styles.existingHabitsSection}>
+                <Text style={styles.formLabel}>Your Habits</Text>
+                {habits.map((habit, index) => (
+                  <TouchableOpacity
+                    key={habit.id}
+                    style={[
+                      styles.habitListItem,
+                      index === 0 && styles.habitListItemFirst,
+                      index === habits.length - 1 && styles.habitListItemLast
+                    ]}
+                    onPress={() => handleOpenHabitModal(habit)}
+                    activeOpacity={0.7}
+                  >
+                    <View style={styles.habitListItemContent}>
+                      <View style={styles.habitListItemIcon}>
+                        <Text style={styles.habitEmoji}>
+                          {getHabitEmoji(habit.name)}
+                        </Text>
+                      </View>
+                      <Text style={styles.habitListItemName}>{habit.name}</Text>
+                    </View>
+                    <View style={styles.habitListItemActions}>
+                      <TouchableOpacity
+                        style={styles.habitActionButton}
+                        onPress={() => handleOpenHabitModal(habit)}
+                        activeOpacity={0.7}
+                      >
+                        <IconSymbol name="pencil" size={16} color={Colors.accent} />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.habitActionButton}
+                        onPress={() => handleDeleteHabit(habit)}
+                        activeOpacity={0.7}
+                      >
+                        <IconSymbol name="trash" size={16} color="#d32f2f" />
+                      </TouchableOpacity>
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </View>
             )}
 
-            <TouchableOpacity
-              style={[styles.modalButton, passwordLoading && styles.buttonDisabled]}
-              onPress={handlePasswordSubmit}
-              disabled={passwordLoading}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.modalButtonText}>
-                {passwordLoading 
-                  ? 'Processing...' 
-                  : passwordMode === 'setup' 
-                    ? 'Set Password' 
-                    : 'Unlock'}
-              </Text>
-            </TouchableOpacity>
-
-            {passwordMode === 'setup' && (
-              <Text style={styles.modalHint}>
-                Use at least 8 characters. This password encrypts your data locally - 
-                Supabase never sees it.
-              </Text>
+            {/* Empty state */}
+            {!editingHabit && habits.length === 0 && (
+              <View style={styles.emptyModalState}>
+                <IconSymbol name="sparkles" size={48} color={Colors.accent} />
+                <Text style={styles.emptyModalTitle}>No habits yet</Text>
+                <Text style={styles.emptyModalHint}>
+                  Add your first habit above to start building your routine
+                </Text>
+              </View>
             )}
-          </View>
-        </View>
+
+            {/* Suggestions */}
+            {!editingHabit && (
+              <View style={styles.suggestionsSection}>
+                <Text style={styles.formLabel}>Popular Habits</Text>
+                <View style={styles.suggestionsGrid}>
+                  {['Exercise', 'Read', 'Meditate', 'Journal', 'Hydrate', 'Sleep 8h'].map((suggestion) => (
+                    <TouchableOpacity
+                      key={suggestion}
+                      style={[
+                        styles.suggestionChip,
+                        habits.some(h => h.name.toLowerCase() === suggestion.toLowerCase()) && styles.suggestionChipDisabled
+                      ]}
+                      onPress={() => {
+                        if (!habits.some(h => h.name.toLowerCase() === suggestion.toLowerCase())) {
+                          setHabitName(suggestion);
+                        }
+                      }}
+                      activeOpacity={0.7}
+                      disabled={habits.some(h => h.name.toLowerCase() === suggestion.toLowerCase())}
+                    >
+                      <Text style={[
+                        styles.suggestionChipText,
+                        habits.some(h => h.name.toLowerCase() === suggestion.toLowerCase()) && styles.suggestionChipTextDisabled
+                      ]}>
+                        {getHabitEmoji(suggestion)} {suggestion}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            )}
+          </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
     </PaperBackground>
   );
+}
+
+// Helper function to get emoji for habit
+function getHabitEmoji(name: string): string {
+  const lowName = name.toLowerCase();
+  if (lowName.includes('exercise') || lowName.includes('workout') || lowName.includes('gym')) return '💪';
+  if (lowName.includes('read')) return '📚';
+  if (lowName.includes('meditat')) return '🧘';
+  if (lowName.includes('journal') || lowName.includes('write')) return '✍️';
+  if (lowName.includes('water') || lowName.includes('hydrat') || lowName.includes('drink')) return '💧';
+  if (lowName.includes('sleep')) return '😴';
+  if (lowName.includes('walk') || lowName.includes('run')) return '🏃';
+  if (lowName.includes('eat') || lowName.includes('food') || lowName.includes('diet')) return '🥗';
+  if (lowName.includes('study') || lowName.includes('learn')) return '📖';
+  if (lowName.includes('code') || lowName.includes('program')) return '💻';
+  if (lowName.includes('music') || lowName.includes('practice')) return '🎵';
+  if (lowName.includes('stretch') || lowName.includes('yoga')) return '🤸';
+  if (lowName.includes('clean')) return '🧹';
+  if (lowName.includes('cook')) return '👨‍🍳';
+  return '✨';
 }
 
 const styles = StyleSheet.create({
@@ -575,27 +744,6 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     marginBottom: 16,
   },
-  privacyButton: {
-    backgroundColor: Colors.ink,
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderRadius: 8,
-    alignSelf: 'flex-start',
-  },
-  privacyButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: Colors.paper,
-    fontFamily: Fonts.handwriting,
-  },
-  warning: {
-    fontSize: 12,
-    color: '#d32f2f',
-    fontFamily: Fonts.handwriting,
-    marginHorizontal: 16,
-    marginTop: 12,
-    fontStyle: 'italic',
-  },
   statsRow: {
     flexDirection: 'row',
     paddingHorizontal: 16,
@@ -618,6 +766,30 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
   },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginHorizontal: 16,
+    marginBottom: 12,
+  },
+  editButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    backgroundColor: Colors.card,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Colors.accent,
+    gap: 4,
+  },
+  editButtonText: {
+    fontSize: 12,
+    color: Colors.accent,
+    fontFamily: Fonts.handwriting,
+    fontWeight: '600',
+  },
   habitsContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -638,21 +810,58 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwriting,
     fontWeight: '500',
   },
+  addHabitChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'transparent',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: Colors.accent,
+    borderStyle: 'dashed',
+    gap: 4,
+  },
+  addHabitChipText: {
+    fontSize: 14,
+    color: Colors.accent,
+    fontFamily: Fonts.handwriting,
+    fontWeight: '500',
+  },
   emptyHabitsCard: {
     marginHorizontal: 16,
     alignItems: 'center',
-    paddingVertical: 24,
+    paddingVertical: 32,
   },
   emptyHabitsText: {
-    fontSize: 16,
-    color: Colors.textSecondary,
+    fontSize: 18,
+    color: Colors.ink,
     fontFamily: Fonts.handwriting,
-    marginBottom: 4,
+    fontWeight: '600',
+    marginBottom: 8,
   },
   emptyHabitsHint: {
     fontSize: 14,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
+    textAlign: 'center',
+    marginBottom: 20,
+    paddingHorizontal: 20,
+  },
+  addFirstHabitButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.ink,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 24,
+    gap: 8,
+  },
+  addFirstHabitText: {
+    fontSize: 14,
+    color: Colors.paper,
+    fontFamily: Fonts.handwriting,
+    fontWeight: '600',
   },
   signOutButton: {
     flexDirection: 'row',
@@ -726,6 +935,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: Colors.accent,
     fontFamily: Fonts.handwriting,
+    fontWeight: '600',
   },
   modalTitle: {
     fontSize: 18,
@@ -734,15 +944,27 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwriting,
   },
   modalContent: {
-    padding: 24,
+    flex: 1,
+    padding: 16,
   },
-  modalLabel: {
-    fontSize: 14,
+  addHabitSection: {
+    marginBottom: 24,
+  },
+  formLabel: {
+    fontSize: 12,
+    fontWeight: '600',
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
-    marginBottom: 16,
+    marginBottom: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
   },
-  modalInput: {
+  inputRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  habitInput: {
+    flex: 1,
     height: 52,
     borderWidth: 1.5,
     borderColor: Colors.ink,
@@ -752,30 +974,163 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwriting,
     color: Colors.ink,
     backgroundColor: Colors.card,
-    marginBottom: 16,
   },
-  modalButton: {
+  addButton: {
+    width: 52,
     height: 52,
     backgroundColor: Colors.ink,
     borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
-    marginTop: 8,
   },
-  buttonDisabled: {
-    opacity: 0.6,
+  addButtonDisabled: {
+    backgroundColor: Colors.shadow,
   },
-  modalButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: Colors.paper,
-    fontFamily: Fonts.handwriting,
-  },
-  modalHint: {
-    fontSize: 13,
+  charCount: {
+    fontSize: 11,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
+    marginTop: 6,
+  },
+  editActions: {
     marginTop: 16,
-    lineHeight: 18,
+    gap: 12,
+  },
+  deleteHabitButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    borderWidth: 1.5,
+    borderColor: '#d32f2f',
+    borderRadius: 12,
+    gap: 8,
+  },
+  deleteHabitText: {
+    fontSize: 14,
+    color: '#d32f2f',
+    fontFamily: Fonts.handwriting,
+    fontWeight: '600',
+  },
+  backToListButton: {
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  backToListText: {
+    fontSize: 14,
+    color: Colors.accent,
+    fontFamily: Fonts.handwriting,
+    fontWeight: '500',
+  },
+  existingHabitsSection: {
+    marginBottom: 24,
+  },
+  habitListItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    backgroundColor: Colors.card,
+    borderWidth: 1,
+    borderBottomWidth: 0,
+    borderColor: Colors.shadow,
+  },
+  habitListItemFirst: {
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+  },
+  habitListItemLast: {
+    borderBottomWidth: 1,
+    borderBottomLeftRadius: 12,
+    borderBottomRightRadius: 12,
+  },
+  habitListItemContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    gap: 12,
+  },
+  habitListItemIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: Colors.paper,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.shadow,
+  },
+  habitEmoji: {
+    fontSize: 18,
+  },
+  habitListItemName: {
+    fontSize: 16,
+    color: Colors.ink,
+    fontFamily: Fonts.handwriting,
+    fontWeight: '500',
+    flex: 1,
+  },
+  habitListItemActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  habitActionButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: Colors.paper,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.shadow,
+  },
+  emptyModalState: {
+    alignItems: 'center',
+    paddingVertical: 48,
+    gap: 12,
+  },
+  emptyModalTitle: {
+    fontSize: 20,
+    color: Colors.ink,
+    fontFamily: Fonts.handwriting,
+    fontWeight: '600',
+  },
+  emptyModalHint: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    textAlign: 'center',
+    paddingHorizontal: 32,
+  },
+  suggestionsSection: {
+    marginTop: 8,
+    paddingTop: 20,
+    borderTopWidth: 1,
+    borderTopColor: Colors.shadow,
+  },
+  suggestionsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  suggestionChip: {
+    backgroundColor: Colors.card,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: Colors.shadow,
+  },
+  suggestionChipDisabled: {
+    opacity: 0.4,
+  },
+  suggestionChipText: {
+    fontSize: 13,
+    color: Colors.ink,
+    fontFamily: Fonts.handwriting,
+  },
+  suggestionChipTextDisabled: {
+    color: Colors.textSecondary,
   },
 });
