@@ -1,4 +1,3 @@
-import { Motion } from '@/constants/motion';
 import { Colors, Fonts } from '@/constants/theme';
 import { Habit, HabitLog } from '@/lib/db';
 import * as Haptics from 'expo-haptics';
@@ -10,8 +9,6 @@ import Animated, {
   type SharedValue,
   useAnimatedStyle,
   useSharedValue,
-  withSpring,
-  withTiming,
 } from 'react-native-reanimated';
 import { HabitCell } from './ui/habit-cell';
 import { IconSymbol } from './ui/icon-symbol';
@@ -316,7 +313,7 @@ function ReorderableHeaderRow({ habits, width, onCommit }: ReorderableHeaderRowP
       }
       activeIndex.value = -1;
       targetIndex.value = -1;
-      dragX.value = withTiming(0, { duration: Motion.fast });
+      dragX.value = 0; // snap home instantly; the reordered list lands it in place
     })
     .onFinalize(() => {
       activeIndex.value = -1;
@@ -335,7 +332,6 @@ function ReorderableHeaderRow({ habits, width, onCommit }: ReorderableHeaderRowP
               name={habit.name}
               index={index}
               activeIndex={activeIndex}
-              targetIndex={targetIndex}
               dragX={dragX}
             />
           ))}
@@ -349,34 +345,21 @@ interface ReorderCellProps {
   name: string;
   index: number;
   activeIndex: SharedValue<number>;
-  targetIndex: SharedValue<number>;
   dragX: SharedValue<number>;
 }
 
-function ReorderCell({ name, index, activeIndex, targetIndex, dragX }: ReorderCellProps) {
+function ReorderCell({ name, index, activeIndex, dragX }: ReorderCellProps) {
   const animatedStyle = useAnimatedStyle(() => {
-    const active = activeIndex.value === index;
-    if (active) {
-      // The lifted column follows the finger and rises above the rest.
+    // Only the picked-up column moves (follows the finger + lifts). Other
+    // columns stay put; on drop the list simply reorders — no settle animation.
+    if (activeIndex.value === index) {
       return {
         transform: [{ translateX: dragX.value }, { scale: 1.06 }],
         zIndex: 10,
         opacity: 0.95,
       };
     }
-    // Non-active columns shift one slot to fill the gap the lifted column left.
-    let shift = 0;
-    const from = activeIndex.value;
-    const to = targetIndex.value;
-    if (from >= 0 && to >= 0) {
-      if (from < to && index > from && index <= to) shift = -CELL_WIDTH;
-      else if (from > to && index < from && index >= to) shift = CELL_WIDTH;
-    }
-    return {
-      transform: [{ translateX: withSpring(shift, Motion.spring) }, { scale: 1 }],
-      zIndex: 1,
-      opacity: 1,
-    };
+    return { transform: [{ translateX: 0 }, { scale: 1 }], zIndex: 1, opacity: 1 };
   });
 
   return (
