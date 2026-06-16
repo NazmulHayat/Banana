@@ -394,6 +394,23 @@ export default function TrackerScreen() {
     }
   };
 
+  // Persist a drag-to-reorder result. saveHabits stores the list in array
+  // order, so the reordered array IS the new persisted order — same
+  // optimistic-then-persist pattern as create/edit/delete above.
+  const handleReorderHabits = async (newOrder: Habit[]) => {
+    // Optimistic UI update via DataStore
+    dataStore.updateHabits(newOrder);
+
+    try {
+      await saveHabits(newOrder);
+    } catch (error) {
+      console.error("[TrackerScreen] Failed to reorder habits:", error);
+      Alert.alert("Save failed", "Could not reorder habits. Please try again.");
+      // Re-sync state from server on failure
+      await dataStore.refreshHabits();
+    }
+  };
+
   // Open the reusable confirm dialog for the chosen habit.
   const handleDeleteHabit = (habit: Habit) => {
     setHabitToDelete(habit);
@@ -511,6 +528,7 @@ export default function TrackerScreen() {
             currentYear={currentYear}
             onToggle={handleToggleHabit}
             onEdit={() => handleOpenHabitModal()}
+            onReorder={handleReorderHabits}
             onHeaderLayout={handleHeaderLayout}
             headerRef={habitGridHeaderRef}
             onHorizontalScroll={handleHorizontalScroll}
