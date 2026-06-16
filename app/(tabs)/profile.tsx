@@ -8,14 +8,14 @@ import { Colors, Fonts } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { keyring } from "@/lib/crypto";
 import { useDataStore } from "@/lib/data-store";
-import { Habit, HabitLog, saveHabits } from "@/lib/db";
+import { Habit, saveHabits } from "@/lib/db";
 import { clearUserMedia } from "@/lib/media";
 import { useOnboarding } from "@/lib/onboarding-context";
 import { supabase } from "@/lib/supabase";
 import * as Clipboard from "expo-clipboard";
 import Constants from "expo-constants";
 import { Href, router } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -182,59 +182,20 @@ export default function ProfileScreen() {
     })}`;
   }, [dataStore.profile?.created_at]);
 
-  // Stats window: the last 12 months of habit logs, accumulated into one array
-  // and fed to the tested stats engine. Logs load per-month (there is no
-  // all-logs fetch yet), so we bound the fetch to 12 months — cheap on repeat
-  // since refreshHabitLogs caches each month. When an all-logs fetch lands,
-  // this window can be extended to true all-time stats.
-  const STATS_MONTHS = 12;
-  const [statsLogs, setStatsLogs] = useState<HabitLog[]>([]);
-  const [statsLoading, setStatsLoading] = useState(true);
-
-  const loadStatsWindow = useCallback(
-    async (opts?: { force?: boolean }) => {
-      const now = new Date();
-      const months: { year: number; month: number }[] = [];
-      for (let i = 0; i < STATS_MONTHS; i++) {
-        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-        months.push({ year: d.getFullYear(), month: d.getMonth() + 1 });
-      }
-      const perMonth = await Promise.all(
-        months.map((m) =>
-          dataStore.refreshHabitLogs(m.year, m.month, opts),
-        ),
-      );
-      return perMonth.flat();
-    },
-    [dataStore],
-  );
-
-  useEffect(() => {
-    let cancelled = false;
-    setStatsLoading(true);
-    loadStatsWindow()
-      .then((logs) => {
-        if (!cancelled) setStatsLogs(logs);
-      })
-      .finally(() => {
-        if (!cancelled) setStatsLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [loadStatsWindow]);
+  // Stats live in <ProfileStats/>, which self-loads a 12-month log window from
+  // the data store. Bump this token on pull-to-refresh to force a reload.
+  const [statsRefresh, setStatsRefresh] = useState(0);
 
   const onRefresh = async () => {
     setRefreshing(true);
     const now = new Date();
     try {
-      const [, , freshStatsLogs] = await Promise.all([
+      await Promise.all([
         dataStore.refreshHabits(),
         dataStore.refreshProfile(),
-        loadStatsWindow({ force: true }),
         dataStore.refreshEntries(now.getFullYear(), now.getMonth() + 1),
       ]);
-      setStatsLogs(freshStatsLogs);
+      setStatsRefresh((n) => n + 1);
     } finally {
       setRefreshing(false);
     }
@@ -577,11 +538,7 @@ export default function ProfileScreen() {
             computed over the last 12 months of habit logs. */}
         <View style={styles.section}>
           <SectionTitle>Your stats</SectionTitle>
-          <ProfileStats
-            habits={habits}
-            logs={statsLogs}
-            loading={loading || statsLoading}
-          />
+          <ProfileStats habits={habits} refreshToken={statsRefresh} />
         </View>
 
         {/* Habits */}

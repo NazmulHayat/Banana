@@ -2,13 +2,14 @@ import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperCard } from "@/components/ui/paper-card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Colors, Fonts } from "@/constants/theme";
+import { useDataStore } from "@/lib/data-store";
 import { DateFormats, type Habit, type HabitLog } from "@/lib/db";
 import {
   computeAllHabitStats,
   computeOverallStats,
   type HabitStats,
 } from "@/lib/stats";
-import type { ComponentProps } from "react";
+import { type ComponentProps, useEffect, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
 type IconName = ComponentProps<typeof IconSymbol>["name"];
@@ -16,13 +17,8 @@ type IconName = ComponentProps<typeof IconSymbol>["name"];
 interface ProfileStatsProps {
   /** All habits to break down. */
   habits: Habit[];
-  /**
-   * Accumulated habit logs across the loaded window (last 12 months). The
-   * stats engine derives streaks/totals from these.
-   */
-  logs: HabitLog[];
-  /** True while the 12-month log window is still resolving. */
-  loading: boolean;
+  /** Bump to force-reload the stats window (e.g. pull-to-refresh). */
+  refreshToken?: number;
 }
 
 /** Small label + big value tile used in the overall summary row. */
@@ -51,7 +47,42 @@ function SummaryTile({
  * totals plus an overall summary from the merged stats engine. Renders loading
  * skeletons, an empty state, and the loaded breakdown — never a blank frame.
  */
-export function ProfileStats({ habits, logs, loading }: ProfileStatsProps) {
+export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
+  const dataStore = useDataStore();
+  // The stats engine needs more than the current month. Bound the fetch to the
+  // last 12 months (cheap on repeat — refreshHabitLogs caches each month). A
+  // future all-logs fetch would extend this window.
+  const [logs, setLogs] = useState<HabitLog[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true);
+      const now = new Date();
+      const months = Array.from({ length: 12 }, (_, i) => {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        return { year: d.getFullYear(), month: d.getMonth() + 1 };
+      });
+      const opts = refreshToken > 0 ? { force: true } : undefined;
+      // allSettled: one month failing must not blank the whole view — keep
+      // whatever months did load.
+      const settled = await Promise.allSettled(
+        months.map((m) => dataStore.refreshHabitLogs(m.year, m.month, opts)),
+      );
+      if (cancelled) return;
+      const acc = settled.flatMap((r) =>
+        r.status === "fulfilled" ? r.value : [],
+      );
+      setLogs(acc);
+      setLoading(false);
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [dataStore, refreshToken]);
+
   // Loading: mirror the existing three-tile skeleton rhythm.
   if (loading) {
     return (
