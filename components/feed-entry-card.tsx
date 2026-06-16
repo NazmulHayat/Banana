@@ -16,6 +16,8 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { IconButton } from "./ui/icon-button";
+import { IconSymbol } from "./ui/icon-symbol";
 import { ImageViewer } from "./ui/image-viewer";
 import { PaperCard } from "./ui/paper-card";
 
@@ -23,6 +25,10 @@ interface FeedEntryCardProps {
   entry: DailyEntry;
   /** Optional small timestamp shown in the top-right of the card. */
   timeLabel?: string;
+  /** Show the edit pencil; called when tapped. */
+  onEdit?: (entry: DailyEntry) => void;
+  /** Show the delete affordance; called when tapped. */
+  onDelete?: (entry: DailyEntry) => void;
 }
 
 interface ResolvedImage {
@@ -31,7 +37,51 @@ interface ResolvedImage {
   dim: ImageDimension;
 }
 
-export function FeedEntryCard({ entry, timeLabel }: FeedEntryCardProps) {
+/** Top row: optional timestamp on the left, edit/delete actions on the right. */
+function CardHeader({
+  entry,
+  timeLabel,
+  onEdit,
+  onDelete,
+}: {
+  entry: DailyEntry;
+  timeLabel?: string;
+  onEdit?: (entry: DailyEntry) => void;
+  onDelete?: (entry: DailyEntry) => void;
+}) {
+  const showActions = Boolean(onEdit || onDelete);
+  if (!timeLabel && !showActions) return null;
+  return (
+    <View style={styles.header}>
+      {timeLabel ? (
+        <Text style={styles.timeLabel}>{timeLabel}</Text>
+      ) : (
+        <View />
+      )}
+      {showActions && (
+        <View style={styles.actions}>
+          {onEdit && (
+            <IconButton size={32} onPress={() => onEdit(entry)}>
+              <IconSymbol name="pencil" size={17} color={Colors.textSecondary} />
+            </IconButton>
+          )}
+          {onDelete && (
+            <IconButton size={32} onPress={() => onDelete(entry)}>
+              <IconSymbol name="trash" size={16} color={Colors.textSecondary} />
+            </IconButton>
+          )}
+        </View>
+      )}
+    </View>
+  );
+}
+
+export function FeedEntryCard({
+  entry,
+  timeLabel,
+  onEdit,
+  onDelete,
+}: FeedEntryCardProps) {
   const [resolved, setResolved] = useState<ResolvedImage[]>([]);
   const [layoutDecision, setLayoutDecision] = useState<{
     layoutType: LayoutType;
@@ -91,7 +141,12 @@ export function FeedEntryCard({ entry, timeLabel }: FeedEntryCardProps) {
   if (loading || !layoutDecision) {
     return (
       <PaperCard style={styles.card}>
-        {timeLabel && <Text style={styles.timeLabel}>{timeLabel}</Text>}
+        <CardHeader
+          entry={entry}
+          timeLabel={timeLabel}
+          onEdit={onEdit}
+          onDelete={onDelete}
+        />
         {entry.text ? <Text style={styles.text}>{entry.text}</Text> : null}
         {(entry.mediaPaths ?? []).length > 0 && (
           <View style={styles.loadingImages}>
@@ -107,7 +162,12 @@ export function FeedEntryCard({ entry, timeLabel }: FeedEntryCardProps) {
   return (
     <>
       <PaperCard style={styles.card}>
-        {timeLabel && <Text style={styles.timeLabel}>{timeLabel}</Text>}
+        <CardHeader
+          entry={entry}
+          timeLabel={timeLabel}
+          onEdit={onEdit}
+          onDelete={onDelete}
+        />
         {layoutType === "TEXT_ONLY" && (
           <>
             {entry.text ? <Text style={styles.text}>{entry.text}</Text> : null}
@@ -235,13 +295,24 @@ function TextWithImagesLayout({
 
 const styles = StyleSheet.create({
   card: { marginHorizontal: 0, marginBottom: 0 },
+  header: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 6,
+    marginTop: -4,
+    marginRight: -4,
+  },
+  actions: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
   timeLabel: {
     fontSize: 11,
     fontWeight: "600",
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
     letterSpacing: 0.3,
-    marginBottom: 6,
     opacity: 0.85,
   },
   loadingImages: {
