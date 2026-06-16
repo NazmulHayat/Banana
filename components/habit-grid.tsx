@@ -1,3 +1,4 @@
+import { Motion } from '@/constants/motion';
 import { Colors, Fonts } from '@/constants/theme';
 import { Habit, HabitLog } from '@/lib/db';
 import * as Haptics from 'expo-haptics';
@@ -9,6 +10,7 @@ import Animated, {
   type SharedValue,
   useAnimatedStyle,
   useSharedValue,
+  withSpring,
 } from 'react-native-reanimated';
 import { HabitCell } from './ui/habit-cell';
 import { IconSymbol } from './ui/icon-symbol';
@@ -332,6 +334,7 @@ function ReorderableHeaderRow({ habits, width, onCommit }: ReorderableHeaderRowP
               name={habit.name}
               index={index}
               activeIndex={activeIndex}
+              targetIndex={targetIndex}
               dragX={dragX}
             />
           ))}
@@ -345,13 +348,13 @@ interface ReorderCellProps {
   name: string;
   index: number;
   activeIndex: SharedValue<number>;
+  targetIndex: SharedValue<number>;
   dragX: SharedValue<number>;
 }
 
-function ReorderCell({ name, index, activeIndex, dragX }: ReorderCellProps) {
+function ReorderCell({ name, index, activeIndex, targetIndex, dragX }: ReorderCellProps) {
   const animatedStyle = useAnimatedStyle(() => {
-    // Only the picked-up column moves (follows the finger + lifts). Other
-    // columns stay put; on drop the list simply reorders — no settle animation.
+    // The picked-up column follows the finger and lifts above the rest.
     if (activeIndex.value === index) {
       return {
         transform: [{ translateX: dragX.value }, { scale: 1.06 }],
@@ -359,7 +362,26 @@ function ReorderCell({ name, index, activeIndex, dragX }: ReorderCellProps) {
         opacity: 0.95,
       };
     }
-    return { transform: [{ translateX: 0 }, { scale: 1 }], zIndex: 1, opacity: 1 };
+    // While dragging, the columns between the picked-up slot and the current
+    // target slide one column over to OPEN A GAP (spring = natural make-room).
+    // When not dragging the shift is 0 with no animation, so on drop the list
+    // just reorders into place — no post-swap settle/wobble.
+    const from = activeIndex.value;
+    const to = targetIndex.value;
+    let shift = 0;
+    if (from >= 0 && to >= 0) {
+      if (from < to && index > from && index <= to) shift = -CELL_WIDTH;
+      else if (from > to && index < from && index >= to) shift = CELL_WIDTH;
+    }
+    const dragging = from >= 0;
+    return {
+      transform: [
+        { translateX: dragging ? withSpring(shift, Motion.spring) : 0 },
+        { scale: 1 },
+      ],
+      zIndex: 1,
+      opacity: 1,
+    };
   });
 
   return (
