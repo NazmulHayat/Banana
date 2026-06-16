@@ -2,6 +2,7 @@ import { PaperCard } from "@/components/ui/paper-card";
 import { PressableScale } from "@/components/ui/pressable-scale";
 import { Colors, Fonts } from "@/constants/theme";
 import * as Haptics from "expo-haptics";
+import { useEffect, useRef } from "react";
 import {
   ActivityIndicator,
   Modal,
@@ -48,14 +49,24 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
 }: ConfirmDialogProps): React.JSX.Element {
+  // Guard against a double-submit: a second tap can land before the parent's
+  // `loading` flag propagates back as a prop, so we latch synchronously here.
+  // Reset whenever the dialog closes or `loading` clears (e.g. a failed action
+  // that keeps the dialog open), so a legitimate retry is still allowed.
+  const submittingRef = useRef(false);
+  useEffect(() => {
+    if (!visible || !loading) submittingRef.current = false;
+  }, [visible, loading]);
+
   const handleConfirm = () => {
-    if (loading) return;
+    if (loading || submittingRef.current) return;
+    submittingRef.current = true;
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
     onConfirm();
   };
 
   const handleCancel = () => {
-    if (loading) return;
+    if (loading || submittingRef.current) return;
     onCancel();
   };
 
