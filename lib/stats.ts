@@ -7,7 +7,7 @@ import type { Habit, HabitLog } from "@/lib/db";
 /** Per-habit completion stats. `today` is "YYYY-MM-DD". */
 export interface HabitStats {
   habitId: string;
-  totalCompletions: number; // count of logs with completed === true
+  totalCompletions: number; // count of distinct days with a completed log (deduped per date)
   currentStreak: number; // consecutive days ending today (or yesterday) with completed
   longestStreak: number; // longest run of consecutive completed days, ever
 }
@@ -19,10 +19,27 @@ export interface OverallStats {
   activeDays: number;
 }
 
-// "YYYY-MM-DD" -> UTC day index (days since epoch). Returns NaN for malformed.
+// "YYYY-MM-DD" -> UTC day index (days since epoch). Returns NaN for anything
+// that isn't a real calendar date. Date.parse alone normalizes overflow
+// ("2026-02-30" -> Mar 2), so we require strict YYYY-MM-DD and verify the
+// parsed date round-trips to the same components — rejecting overflow and
+// non-leap-year Feb 29.
 function dayIndex(date: string): number {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!m) return NaN;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
   const ms = Date.parse(`${date}T00:00:00Z`);
   if (Number.isNaN(ms)) return NaN;
+  const d = new Date(ms);
+  if (
+    d.getUTCFullYear() !== year ||
+    d.getUTCMonth() + 1 !== month ||
+    d.getUTCDate() !== day
+  ) {
+    return NaN;
+  }
   return Math.floor(ms / 86_400_000);
 }
 

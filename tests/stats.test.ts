@@ -159,6 +159,24 @@ test("activeDays counts distinct dates, ignores incomplete", () => {
   assertTrue(overall.activeDays === 1);
 });
 
+test("malformed/overflow dates are excluded everywhere", () => {
+  const logs = [
+    log("h1", TODAY), // valid -> counts
+    log("h1", "2026-02-30"), // overflow (Feb has 28 days) -> rejected
+    log("h1", "2025-02-29"), // non-leap-year Feb 29 -> rejected
+    log("h1", "2026-13-01"), // bad month -> rejected
+    log("h1", "06/16/2026"), // wrong format -> rejected
+    log("h1", "garbage"), // not a date -> rejected
+  ];
+  const s = computeHabitStats("h1", logs, TODAY);
+  assertEq(s.totalCompletions, 1);
+  assertEq(s.currentStreak, 1);
+  assertEq(s.longestStreak, 1);
+
+  const overall = computeOverallStats([s], logs);
+  assertEq(overall.activeDays, 1);
+});
+
 (async () => {
   await run();
 })();
