@@ -52,4 +52,15 @@ export {
   loadHabitLogsFromStorage,
   setCachedHabitLogsForMonth,
   toggleHabitLog,
+  upsertHabitLog,
 } from "./habit-logs";
+
+export {
+  clearPendingWrites,
+  enqueuePendingWrite,
+  flushPendingWrites,
+  getPendingWrites,
+  type PendingWrite,
+  pendingWriteCount,
+  removePendingWrite,
+} from "./pending-writes";

@@ -5,6 +5,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { AAD, decryptJson, encryptJson, keyring } from "../crypto";
 import { supabase } from "../supabase";
+import { enqueuePendingWrite } from "./pending-writes";
 import type { Habit, HabitPayload } from "./types";
 
 // Storage key is a protocol constant, not branding — renaming orphans caches.
@@ -68,7 +69,14 @@ export async function saveHabits(habits: Habit[]): Promise<void> {
     .delete()
     .eq("owner_id", userId);
   if (delErr) {
-    throw new Error(`Failed to clear habits: ${delErr.message}`);
+    // NFR-1: the delete (first half of replace-all) failed — queue the full
+    // desired list for retry instead of throwing it away. The replay re-runs
+    // saveHabits, which redoes delete-all + insert atomically against the
+    // server's current rows. Cache reflects the desired state optimistically.
+    if (__DEV__) console.warn("[habits] Clear failed, queued for retry");
+    await enqueuePendingWrite(userId, { kind: "habits", payload: habits });
+    setCachedHabits(userId, habits);
+    return;
   }
 
   if (habits.length === 0) {
@@ -93,7 +101,13 @@ export async function saveHabits(habits: Habit[]): Promise<void> {
 
   const { error: insErr } = await supabase.from("habits").insert(rows);
   if (insErr) {
-    throw new Error(`Failed to save habits: ${insErr.message}`);
+    // NFR-1: the insert failed after the delete succeeded — queue the full list
+    // for retry so the habits aren't lost (the delete may have already cleared
+    // the server rows). The replay re-runs the full replace-all.
+    if (__DEV__) console.warn("[habits] Save failed, queued for retry");
+    await enqueuePendingWrite(userId, { kind: "habits", payload: habits });
+    setCachedHabits(userId, habits);
+    return;
   }
 
   setCachedHabits(userId, habits);

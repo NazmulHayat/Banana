@@ -11,6 +11,7 @@ import {
   monthBucket,
 } from "../crypto";
 import { supabase } from "../supabase";
+import { enqueuePendingWrite } from "./pending-writes";
 import { DateFormats } from "./schema";
 import type { DailyEntry, EntryPayload } from "./types";
 
@@ -202,7 +203,12 @@ export async function saveEntry(entry: DailyEntry): Promise<void> {
   );
 
   if (error) {
-    throw new Error(`Failed to save entry: ${error.message}`);
+    // NFR-1: don't throw the write away on a server/network failure. Durably
+    // enqueue it for retry (flushed on init + app-foreground in data-store).
+    // The optimistic UI already reflects this edit, so returning normally keeps
+    // the screen correct while the queue guarantees the write isn't lost.
+    if (__DEV__) console.warn("[entries] Save failed, queued for retry");
+    await enqueuePendingWrite(userId, { kind: "entry", payload: entry });
   }
 
   // Update caches
