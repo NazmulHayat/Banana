@@ -12,8 +12,10 @@ import React, {
   useState,
 } from "react";
 import {
+  deleteEntry as dbDeleteEntry,
   getCachedEntriesForMonth,
   getEntriesForMonth,
+  saveEntry as dbSaveEntry,
   setCachedEntriesForMonth,
 } from "./db/entries";
 import {
@@ -88,6 +90,8 @@ interface DataActions {
   updateHabits: (habits: Habit[]) => void;
   updateHabitLog: (log: HabitLog) => void;
   updateEntry: (entry: DailyEntry) => void;
+  saveEntry: (entry: DailyEntry) => Promise<void>;
+  deleteEntry: (entry: DailyEntry) => Promise<void>;
 
   // Reset on logout
   clearAll: () => void;
@@ -428,6 +432,44 @@ export function DataProvider({ children, session }: DataProviderProps) {
     [session],
   );
 
+  // Persist an entry edit: optimistic cache update first, then write through to
+  // the server. Callers handle errors (and re-sync via refreshEntries).
+  const saveEntry = useCallback(
+    async (entry: DailyEntry) => {
+      if (!session) return;
+      updateEntry(entry); // optimistic
+      await dbSaveEntry(entry); // persist
+    },
+    [session, updateEntry],
+  );
+
+  // Delete an entry: remove on the server, then drop it from the month cache.
+  const deleteEntry = useCallback(
+    async (entry: DailyEntry) => {
+      if (!session) return;
+      await dbDeleteEntry(entry.id, entry.date);
+
+      const userId = session.user.id;
+      const monthKey = entry.date.slice(0, 7);
+      const [yearStr, monthStr] = monthKey.split("-");
+      const year = parseInt(yearStr, 10);
+      const month = parseInt(monthStr, 10);
+
+      setEntries((prev) => {
+        const next = new Map(prev);
+        const monthEntries = (next.get(monthKey) || []).filter(
+          (e) => e.id !== entry.id,
+        );
+        next.set(monthKey, monthEntries);
+
+        // Keep the offline cache in sync with the removal.
+        setCachedEntriesForMonth(year, month, userId, monthEntries);
+        return next;
+      });
+    },
+    [session],
+  );
+
   // ============================================================================
   // Clear on Logout
   // ============================================================================
@@ -520,6 +562,8 @@ export function DataProvider({ children, session }: DataProviderProps) {
       updateHabits,
       updateHabitLog,
       updateEntry,
+      saveEntry,
+      deleteEntry,
       clearAll,
     }),
     [
@@ -547,6 +591,8 @@ export function DataProvider({ children, session }: DataProviderProps) {
       updateHabits,
       updateHabitLog,
       updateEntry,
+      saveEntry,
+      deleteEntry,
       clearAll,
     ],
   );

@@ -1,4 +1,5 @@
 import { FeedEntryCard } from "@/components/feed-entry-card";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { IconButton } from "@/components/ui/icon-button";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
@@ -8,13 +9,17 @@ import { Motion } from "@/constants/motion";
 import { Colors, Fonts } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { useDataStore } from "@/lib/data-store";
+import type { DailyEntry } from "@/lib/db";
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
 import {
+  Modal,
+  Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import Animated, {
@@ -34,6 +39,17 @@ export default function FeedScreen() {
   const [currentDate, setCurrentDate] = useState(new Date());
   // +1 = moved to next month (content enters from the right), -1 = previous
   const [monthDirection, setMonthDirection] = useState(1);
+
+  // Edit (FR-E3): the entry being edited + its draft text + save in-flight.
+  const [editingEntry, setEditingEntry] = useState<DailyEntry | null>(null);
+  const [editText, setEditText] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState(false);
+
+  // Delete (FR-E4): the entry pending confirmation + delete in-flight + error.
+  const [deletingEntry, setDeletingEntry] = useState<DailyEntry | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteError, setDeleteError] = useState(false);
 
   const currentMonth = currentDate.getMonth() + 1;
   const currentYear = currentDate.getFullYear();
@@ -153,6 +169,74 @@ export default function FeedScreen() {
     return `${weekday} · ${md}`;
   };
 
+  // --- Edit (FR-E3) ---------------------------------------------------------
+  const openEditor = (entry: DailyEntry) => {
+    setEditingEntry(entry);
+    setEditText(entry.text);
+    setEditError(false);
+  };
+
+  const closeEditor = () => {
+    if (editSaving) return;
+    setEditingEntry(null);
+    setEditText("");
+    setEditError(false);
+  };
+
+  const handleEditSave = async () => {
+    if (!editingEntry || editSaving) return;
+    const trimmed = editText.trim();
+    // Nothing changed — just close.
+    if (trimmed === editingEntry.text) {
+      closeEditor();
+      return;
+    }
+    // Photos are preserved; only the text changes.
+    const updated: DailyEntry = { ...editingEntry, text: trimmed };
+    setEditSaving(true);
+    setEditError(false);
+    // Store action does the optimistic update + persistence.
+    try {
+      await dataStore.saveEntry(updated);
+      setEditingEntry(null);
+      setEditText("");
+    } catch {
+      // Re-sync from the server so the optimistic edit doesn't stick.
+      setEditError(true);
+      void dataStore.refreshEntries(currentYear, currentMonth, { force: true });
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
+  // --- Delete (FR-E4) -------------------------------------------------------
+  const requestDelete = (entry: DailyEntry) => {
+    setDeletingEntry(entry);
+    setDeleteError(false);
+  };
+
+  const cancelDelete = () => {
+    if (deleteLoading) return;
+    setDeletingEntry(null);
+    setDeleteError(false);
+  };
+
+  const confirmDelete = async () => {
+    if (!deletingEntry) return;
+    const entry = deletingEntry;
+    setDeleteLoading(true);
+    setDeleteError(false);
+    try {
+      await dataStore.deleteEntry(entry);
+      setDeletingEntry(null);
+    } catch {
+      setDeleteError(true);
+      void dataStore.refreshEntries(currentYear, currentMonth, { force: true });
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
   return (
     <PaperBackground>
       <ScrollView
@@ -251,6 +335,8 @@ export default function FeedScreen() {
                               ? formatTime(entry.createdAt)
                               : undefined
                           }
+                          onEdit={openEditor}
+                          onDelete={requestDelete}
                         />
                       </Animated.View>
                     );
@@ -261,6 +347,76 @@ export default function FeedScreen() {
           </Animated.View>
         )}
       </ScrollView>
+
+      {/* Edit entry (FR-E3) — text only; existing photos are preserved. */}
+      <Modal
+        visible={editingEntry !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={closeEditor}
+      >
+        <Pressable style={styles.editBackdrop} onPress={closeEditor}>
+          {/* Swallow taps so pressing the card doesn't dismiss the editor. */}
+          <Pressable style={styles.editCardWrap} onPress={() => {}}>
+            <View style={styles.editCard}>
+              <Text style={styles.editTitle}>Edit highlight</Text>
+              <TextInput
+                style={styles.editInput}
+                value={editText}
+                onChangeText={setEditText}
+                multiline
+                autoFocus
+                editable={!editSaving}
+                placeholder="Tell me something about today..."
+                placeholderTextColor={Colors.textSecondary}
+              />
+              {editError && (
+                <Text style={styles.editErrorText}>
+                  Couldn&apos;t save your edit. Please try again.
+                </Text>
+              )}
+              <View style={styles.editButtonRow}>
+                <PressableScale
+                  style={[styles.editButton, styles.editCancelButton]}
+                  onPress={closeEditor}
+                  disabled={editSaving}
+                >
+                  <Text style={styles.editCancelText}>Cancel</Text>
+                </PressableScale>
+                <PressableScale
+                  style={[
+                    styles.editButton,
+                    styles.editSaveButton,
+                    editSaving && styles.editButtonDisabled,
+                  ]}
+                  onPress={handleEditSave}
+                  disabled={editSaving}
+                >
+                  <Text style={styles.editSaveText}>
+                    {editSaving ? "Saving..." : "Save"}
+                  </Text>
+                </PressableScale>
+              </View>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Delete entry (FR-E4). */}
+      <ConfirmDialog
+        visible={deletingEntry !== null}
+        title="Delete entry?"
+        message={
+          deleteError
+            ? "Couldn't delete that entry. Please try again."
+            : "This highlight will be permanently removed."
+        }
+        confirmLabel="Delete"
+        destructive
+        loading={deleteLoading}
+        onConfirm={confirmDelete}
+        onCancel={cancelDelete}
+      />
     </PaperBackground>
   );
 }
@@ -402,5 +558,77 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: Colors.paper,
     fontFamily: Fonts.handwriting,
+  },
+  editBackdrop: {
+    flex: 1,
+    // Established ink-overlay scrim convention (rgba(26,26,26,…)).
+    backgroundColor: "rgba(26,26,26,0.45)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 32,
+  },
+  editCardWrap: {
+    width: "100%",
+    maxWidth: 360,
+  },
+  editCard: {
+    backgroundColor: Colors.card,
+    borderRadius: 18,
+    padding: 20,
+  },
+  editTitle: {
+    fontFamily: Fonts.handwritingSemiBold,
+    fontSize: 20,
+    color: Colors.ink,
+    marginBottom: 12,
+  },
+  editInput: {
+    fontSize: 16,
+    color: Colors.ink,
+    minHeight: 96,
+    fontFamily: Fonts.handwriting,
+    lineHeight: 24,
+    textAlignVertical: "top",
+  },
+  editErrorText: {
+    fontFamily: Fonts.handwriting,
+    fontSize: 14,
+    color: Colors.danger,
+    marginTop: 12,
+    lineHeight: 20,
+  },
+  editButtonRow: {
+    flexDirection: "row",
+    marginTop: 20,
+    gap: 12,
+  },
+  editButton: {
+    flex: 1,
+    height: 48,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1.5,
+  },
+  editButtonDisabled: {
+    opacity: 0.5,
+  },
+  editCancelButton: {
+    backgroundColor: Colors.card,
+    borderColor: Colors.ink,
+  },
+  editCancelText: {
+    fontFamily: Fonts.handwritingSemiBold,
+    fontSize: 16,
+    color: Colors.ink,
+  },
+  editSaveButton: {
+    backgroundColor: Colors.ink,
+    borderColor: Colors.ink,
+  },
+  editSaveText: {
+    fontFamily: Fonts.handwritingSemiBold,
+    fontSize: 16,
+    color: Colors.card,
   },
 });
