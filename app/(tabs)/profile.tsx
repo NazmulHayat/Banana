@@ -1,21 +1,21 @@
+import { ProfileStats } from "@/components/profile-stats";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
 import { PaperCard } from "@/components/ui/paper-card";
 import { PressableScale } from "@/components/ui/pressable-scale";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Colors, Fonts } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { keyring } from "@/lib/crypto";
 import { useDataStore } from "@/lib/data-store";
-import { Habit, saveHabits } from "@/lib/db";
+import { Habit, HabitLog, saveHabits } from "@/lib/db";
 import { clearUserMedia } from "@/lib/media";
 import { useOnboarding } from "@/lib/onboarding-context";
 import { supabase } from "@/lib/supabase";
 import * as Clipboard from "expo-clipboard";
 import Constants from "expo-constants";
 import { Href, router } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -71,26 +71,6 @@ function SettingsRow({ icon, title, subtitle, onPress }: SettingsRowProps) {
       />
     </TouchableOpacity>
   );
-}
-
-/** Counts up to `target` with an ease-out curve. ~600ms, runs on change. */
-function useCountUp(target: number, duration = 600): number {
-  const [display, setDisplay] = useState(0);
-
-  useEffect(() => {
-    const start = Date.now();
-    let raf: number;
-    const tick = () => {
-      const t = Math.min(1, (Date.now() - start) / duration);
-      const eased = 1 - Math.pow(1 - t, 3);
-      setDisplay(Math.round(target * eased));
-      if (t < 1) raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [target, duration]);
-
-  return display;
 }
 
 /** Section header with the same accent-dot stamp as the feed date rows. */
@@ -202,62 +182,62 @@ export default function ProfileScreen() {
     })}`;
   }, [dataStore.profile?.created_at]);
 
-  const stats = useMemo(() => {
-    const today = new Date();
-    const cMonth = today.getMonth() + 1;
-    const cYear = today.getFullYear();
-    const monthLogs = dataStore.getLogsForMonth(cYear, cMonth);
-    const monthEntries = dataStore.getEntriesForMonth(cYear, cMonth);
+  // Stats window: the last 12 months of habit logs, accumulated into one array
+  // and fed to the tested stats engine. Logs load per-month (there is no
+  // all-logs fetch yet), so we bound the fetch to 12 months — cheap on repeat
+  // since refreshHabitLogs caches each month. When an all-logs fetch lands,
+  // this window can be extended to true all-time stats.
+  const STATS_MONTHS = 12;
+  const [statsLogs, setStatsLogs] = useState<HabitLog[]>([]);
+  const [statsLoading, setStatsLoading] = useState(true);
 
-    const calculateCompletion = (): number => {
-      if (habits.length === 0) return 0;
-      const totalPossible = habits.length * today.getDate();
-      if (totalPossible === 0) return 0;
-      const monthStr = `${cYear}-${String(cMonth).padStart(2, "0")}`;
-      const completedCount = monthLogs.filter(
-        (l) => l.date.startsWith(monthStr) && l.completed,
-      ).length;
-      return Math.round((completedCount / totalPossible) * 100);
-    };
-
-    const calculateStreak = (): number => {
-      if (habits.length === 0 || monthLogs.length === 0) return 0;
-      let streak = 0;
-      const checkToday = new Date(today);
-      checkToday.setHours(0, 0, 0, 0);
-      for (let i = 0; i < Math.min(31, today.getDate()); i++) {
-        const checkDate = new Date(checkToday);
-        checkDate.setDate(checkToday.getDate() - i);
-        const dateStr = checkDate.toISOString().split("T")[0];
-        const has = monthLogs.some((l) => l.date === dateStr && l.completed);
-        if (has) streak++;
-        else if (i > 0) break;
+  const loadStatsWindow = useCallback(
+    async (opts?: { force?: boolean }) => {
+      const now = new Date();
+      const months: { year: number; month: number }[] = [];
+      for (let i = 0; i < STATS_MONTHS; i++) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        months.push({ year: d.getFullYear(), month: d.getMonth() + 1 });
       }
-      return streak;
-    };
+      const perMonth = await Promise.all(
+        months.map((m) =>
+          dataStore.refreshHabitLogs(m.year, m.month, opts),
+        ),
+      );
+      return perMonth.flat();
+    },
+    [dataStore],
+  );
 
-    return {
-      totalHabits: habits.length,
-      totalEntries: monthEntries.length,
-      streak: calculateStreak(),
-      thisMonthCompletion: calculateCompletion(),
+  useEffect(() => {
+    let cancelled = false;
+    setStatsLoading(true);
+    loadStatsWindow()
+      .then((logs) => {
+        if (!cancelled) setStatsLogs(logs);
+      })
+      .finally(() => {
+        if (!cancelled) setStatsLoading(false);
+      });
+    return () => {
+      cancelled = true;
     };
-  }, [habits, dataStore]);
-
-  const streakDisplay = useCountUp(stats.streak);
-  const completionDisplay = useCountUp(stats.thisMonthCompletion);
-  const entriesDisplay = useCountUp(stats.totalEntries);
+  }, [loadStatsWindow]);
 
   const onRefresh = async () => {
     setRefreshing(true);
     const now = new Date();
-    await Promise.all([
-      dataStore.refreshHabits(),
-      dataStore.refreshProfile(),
-      dataStore.refreshHabitLogs(now.getFullYear(), now.getMonth() + 1),
-      dataStore.refreshEntries(now.getFullYear(), now.getMonth() + 1),
-    ]);
-    setRefreshing(false);
+    try {
+      const [, , freshStatsLogs] = await Promise.all([
+        dataStore.refreshHabits(),
+        dataStore.refreshProfile(),
+        loadStatsWindow({ force: true }),
+        dataStore.refreshEntries(now.getFullYear(), now.getMonth() + 1),
+      ]);
+      setStatsLogs(freshStatsLogs);
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   // ============ HABITS ============
@@ -593,70 +573,15 @@ export default function ProfileScreen() {
           )}
         </PaperCard>
 
-        {/* Stats */}
+        {/* Stats — real per-habit + overall stats from the merged engine,
+            computed over the last 12 months of habit logs. */}
         <View style={styles.section}>
-          <SectionTitle>This month</SectionTitle>
-          {loading ? (
-            <View style={styles.statsRow}>
-              <PaperCard style={styles.statCard}>
-                <Skeleton width={24} height={24} borderRadius={12} />
-                <View style={{ height: 10 }} />
-                <Skeleton width={40} height={28} borderRadius={6} />
-                <View style={{ height: 6 }} />
-                <Skeleton width={50} height={11} borderRadius={4} />
-              </PaperCard>
-              <PaperCard style={styles.statCard}>
-                <Skeleton width={24} height={24} borderRadius={12} />
-                <View style={{ height: 10 }} />
-                <Skeleton width={40} height={28} borderRadius={6} />
-                <View style={{ height: 6 }} />
-                <Skeleton width={50} height={11} borderRadius={4} />
-              </PaperCard>
-              <PaperCard style={styles.statCard}>
-                <Skeleton width={24} height={24} borderRadius={12} />
-                <View style={{ height: 10 }} />
-                <Skeleton width={40} height={28} borderRadius={6} />
-                <View style={{ height: 6 }} />
-                <Skeleton width={50} height={11} borderRadius={4} />
-              </PaperCard>
-            </View>
-          ) : (
-            <View style={styles.statsRow}>
-              <PaperCard style={styles.statCard}>
-                <View style={styles.statIconRow}>
-                  <IconSymbol
-                    name="flame.fill"
-                    size={16}
-                    color={Colors.accent}
-                  />
-                </View>
-                <Text style={styles.statValue}>{streakDisplay}</Text>
-                <Text style={styles.statLabel}>Day streak</Text>
-              </PaperCard>
-              <PaperCard style={styles.statCard}>
-                <View style={styles.statIconRow}>
-                  <IconSymbol
-                    name="checkmark.circle.fill"
-                    size={16}
-                    color={Colors.accent}
-                  />
-                </View>
-                <Text style={styles.statValue}>{completionDisplay}%</Text>
-                <Text style={styles.statLabel}>Complete</Text>
-              </PaperCard>
-              <PaperCard style={styles.statCard}>
-                <View style={styles.statIconRow}>
-                  <IconSymbol
-                    name="book.fill"
-                    size={16}
-                    color={Colors.accent}
-                  />
-                </View>
-                <Text style={styles.statValue}>{entriesDisplay}</Text>
-                <Text style={styles.statLabel}>Entries</Text>
-              </PaperCard>
-            </View>
-          )}
+          <SectionTitle>Your stats</SectionTitle>
+          <ProfileStats
+            habits={habits}
+            logs={statsLogs}
+            loading={loading || statsLoading}
+          />
         </View>
 
         {/* Habits */}
@@ -1130,27 +1055,6 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   loadingSection: { paddingVertical: 24, alignItems: "center" },
-  statsRow: { flexDirection: "row", gap: 10 },
-  statCard: { flex: 1, paddingVertical: 16, paddingHorizontal: 10, alignItems: "center" },
-  statIconRow: {
-    marginBottom: 6,
-    opacity: 0.9,
-  },
-  statValue: {
-    fontSize: 28,
-    fontWeight: "800",
-    color: Colors.ink,
-    fontFamily: Fonts.handwriting,
-    marginBottom: 2,
-    letterSpacing: -0.5,
-  },
-  statLabel: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
-    textAlign: "center",
-  },
   habitsContainer: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   habitChip: {
     paddingHorizontal: 12,
