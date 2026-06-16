@@ -43,9 +43,15 @@ async function readQueue(userId: string): Promise<PendingWrite[]> {
     const raw = await AsyncStorage.getItem(storageKey(userId));
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
+    if (!Array.isArray(parsed)) {
+      if (__DEV__) console.warn("[pending-writes] Queue not an array, ignoring");
+      return [];
+    }
     return parsed as PendingWrite[];
-  } catch {
+  } catch (e) {
+    // Corrupt JSON — degrade to empty so a save path can never crash. Log the
+    // error only (never the raw value, which holds plaintext payloads).
+    if (__DEV__) console.warn("[pending-writes] Failed to parse queue:", e);
     return [];
   }
 }
