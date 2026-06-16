@@ -1,50 +1,45 @@
-# Welcome to your Expo app 👋
+# Aight Bet
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+A zero-knowledge, end-to-end-encrypted habit tracker + daily journal. Built with Expo / React Native; Supabase (Postgres + RLS + Storage) is the only backend. The server never sees plaintext — habits, logs, and entries are encrypted client-side with a master key that never leaves the device.
 
-## Get started
-
-1. Install dependencies
-
-   ```bash
-   npm install
-   ```
-
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+## Quick start
 
 ```bash
-npm run reset-project
+npm install
+npm start            # Expo dev server — then press i (iOS), a (Android), w (web)
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Requires a `.env` with `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_KEY`.
 
-## Learn more
+## Commands
 
-To learn more about developing your project with Expo, look at the following resources:
+```bash
+npm run ios          # iOS simulator
+npm run lint         # eslint (must pass clean)
+npx tsc --noEmit     # type check (must pass clean)
+npx tsx tests/crypto.test.ts   # pure crypto unit tests (no network)
+npx tsx tests/e2e.test.ts      # integration vs live Supabase (needs .env)
+```
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+## Project layout
 
-## Join the community
+```
+app/         expo-router screens — (tabs)/ · auth/ · onboarding/
+components/  shared UI; components/ui/ = primitives
+constants/   theme.ts (Colors, Fonts), motion.ts — the only source of styling tokens
+lib/crypto/  E2E primitives (keyring, payload+AAD, buckets)
+lib/db/      data layer (entries, habits, habit-logs): cache + crypto + Supabase
+supabase/migrations/   SQL schema + Row Level Security (the backend)
+tests/       tsx test harness
+docs/        long-form docs (data flow, privacy policy)
+```
 
-Join our community of developers creating universal apps.
+## Documentation
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+- **[PRODUCT.md](./PRODUCT.md)** — the north star: what we're building, who for, and the full vision (analytics, per-habit deep-dive, privacy-first AI).
+- **[tasks.md](./tasks.md)** — the milestone plan to App Store 1.0. *This file is law:* one milestone in flight, mandatory before optional.
+- **[CLAUDE.md](./CLAUDE.md)** — engineering directives (stack, security constraints, architecture guardrails).
+- **[.claude/rules/](./.claude/rules/)** — path-scoped rules: `frontend.md`, `backend.md`.
+- **[docs/parallel-builds.md](./docs/parallel-builds.md)** — how to build feature slices concurrently with worktree subagents.
+- **[docs/FLOW_EXPLANATION.md](./docs/FLOW_EXPLANATION.md)** — end-to-end data + crypto flow walkthrough.
+- **[docs/privacy-policy.md](./docs/privacy-policy.md)** — privacy policy.

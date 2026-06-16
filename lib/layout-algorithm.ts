@@ -1,4 +1,4 @@
-import { DailyEntry } from './storage';
+import { DailyEntry } from './db';
 
 export type LayoutType = 'TEXT_ONLY' | 'TEXT_WITH_IMAGES';
 

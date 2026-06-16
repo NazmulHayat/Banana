@@ -48,3 +48,8 @@ app-example
 
 # Supabase CLI temp files
 supabase/.temp/
+
+# Claude Code parallel-build scratch — worktrees + ephemeral task specs.
+# (.claude/agents/ and .claude/rules/ are intentionally NOT ignored: they're shared config.)
+.claude/worktrees/
+.claude/tasks/

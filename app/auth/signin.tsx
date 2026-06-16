@@ -1,116 +1,128 @@
-import { useState } from 'react';
+import { IconSymbol } from "@/components/ui/icon-symbol";
+import { PaperBackground } from "@/components/ui/paper-background";
+import { Colors, Fonts } from "@/constants/theme";
+import { useAuth } from "@/lib/auth-context";
+import { keyring } from "@/lib/crypto";
+import { supabase } from "@/lib/supabase";
+import { router } from "expo-router";
+import { useState } from "react";
 import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
   Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-} from 'react-native';
-import { router } from 'expo-router';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { supabase } from '@/lib/supabase';
-import { Colors, Fonts } from '@/constants/theme';
-import { PaperBackground } from '@/components/ui/paper-background';
-import { IconSymbol } from '@/components/ui/icon-symbol';
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 export default function SigninScreen() {
   const insets = useSafeAreaInsets();
-  const [identifier, setIdentifier] = useState(''); // email or username
-  const [password, setPassword] = useState('');
+  const { markKeyringReady } = useAuth();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const [useUsername, setUseUsername] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
-  const validateEmail = (email: string): boolean => {
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-  };
+  const validateEmail = (e: string): boolean =>
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 
   const handleSignin = async () => {
-    if (!identifier.trim()) {
-      Alert.alert('Required', useUsername ? 'Please enter your username.' : 'Please enter your email.');
+    const cleanEmail = email.trim().toLowerCase();
+
+    if (!cleanEmail) {
+      Alert.alert("Required", "Please enter your email.");
       return;
     }
-
+    if (!validateEmail(cleanEmail)) {
+      Alert.alert("Invalid email", "Please enter a valid email address.");
+      return;
+    }
     if (!password) {
-      Alert.alert('Required', 'Please enter your password.');
+      Alert.alert("Required", "Please enter your password.");
       return;
     }
 
     setLoading(true);
-
     try {
-      let email = identifier.trim().toLowerCase();
-
-      // If using username, look up the email first
-      if (useUsername) {
-        const username = identifier.toLowerCase().trim().replace('@', '');
-        
-        const { data: account, error: lookupError } = await supabase
-          .from('accounts')
-          .select('email')
-          .eq('username', username)
-          .single();
-
-        if (lookupError || !account || !account.email) {
-          Alert.alert('Not found', 'No account found with this username.');
-          setLoading(false);
-          return;
-        }
-
-        email = account.email;
-      }
-
-      // Validate email format
-      if (!validateEmail(email)) {
-        Alert.alert('Invalid email', 'Please enter a valid email address.');
-        setLoading(false);
-        return;
-      }
-
-      // Sign in with password
       const { data, error } = await supabase.auth.signInWithPassword({
-        email: email,
-        password: password,
+        email: cleanEmail,
+        password,
       });
 
       if (error) {
-        if (error.message.includes('Invalid login credentials')) {
-          Alert.alert('Invalid credentials', 'Email or password is incorrect.');
-        } else if (error.message.includes('Email not confirmed')) {
-          // Email not verified, send OTP
+        if (error.message.includes("Invalid login credentials")) {
+          Alert.alert(
+            "Incorrect credentials",
+            "Email or password is incorrect.",
+          );
+        } else if (error.message.includes("Email not confirmed")) {
           const { error: otpError } = await supabase.auth.resend({
-            type: 'signup',
-            email: email,
+            type: "signup",
+            email: cleanEmail,
           });
-
           if (otpError) {
-            Alert.alert('Error', otpError.message);
+            Alert.alert("Error", otpError.message);
           } else {
             router.push({
-              pathname: '/auth/verify',
-              params: { 
-                email: email,
-                isNewUser: 'false',
-              },
+              pathname: "/auth/verify",
+              params: { email: cleanEmail, isNewUser: "false" },
             });
           }
         } else {
-          Alert.alert('Error', error.message);
+          Alert.alert("Sign in failed", error.message);
         }
         setLoading(false);
         return;
       }
 
-      if (data.session) {
-        // Successfully signed in
-        router.replace('/(tabs)');
+      if (!data.session) {
+        Alert.alert("Error", "No session created. Please try again.");
+        setLoading(false);
+        return;
       }
-    } catch (err) {
-      Alert.alert('Error', 'Something went wrong. Please try again.');
+
+      // Unlock encryption keyring with the same password
+      try {
+        await keyring.unlock(data.session.user.id, password);
+        markKeyringReady(true);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        // Supabase password matched but the wrapped key didn't decrypt.
+        // Most common cause: user reset their Supabase password via email but
+        // their old encryption password is needed to unwrap the master key.
+        // Offer to use the recovery key directly without forcing them to
+        // navigate back through forgot-password.
+        Alert.alert(
+          "Encryption password didn't match",
+          "Your sign-in worked, but we couldn't unlock your encrypted data " +
+            "with this password. This usually happens after a password reset. " +
+            "Use your recovery key to restore access.",
+          [
+            {
+              text: "Sign out",
+              style: "cancel",
+              onPress: async () => {
+                await supabase.auth.signOut();
+              },
+            },
+            {
+              text: "Use Recovery Key",
+              onPress: () => router.push("/auth/recover-with-key"),
+            },
+          ],
+        );
+        setLoading(false);
+        return;
+      }
+
+      router.replace("/(tabs)");
+    } catch (e) {
+      console.error("[signin] Unexpected error:", e);
+      Alert.alert("Error", "Something went wrong. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -120,14 +132,14 @@ export default function SigninScreen() {
     <PaperBackground>
       <KeyboardAvoidingView
         style={styles.container}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
-        <ScrollView 
+        <ScrollView
           contentContainerStyle={[styles.content, { paddingTop: insets.top + 20 }]}
           keyboardShouldPersistTaps="handled"
         >
-          <TouchableOpacity 
-            style={styles.backButton} 
+          <TouchableOpacity
+            style={styles.backButton}
             onPress={() => router.back()}
             activeOpacity={0.7}
           >
@@ -137,66 +149,23 @@ export default function SigninScreen() {
 
           <Text style={styles.title}>Welcome back</Text>
           <Text style={styles.subtitle}>
-            Sign in to access your encrypted journal
+            Sign in to unlock your encrypted journal
           </Text>
 
           <View style={styles.form}>
-            {/* Toggle between email and username */}
-            <View style={styles.toggleContainer}>
-              <TouchableOpacity
-                style={[styles.toggleButton, !useUsername && styles.toggleActive]}
-                onPress={() => {
-                  setUseUsername(false);
-                  setIdentifier('');
-                }}
-              >
-                <Text style={[styles.toggleText, !useUsername && styles.toggleTextActive]}>
-                  Email
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.toggleButton, useUsername && styles.toggleActive]}
-                onPress={() => {
-                  setUseUsername(true);
-                  setIdentifier('');
-                }}
-              >
-                <Text style={[styles.toggleText, useUsername && styles.toggleTextActive]}>
-                  Username
-                </Text>
-              </TouchableOpacity>
-            </View>
+            <Text style={styles.label}>Email</Text>
+            <TextInput
+              style={styles.input}
+              value={email}
+              onChangeText={setEmail}
+              placeholder="you@example.com"
+              placeholderTextColor={Colors.textSecondary}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="email"
+            />
 
-            {/* Email or Username */}
-            <Text style={styles.label}>{useUsername ? 'Username' : 'Email'}</Text>
-            {useUsername ? (
-              <View style={styles.usernameContainer}>
-                <Text style={styles.prefix}>@</Text>
-                <TextInput
-                  style={styles.usernameInput}
-                  value={identifier}
-                  onChangeText={(text) => setIdentifier(text.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
-                  placeholder="yourname"
-                  placeholderTextColor={Colors.textSecondary}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-              </View>
-            ) : (
-              <TextInput
-                style={styles.input}
-                value={identifier}
-                onChangeText={setIdentifier}
-                placeholder="you@example.com"
-                placeholderTextColor={Colors.textSecondary}
-                keyboardType="email-address"
-                autoCapitalize="none"
-                autoCorrect={false}
-                autoComplete="email"
-              />
-            )}
-
-            {/* Password */}
             <Text style={styles.label}>Password</Text>
             <View style={styles.passwordContainer}>
               <TextInput
@@ -208,15 +177,16 @@ export default function SigninScreen() {
                 secureTextEntry={!showPassword}
                 autoCapitalize="none"
                 autoCorrect={false}
+                autoComplete="password"
               />
               <TouchableOpacity
                 onPress={() => setShowPassword(!showPassword)}
                 style={styles.eyeButton}
               >
-                <IconSymbol 
-                  name={showPassword ? 'eye.slash' : 'eye'} 
-                  size={20} 
-                  color={Colors.textSecondary} 
+                <IconSymbol
+                  name={showPassword ? "eye.slash" : "eye"}
+                  size={20}
+                  color={Colors.textSecondary}
                 />
               </TouchableOpacity>
             </View>
@@ -228,36 +198,13 @@ export default function SigninScreen() {
               activeOpacity={0.7}
             >
               <Text style={styles.buttonText}>
-                {loading ? 'Signing in...' : 'Sign In'}
+                {loading ? "Signing in..." : "Sign In"}
               </Text>
             </TouchableOpacity>
 
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.forgotButton}
-              onPress={() => {
-                Alert.alert(
-                  'Reset Password',
-                  'Enter your email to receive a password reset link.',
-                  [
-                    { text: 'Cancel', style: 'cancel' },
-                    { 
-                      text: 'Send Reset Link',
-                      onPress: async () => {
-                        if (!identifier.trim() || !validateEmail(identifier)) {
-                          Alert.alert('Enter email', 'Please enter your email address first.');
-                          return;
-                        }
-                        const { error } = await supabase.auth.resetPasswordForEmail(identifier.trim().toLowerCase());
-                        if (error) {
-                          Alert.alert('Error', error.message);
-                        } else {
-                          Alert.alert('Email sent', 'Check your email for the password reset link.');
-                        }
-                      }
-                    },
-                  ]
-                );
-              }}
+              onPress={() => router.push("/auth/forgot-password")}
             >
               <Text style={styles.forgotText}>Forgot password?</Text>
             </TouchableOpacity>
@@ -265,7 +212,7 @@ export default function SigninScreen() {
 
           <View style={styles.signupContainer}>
             <Text style={styles.signupText}>Don't have an account? </Text>
-            <TouchableOpacity onPress={() => router.replace('/auth/signup')}>
+            <TouchableOpacity onPress={() => router.replace("/auth/signup")}>
               <Text style={styles.signupLink}>Create Account</Text>
             </TouchableOpacity>
           </View>
@@ -276,18 +223,9 @@ export default function SigninScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  content: {
-    flexGrow: 1,
-    paddingHorizontal: 24,
-  },
-  backButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 24,
-  },
+  container: { flex: 1 },
+  content: { flexGrow: 1, paddingHorizontal: 24 },
+  backButton: { flexDirection: "row", alignItems: "center", marginBottom: 24 },
   backText: {
     fontSize: 16,
     color: Colors.ink,
@@ -296,7 +234,7 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 28,
-    fontWeight: '700',
+    fontWeight: "700",
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
     marginBottom: 8,
@@ -307,45 +245,16 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwriting,
     marginBottom: 24,
   },
-  form: {
-    width: '100%',
-    maxWidth: 400,
-  },
-  toggleContainer: {
-    flexDirection: 'row',
-    marginBottom: 16,
-    borderWidth: 1.5,
-    borderColor: Colors.ink,
-    borderRadius: 12,
-    overflow: 'hidden',
-  },
-  toggleButton: {
-    flex: 1,
-    paddingVertical: 12,
-    alignItems: 'center',
-    backgroundColor: 'transparent',
-  },
-  toggleActive: {
-    backgroundColor: Colors.ink,
-  },
-  toggleText: {
-    fontSize: 14,
-    fontFamily: Fonts.handwriting,
-    color: Colors.ink,
-    fontWeight: '600',
-  },
-  toggleTextActive: {
-    color: Colors.paper,
-  },
+  form: { width: "100%", maxWidth: 400 },
   label: {
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: "600",
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
     marginBottom: 8,
   },
   input: {
-    width: '100%',
+    width: "100%",
     height: 52,
     borderWidth: 1.5,
     borderColor: Colors.ink,
@@ -357,36 +266,10 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.card,
     marginBottom: 16,
   },
-  usernameContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    width: '100%',
-    height: 52,
-    borderWidth: 1.5,
-    borderColor: Colors.ink,
-    borderRadius: 12,
-    backgroundColor: Colors.card,
-    marginBottom: 16,
-  },
-  prefix: {
-    fontSize: 18,
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
-    paddingLeft: 16,
-  },
-  usernameInput: {
-    flex: 1,
-    height: '100%',
-    paddingHorizontal: 4,
-    paddingRight: 16,
-    fontSize: 16,
-    fontFamily: Fonts.handwriting,
-    color: Colors.ink,
-  },
   passwordContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    width: '100%',
+    flexDirection: "row",
+    alignItems: "center",
+    width: "100%",
     height: 52,
     borderWidth: 1.5,
     borderColor: Colors.ink,
@@ -396,45 +279,38 @@ const styles = StyleSheet.create({
   },
   passwordInput: {
     flex: 1,
-    height: '100%',
+    height: "100%",
     paddingHorizontal: 16,
     fontSize: 16,
     fontFamily: Fonts.handwriting,
     color: Colors.ink,
   },
-  eyeButton: {
-    padding: 12,
-  },
+  eyeButton: { padding: 12 },
   button: {
-    width: '100%',
+    width: "100%",
     height: 52,
     backgroundColor: Colors.ink,
     borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: "center",
+    alignItems: "center",
     marginTop: 8,
   },
-  buttonDisabled: {
-    opacity: 0.6,
-  },
+  buttonDisabled: { opacity: 0.6 },
   buttonText: {
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: "600",
     color: Colors.paper,
     fontFamily: Fonts.handwriting,
   },
-  forgotButton: {
-    alignSelf: 'center',
-    marginTop: 16,
-  },
+  forgotButton: { alignSelf: "center", marginTop: 16 },
   forgotText: {
     fontSize: 14,
     color: Colors.accent,
     fontFamily: Fonts.handwriting,
   },
   signupContainer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
+    flexDirection: "row",
+    justifyContent: "center",
     marginTop: 32,
   },
   signupText: {
@@ -446,6 +322,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: Colors.accent,
     fontFamily: Fonts.handwriting,
-    fontWeight: '600',
+    fontWeight: "600",
   },
 });

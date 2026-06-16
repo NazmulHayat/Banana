@@ -1,0 +1,113 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit config for Aight Bet (wire protocol: "banana").
+# Reviews must enforce the guardrails in CLAUDE.md + .claude/rules/*.md.
+
+language: "en-US"
+
+reviews:
+  # assertive: surface more issues. This is a security-sensitive E2E-crypto app.
+  profile: "assertive"
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - "main"
+
+  # Files CodeRabbit should not waste review budget on.
+  path_filters:
+    - "!**/package-lock.json"
+    - "!**/*.lock"
+    - "!ios/**"
+    - "!android/**"
+    - "!**/*.png"
+    - "!**/*.jpg"
+    - "!**/*.ttf"
+    - "!**/*.otf"
+
+  path_instructions:
+    - path: "lib/crypto/**"
+      instructions: >-
+        Zero-knowledge E2E crypto — threat model includes our own server admin.
+        FLAG: any plaintext, raw master key, or unwrapped key reaching Supabase
+        or a query; any console.log of keys/tokens/ciphertext/payloads (even
+        behind __DEV__); any encryptJson/decryptJson/encryptBytes/decryptBytes
+        call missing an `aad` from an AAD builder; any raw aesEncrypt without AAD
+        outside primitives.ts; any master key serialized anywhere except
+        expo-secure-store; missing zeroize() on logout/lock. Only lib/crypto/ may
+        import @noble/*. NEVER suggest renaming banana:* constants (AAD prefixes
+        banana:v1:*, SecureStore key banana_mk_v1, AsyncStorage banana_*_v2) —
+        renaming breaks decryption of all existing ciphertext. New protocol
+        strings get a new suffix; old ones are immutable.
+
+    - path: "lib/db/**"
+      instructions: >-
+        Data layer only. Query builder only (.select/.eq/.upsert/.maybeSingle) —
+        flag any interpolated/string-built SQL. Always pass .eq('owner_id', userId)
+        for intent + index use. Select narrowly and map rows to DTOs (DailyEntry,
+        HabitLog, ProfileData) before returning — flag spreading a raw row into
+        state or widening a select "just in case". Writes must throw on error
+        (never swallow — a lost write is the unforgivable bug). Reads degrade to
+        empty + __DEV__ warn; one corrupt/undecryptable row must skip, not blank
+        the screen. Flag N+1 / sequential awaits in a loop — fetch a month in one
+        query by month_bucket. Never write a real date, habit name, or entry text
+        to a non-ciphertext column (use HMAC day_bucket/month_bucket).
+
+    - path: "supabase/migrations/**"
+      instructions: >-
+        One change = one new timestamped file; never edit an applied migration,
+        only append. Flag missing begin/commit, or non-idempotent DDL (require
+        create table if not exists, create index if not exists, drop policy if
+        exists before create policy, create or replace function). EVERY new table
+        must, in the same migration, enable row level security AND add owner-only
+        policies (owner_id = auth.uid() or id = auth.uid()). Flag any disabled RLS.
+        SECURITY DEFINER functions must set search_path = public, revoke all from
+        public, then grant execute narrowly, and return least data. Storage
+        policies must stay path-scoped to auth.uid() (name like auth.uid()::text
+        || '/%'). Keep DB checks in sync with client validators (UsernameRules).
+
+    - path: "lib/data-store.tsx"
+      instructions: >-
+        State + optimistic updates + load orchestration only. Optimistic local
+        update first, then persist. Reads short-circuit on cache unless force:true.
+        React Compiler is ON — do not suggest adding useMemo/useCallback/memo for
+        performance.
+
+    - path: "app/**"
+      instructions: >-
+        Screens stay thin: layout + state wiring + store calls. Flag screens that
+        import supabase or lib/crypto/lib/db directly — they must go through
+        useDataStore()/useAuth(). Every data/media view needs three states
+        (loading via Skeleton/ActivityIndicator, loaded, empty/error as a calm
+        on-brand message — never a raw error string or red crash). Async effects
+        that setState must guard unmount with a cancelled flag + cleanup.
+
+    - path: "components/**"
+      instructions: >-
+        Reuse primitives before recreating: PaperCard (surfaces), PressableScale/
+        IconButton (tappables, scale 0.97 + haptics on meaningful actions),
+        Skeleton (loading), ImageViewer (full-screen image). Flag any hardcoded
+        hex (use Colors from constants/theme — sole exception: low-alpha
+        rgba(26,26,26,…) hairline borders), font string (use Fonts.*; for bold
+        use Fonts.handwritingSemiBold, not fontWeight:'600' alone), or duration/
+        spring (use Motion from constants/motion). React Compiler is ON — don't
+        suggest useMemo/useCallback/memo for perf. No default exports except
+        expo-router route files.
+
+    - path: "**/*.{ts,tsx}"
+      instructions: >-
+        TypeScript strict. Flag any use of `any`. Flag non-null `!` assertions on
+        crypto/session/master-key values — branch instead. Only EXPO_PUBLIC_* env
+        vars may reach the client; flag any service-role key or secret in app code.
+
+  tools:
+    eslint:
+      enabled: true
+
+chat:
+  auto_reply: true

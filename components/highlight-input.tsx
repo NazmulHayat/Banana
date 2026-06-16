@@ -1,92 +1,193 @@
-import { useState, useEffect } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, Image, Alert, Platform } from 'react-native';
-import { PaperCard } from './ui/paper-card';
-import { Colors, Fonts } from '@/constants/theme';
-import { IconSymbol } from './ui/icon-symbol';
-import { DailyEntry } from '@/lib/db';
-import * as ImagePicker from 'expo-image-picker';
+import { Motion } from "@/constants/motion";
+import { Colors, Fonts } from "@/constants/theme";
+import * as Haptics from "expo-haptics";
+import * as ImagePicker from "expo-image-picker";
+import { useEffect, useRef, useState } from "react";
+import {
+  Alert,
+  Image,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import Animated, {
+  Easing,
+  FadeInUp,
+  FadeOut,
+  useAnimatedProps,
+  useSharedValue,
+  withTiming,
+} from "react-native-reanimated";
+import Svg, { Path } from "react-native-svg";
+import { IconSymbol } from "./ui/icon-symbol";
+import { PaperCard } from "./ui/paper-card";
+import { PressableScale } from "./ui/pressable-scale";
+
+const AnimatedPath = Animated.createAnimatedComponent(Path);
+
+// Approximate length of the checkmark polyline below (M4 12.5 L9.5 18 L20 6.5)
+const CHECK_PATH_LENGTH = 24;
+
+/** Checkmark that draws itself like a pen stroke. */
+function DrawnCheckmark({ size = 20 }: { size?: number }) {
+  const progress = useSharedValue(0);
+
+  useEffect(() => {
+    progress.value = withTiming(1, {
+      duration: 300,
+      easing: Easing.out(Easing.cubic),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const animatedProps = useAnimatedProps(() => ({
+    strokeDashoffset: CHECK_PATH_LENGTH * (1 - progress.value),
+  }));
+
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24">
+      <AnimatedPath
+        d="M4 12.5 L9.5 18 L20 6.5"
+        stroke={Colors.paper}
+        strokeWidth={3}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+        strokeDasharray={`${CHECK_PATH_LENGTH}`}
+        animatedProps={animatedProps}
+      />
+    </Svg>
+  );
+}
 
 interface HighlightInputProps {
-  todayEntryCount: number; // How many entries exist for today
-  onSave: (text: string, mediaUrls: string[]) => void;
+  todayEntryCount: number;
+  /** Called with text + locally-picked image URIs. Parent uploads + persists. */
+  onSave: (text: string, localUris: string[]) => Promise<void> | void;
+  /** True while parent is uploading + saving — disables the buttons. */
+  saving?: boolean;
 }
 
 const MAX_IMAGES = 4;
-export function HighlightInput({ todayEntryCount, onSave }: HighlightInputProps) {
-  const [text, setText] = useState('');
-  const [mediaUrls, setMediaUrls] = useState<string[]>([]);
 
-  const handleAddPhoto = async () => {
-    if (mediaUrls.length >= MAX_IMAGES) {
-      Alert.alert('Limit Reached', `You can only add up to ${MAX_IMAGES} photos per entry.`);
+export function HighlightInput({
+  todayEntryCount,
+  onSave,
+  saving,
+}: HighlightInputProps) {
+  const [text, setText] = useState("");
+  const [pickedUris, setPickedUris] = useState<string[]>([]);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+    },
+    [],
+  );
+
+  const pickFromLibrary = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert(
+        "Permission needed",
+        "Please grant photo library access in Settings to attach photos.",
+      );
       return;
     }
+    const remaining = MAX_IMAGES - pickedUris.length;
+    const allowsMultiple = remaining > 1 && Platform.OS === "ios";
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      allowsMultipleSelection: allowsMultiple,
+      selectionLimit: allowsMultiple ? remaining : 1,
+      quality: 0.8,
+    });
+    if (!result || result.canceled) return;
+    const newUris = (result.assets ?? [])
+      .map((a) => a.uri)
+      .filter(Boolean) as string[];
+    appendUris(newUris);
+  };
 
-    try {
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission needed', 'Please grant camera roll permissions to add photos.');
-        return;
-      }
+  const takePhoto = async () => {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert(
+        "Permission needed",
+        "Please grant camera access in Settings to take photos.",
+      );
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ["images"],
+      quality: 0.8,
+    });
+    if (!result || result.canceled) return;
+    const newUris = (result.assets ?? [])
+      .map((a) => a.uri)
+      .filter(Boolean) as string[];
+    appendUris(newUris);
+  };
 
-      const remainingSlots = MAX_IMAGES - mediaUrls.length;
-      const allowsMultipleSelection = remainingSlots > 1 && Platform.OS === 'ios';
-
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'],
-        allowsMultipleSelection,
-        selectionLimit: allowsMultipleSelection ? remainingSlots : 1,
-        quality: 0.8,
-      });
-
-      if (!result || result.canceled) {
-        return;
-      }
-
-      if (!result.assets || result.assets.length === 0) {
-        Alert.alert('No images found', 'Please select at least one image.');
-        return;
-      }
-
-      const newUrls = result.assets.map((asset) => asset.uri).filter(Boolean);
-      if (newUrls.length === 0) {
-        Alert.alert('Invalid selection', 'Selected images are not available.');
-        return;
-      }
-
-        const totalImages = mediaUrls.length + newUrls.length;
-        
-        if (totalImages > MAX_IMAGES) {
-          Alert.alert('Limit Reached', `You can only add up to ${MAX_IMAGES} photos. Only the first ${MAX_IMAGES - mediaUrls.length} will be added.`);
-          setMediaUrls([...mediaUrls, ...newUrls.slice(0, MAX_IMAGES - mediaUrls.length)]);
-        } else {
-          setMediaUrls([...mediaUrls, ...newUrls]);
-        }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to add photo.';
-      Alert.alert('Error', message);
+  const appendUris = (newUris: string[]) => {
+    if (newUris.length === 0) return;
+    const total = pickedUris.length + newUris.length;
+    if (total > MAX_IMAGES) {
+      Alert.alert(
+        "Limit Reached",
+        `Only the first ${MAX_IMAGES - pickedUris.length} will be added.`,
+      );
+      setPickedUris([
+        ...pickedUris,
+        ...newUris.slice(0, MAX_IMAGES - pickedUris.length),
+      ]);
+    } else {
+      setPickedUris([...pickedUris, ...newUris]);
     }
   };
 
-  const handleRemovePhoto = (index: number) => {
-    setMediaUrls(mediaUrls.filter((_, i) => i !== index));
+  const handleAddPhoto = () => {
+    if (pickedUris.length >= MAX_IMAGES) {
+      Alert.alert(
+        "Limit reached",
+        `You can only add up to ${MAX_IMAGES} photos per entry.`,
+      );
+      return;
+    }
+    setPickerOpen((open) => !open);
   };
 
-  const handleSave = () => {
-    if (text.trim() || mediaUrls.length > 0) {
-      onSave(text.trim(), mediaUrls);
-      setText('');
-      setMediaUrls([]);
-    }
+  const handleRemovePhoto = (i: number) => {
+    setPickedUris(pickedUris.filter((_, idx) => idx !== i));
+  };
+
+  const handleSave = async () => {
+    if (saving || justSaved) return;
+    const trimmed = text.trim();
+    if (!trimmed && pickedUris.length === 0) return;
+    await onSave(trimmed, pickedUris);
+    setText("");
+    setPickedUris([]);
+    // Success beat: drawn checkmark + haptic, then back to "Add"
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setJustSaved(true);
+    savedTimer.current = setTimeout(() => setJustSaved(false), 1200);
   };
 
   return (
     <PaperCard style={styles.container}>
       <Text style={styles.title}>Highlight of the day</Text>
       <Text style={styles.placeholder}>
-        {todayEntryCount === 0 
-          ? 'Tell me something about today...' 
-          : 'Add another highlight...'}
+        {todayEntryCount === 0
+          ? "Tell me something about today..."
+          : "Add another highlight..."}
       </Text>
       <TextInput
         style={styles.input}
@@ -95,63 +196,150 @@ export function HighlightInput({ todayEntryCount, onSave }: HighlightInputProps)
         placeholder=""
         multiline
         placeholderTextColor={Colors.textSecondary}
+        editable={!saving}
       />
-      {mediaUrls.length > 0 && (
+      {pickedUris.length > 0 && (
         <View style={styles.mediaPreviewContainer}>
-          {mediaUrls.map((url, index) => (
-            <View key={index} style={styles.mediaPreview}>
-              <Image source={{ uri: url }} style={styles.previewImage} resizeMode="cover" />
-              <TouchableOpacity
-                style={styles.removeButton}
-                onPress={() => handleRemovePhoto(index)}
-                activeOpacity={0.7}>
-                <IconSymbol name="xmark.circle.fill" size={20} color={Colors.ink} />
-              </TouchableOpacity>
+          {pickedUris.map((uri, index) => (
+            <View key={`${uri}-${index}`} style={styles.mediaPreview}>
+              <Image
+                source={{ uri }}
+                style={styles.previewImage}
+                resizeMode="cover"
+              />
+              {!saving && (
+                <TouchableOpacity
+                  style={styles.removeButton}
+                  onPress={() => handleRemovePhoto(index)}
+                  activeOpacity={0.7}
+                >
+                  <IconSymbol
+                    name="xmark.circle.fill"
+                    size={20}
+                    color={Colors.ink}
+                  />
+                </TouchableOpacity>
+              )}
             </View>
           ))}
         </View>
       )}
       <View style={styles.footer}>
-        <TouchableOpacity
-          style={[styles.mediaButton, mediaUrls.length >= MAX_IMAGES && styles.mediaButtonDisabled]}
-          onPress={handleAddPhoto}
-          disabled={mediaUrls.length >= MAX_IMAGES}
-          activeOpacity={0.7}>
-          <View style={styles.mediaButtonContent}>
-            <IconSymbol
-              name="camera.fill"
-              size={18}
-              color={mediaUrls.length >= MAX_IMAGES ? Colors.textSecondary : Colors.ink}
-            />
-            <Text
-              style={[
-                styles.mediaButtonText,
-                mediaUrls.length >= MAX_IMAGES && styles.mediaButtonTextDisabled,
-              ]}>
-              Add Photo {mediaUrls.length > 0 && `(${mediaUrls.length}/${MAX_IMAGES})`}
-            </Text>
-          </View>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.saveButton} onPress={handleSave} activeOpacity={0.7}>
+        <View style={styles.mediaWrapper}>
+          {pickerOpen && (
+            <Animated.View
+              entering={FadeInUp.duration(Motion.fast)}
+              exiting={FadeOut.duration(100)}
+              style={styles.popover}
+            >
+              <Pressable
+                style={styles.popoverItem}
+                onPress={() => {
+                  setPickerOpen(false);
+                  void takePhoto();
+                }}
+              >
+                <IconSymbol
+                  name="camera.fill"
+                  size={16}
+                  color={Colors.ink}
+                />
+                <Text style={styles.popoverText}>Take Photo</Text>
+              </Pressable>
+              <View style={styles.popoverDivider} />
+              <Pressable
+                style={styles.popoverItem}
+                onPress={() => {
+                  setPickerOpen(false);
+                  void pickFromLibrary();
+                }}
+              >
+                <IconSymbol
+                  name="photo.fill"
+                  size={16}
+                  color={Colors.ink}
+                />
+                <Text style={styles.popoverText}>Choose from Library</Text>
+              </Pressable>
+              <View style={styles.popoverArrow} />
+            </Animated.View>
+          )}
+          <PressableScale
+            style={[
+              styles.mediaButton,
+              (pickedUris.length >= MAX_IMAGES || saving) &&
+                styles.mediaButtonDisabled,
+            ]}
+            onPress={handleAddPhoto}
+            disabled={pickedUris.length >= MAX_IMAGES || saving}
+          >
+            <View style={styles.mediaButtonContent}>
+              <IconSymbol
+                name={pickerOpen ? "xmark" : "camera.fill"}
+                size={18}
+                color={
+                  pickedUris.length >= MAX_IMAGES || saving
+                    ? Colors.textSecondary
+                    : Colors.ink
+                }
+              />
+              <Text
+                style={[
+                  styles.mediaButtonText,
+                  (pickedUris.length >= MAX_IMAGES || saving) &&
+                    styles.mediaButtonTextDisabled,
+                ]}
+              >
+                {pickerOpen ? "Close" : "Add Photo"}
+                {!pickerOpen && pickedUris.length > 0
+                  ? ` (${pickedUris.length}/${MAX_IMAGES})`
+                  : ""}
+              </Text>
+            </View>
+          </PressableScale>
+        </View>
+        <PressableScale
+          style={[
+            styles.saveButton,
+            ((!text.trim() && pickedUris.length === 0) || saving) && !justSaved
+              ? styles.saveButtonDisabled
+              : null,
+          ]}
+          onPress={handleSave}
+          disabled={
+            ((!text.trim() && pickedUris.length === 0) || saving) && !justSaved
+          }
+        >
           <View style={styles.saveButtonContent}>
-            <Text style={styles.saveButtonText}>Add</Text>
-            <IconSymbol name="checkmark.circle.fill" size={20} color={Colors.ink} />
+            {justSaved ? (
+              <>
+                <Text style={styles.saveButtonText}>Saved</Text>
+                <DrawnCheckmark />
+              </>
+            ) : (
+              <>
+                <Text style={styles.saveButtonText}>
+                  {saving ? "Saving..." : "Add"}
+                </Text>
+                <IconSymbol
+                  name="checkmark.circle.fill"
+                  size={20}
+                  color={Colors.paper}
+                />
+              </>
+            )}
           </View>
-        </TouchableOpacity>
+        </PressableScale>
       </View>
     </PaperCard>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    marginHorizontal: 16,
-    marginTop: 16,
-    marginBottom: 16,
-  },
+  container: { marginHorizontal: 16, marginTop: 16, marginBottom: 16 },
   title: {
     fontSize: 18,
-    fontWeight: '600',
+    fontWeight: "600",
     color: Colors.ink,
     marginBottom: 4,
     fontFamily: Fonts.handwriting,
@@ -161,7 +349,7 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     marginBottom: 12,
     fontFamily: Fonts.handwriting,
-    fontStyle: 'italic',
+    fontStyle: "italic",
   },
   input: {
     fontSize: 16,
@@ -171,13 +359,13 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   footer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
   },
   mediaPreviewContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexDirection: "row",
+    flexWrap: "wrap",
     marginBottom: 12,
     gap: 8,
   },
@@ -187,64 +375,106 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     borderWidth: 1,
     borderColor: Colors.shadow,
-    position: 'relative',
+    position: "relative",
     marginRight: 8,
     marginBottom: 8,
   },
-  previewImage: {
-    width: '100%',
-    height: '100%',
-    borderRadius: 7,
-  },
+  previewImage: { width: "100%", height: "100%", borderRadius: 7 },
   removeButton: {
-    position: 'absolute',
+    position: "absolute",
     top: -8,
     right: -8,
     backgroundColor: Colors.paper,
     borderRadius: 12,
   },
+  mediaWrapper: {
+    position: "relative",
+  },
   mediaButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    borderWidth: 1,
+    minHeight: 44,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1.5,
     borderColor: Colors.ink,
+    backgroundColor: "transparent",
+    justifyContent: "center",
+  },
+  mediaButtonDisabled: { borderColor: Colors.textSecondary, opacity: 0.35 },
+  popover: {
+    position: "absolute",
+    bottom: "100%",
+    left: 0,
+    marginBottom: 10,
     backgroundColor: Colors.card,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(26, 26, 26, 0.15)",
+    paddingVertical: 4,
+    minWidth: 220,
+    shadowColor: "#1A1A1A",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    elevation: 6,
+    zIndex: 10,
   },
-  mediaButtonDisabled: {
-    borderColor: Colors.textSecondary,
-    opacity: 0.5,
+  popoverItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 12,
   },
-  mediaButtonContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  popoverText: {
+    fontSize: 15,
+    fontWeight: "500",
+    color: Colors.ink,
+    fontFamily: Fonts.handwriting,
   },
+  popoverDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "rgba(26, 26, 26, 0.1)",
+    marginHorizontal: 8,
+  },
+  popoverArrow: {
+    position: "absolute",
+    bottom: -7,
+    left: 24,
+    width: 12,
+    height: 12,
+    backgroundColor: Colors.card,
+    borderRightWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: "rgba(26, 26, 26, 0.15)",
+    transform: [{ rotate: "45deg" }],
+  },
+  mediaButtonContent: { flexDirection: "row", alignItems: "center" },
   mediaButtonText: {
     fontSize: 14,
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
-    fontWeight: '500',
+    fontWeight: "500",
     marginLeft: 6,
   },
-  mediaButtonTextDisabled: {
-    color: Colors.textSecondary,
-  },
+  mediaButtonTextDisabled: { color: Colors.textSecondary },
   saveButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: Colors.ink,
-    backgroundColor: Colors.card,
+    minHeight: 44,
+    paddingHorizontal: 18,
+    borderRadius: 12,
+    backgroundColor: Colors.ink,
+    justifyContent: "center",
   },
+  saveButtonDisabled: { opacity: 0.35 },
   saveButtonContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
   },
   saveButtonText: {
-    fontSize: 14,
-    color: Colors.ink,
+    fontSize: 15,
+    color: Colors.paper,
     fontFamily: Fonts.handwriting,
-    fontWeight: '500',
+    fontWeight: "700",
+    marginRight: 8,
   },
 });

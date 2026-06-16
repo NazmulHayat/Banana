@@ -1,17 +1,26 @@
 {
   "expo": {
-    "name": "Banana",
-    "slug": "Banana",
+    "name": "Aight Bet",
+    "slug": "aight-bet",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "banana",
+    "scheme": "aightbet",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.nazmulhayat.aightbet",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "Aight Bet needs access to your photo library so you can attach photos to your journal entries.",
+        "NSCameraUsageDescription": "Aight Bet needs camera access so you can attach photos to your journal entries.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
+      "package": "com.nazmulhayat.aightbet",
+      "versionCode": 1,
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -19,7 +28,11 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "READ_EXTERNAL_STORAGE",
+        "CAMERA"
+      ]
     },
     "web": {
       "output": "static",
@@ -33,12 +46,14 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#ffffff",
+          "backgroundColor": "#fbf8e9",
           "dark": {
-            "backgroundColor": "#000000"
+            "backgroundColor": "#1A1A1A"
           }
         }
-      ]
+      ],
+      "expo-secure-store",
+      "expo-image-picker"
     ],
     "experiments": {
       "typedRoutes": true,

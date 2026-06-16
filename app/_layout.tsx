@@ -12,22 +12,39 @@ import { useFonts } from "expo-font";
 import { Href, Stack, router, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
-import { useEffect } from "react";
-import "react-native-get-random-values"; // Must be first for crypto
+import { useEffect, useRef, useState } from "react";
+import "react-native-get-random-values"; // must be first for crypto
 import "react-native-reanimated";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
+import { AnimatedSplash } from "@/components/animated-splash";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { OnboardingProvider, useOnboarding } from "@/lib/onboarding-context";
 
 SplashScreen.preventAutoHideAsync();
 
+// Auth-group screens that should NOT auto-redirect to tabs even when a
+// session exists. These run post-signup or during password recovery and
+// own their own routing.
+const POST_SESSION_AUTH_SCREENS = new Set([
+  "recovery-setup",
+  "recover-with-key",
+  "verify",
+]);
+
+// DEV: start every reload on the intro flow (splash → login) even when a
+// session exists, and never auto-kick off the auth/onboarding screens —
+// so the first-run experience is easy to iterate on. Dev builds only;
+// flip to false to get normal routing back.
+const DEV_FORCE_INTRO = __DEV__ && true;
+
 function RootLayoutNav() {
-  const { session, loading: authLoading } = useAuth();
+  const { session, loading: authLoading, keyringReady } = useAuth();
   const { hasCompletedOnboarding, loading: onboardingLoading } =
     useOnboarding();
   const segments = useSegments();
+  const forcedIntro = useRef(false);
 
   const loading = authLoading || onboardingLoading;
 
@@ -36,23 +53,52 @@ function RootLayoutNav() {
 
     const inAuthGroup = segments[0] === "auth";
     const inOnboarding = segments[0] === ("onboarding" as string);
+    const currentAuthScreen = inAuthGroup ? segments[1] : undefined;
+    const onPostSessionAuthScreen =
+      inAuthGroup &&
+      typeof currentAuthScreen === "string" &&
+      POST_SESSION_AUTH_SCREENS.has(currentAuthScreen);
+
+    const isFullySignedIn = !!session && keyringReady;
+
+    if (DEV_FORCE_INTRO && !forcedIntro.current) {
+      forcedIntro.current = true;
+      router.replace("/auth/login");
+      return;
+    }
 
     if (!session && !inAuthGroup) {
       // No session, redirect to login
       router.replace("/auth/login");
-    } else if (session && inAuthGroup) {
-      // Has session but still in auth flow
-      // Check if they need onboarding
+      return;
+    }
+
+    // In dev-intro mode, never auto-redirect away from auth or onboarding —
+    // navigate forward by tapping through like a new user would.
+    if (DEV_FORCE_INTRO && (inAuthGroup || inOnboarding)) {
+      return;
+    }
+
+    if (isFullySignedIn && inAuthGroup && !onPostSessionAuthScreen) {
+      // Signed in AND keyring unlocked but still on a login/signup screen
       if (hasCompletedOnboarding === false) {
         router.replace("/onboarding/welcome" as Href);
       } else {
         router.replace("/(tabs)");
       }
-    } else if (session && !inOnboarding && hasCompletedOnboarding === false) {
-      // User is logged in but hasn't completed onboarding
-      router.replace("/onboarding/welcome" as Href);
+      return;
     }
-  }, [session, loading, segments, hasCompletedOnboarding]);
+
+    if (
+      isFullySignedIn &&
+      !inOnboarding &&
+      !inAuthGroup &&
+      hasCompletedOnboarding === false
+    ) {
+      router.replace("/onboarding/welcome" as Href);
+      return;
+    }
+  }, [session, keyringReady, loading, segments, hasCompletedOnboarding]);
 
   return (
     <Stack screenOptions={{ headerShown: false }}>
@@ -65,6 +111,7 @@ function RootLayoutNav() {
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
+  const [introDone, setIntroDone] = useState(false);
   const [fontsLoaded] = useFonts({
     ShantellSans: ShantellSans_400Regular,
     ShantellSans_500: ShantellSans_500Medium,
@@ -73,6 +120,8 @@ export default function RootLayout() {
 
   useEffect(() => {
     if (fontsLoaded) {
+      // The native splash (solid paper) hands off to the animated one,
+      // which is already mounted underneath by the time we hide it.
       SplashScreen.hideAsync();
     }
   }, [fontsLoaded]);
@@ -89,7 +138,10 @@ export default function RootLayout() {
             value={colorScheme === "dark" ? DarkTheme : DefaultTheme}
           >
             <RootLayoutNav />
-            <StatusBar style="auto" />
+            <StatusBar style="dark" />
+            {!introDone && (
+              <AnimatedSplash onDone={() => setIntroDone(true)} />
+            )}
           </ThemeProvider>
         </OnboardingProvider>
       </AuthProvider>

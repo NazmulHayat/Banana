@@ -1,4 +1,5 @@
-// App Models
+// App-facing types. DB row types live in the per-table modules.
+
 export interface Habit {
   id: string;
   name: string;
@@ -9,7 +10,12 @@ export interface DailyEntry {
   id: string;
   date: string;
   text: string;
-  mediaUrls: string[];
+  /**
+   * Storage object paths inside the `private-media` bucket
+   * (format: "<user_id>/<entry_id>/<media_id>.<ext>"). Resolved to signed
+   * URLs at render time via lib/media/storage.getImageUrl().
+   */
+  mediaPaths: string[];
   createdAt: string;
 }
 
@@ -19,87 +25,21 @@ export interface HabitLog {
   completed: boolean;
 }
 
-// DB Row Types (matches Supabase schema)
 export interface AccountRow {
   id: string;
   username: string;
-  email: string | null;
   created_at: string;
-  updated_at: string;
 }
 
-export interface ProfileRow {
-  id: string;
-  wrapped_master_key: string; // bytea -> base64
-  wrapped_master_key_nonce: string;
-  kdf_salt: string;
-  kdf_params: KdfParams;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface EntryRow {
-  id: string;
-  owner_id: string;
-  day_bucket: string;
-  month_bucket: string;
-  ciphertext: string; // bytea -> base64
-  nonce: string;
-  version: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface EntryMediaRow {
-  id: string;
-  entry_id: string;
-  owner_id: string;
-  object_path: string;
-  ciphertext_meta: string; // bytea -> base64
-  nonce: string;
-  version: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface HabitRow {
-  id: string;
-  owner_id: string;
-  ciphertext: string; // bytea -> base64
-  nonce: string;
-  version: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface HabitLogRow {
-  id: string;
-  owner_id: string;
-  day_bucket: string;
-  month_bucket: string;
-  ciphertext: string; // bytea -> base64
-  nonce: string;
-  version: number;
-  created_at: string;
-  updated_at: string;
-}
-
-// Encrypted Payloads
+// Payloads stored as encrypted JSON in `ciphertext` columns
 export interface EntryPayload {
   date: string;
   entries: Array<{
     id: string;
     text: string;
     createdAt: string;
-    localMediaUrls?: string[];
+    mediaPaths?: string[];
   }>;
-}
-
-export interface LegacyEntryPayload {
-  date: string;
-  text: string;
-  createdAt: string;
-  localMediaUrls?: string[];
 }
 
 export interface HabitPayload {
@@ -112,16 +52,4 @@ export interface HabitLogPayload {
   habitId: string;
   date: string;
   completed: boolean;
-}
-
-// Utility Types
-export interface KdfParams {
-  N: number;
-  r: number;
-  p: number;
-}
-
-export interface EncryptedData {
-  ciphertext: string;
-  nonce: string;
 }

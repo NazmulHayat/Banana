@@ -1,62 +1,128 @@
-import { PaperBackground } from '@/components/ui/paper-background';
-import { FeedEntryCard } from '@/components/feed-entry-card';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors, Fonts } from '@/constants/theme';
-import { DailyEntry, getEntriesForMonth, waitForAuth } from '@/lib/db';
-import { useEffect, useState, useRef, useCallback } from 'react';
-import { ScrollView, StyleSheet, Text, View, RefreshControl, Animated, TouchableOpacity } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useFocusEffect } from 'expo-router';
+import { FeedEntryCard } from "@/components/feed-entry-card";
+import { IconButton } from "@/components/ui/icon-button";
+import { IconSymbol } from "@/components/ui/icon-symbol";
+import { PaperBackground } from "@/components/ui/paper-background";
+import { PressableScale } from "@/components/ui/pressable-scale";
+import { SkeletonCard } from "@/components/ui/skeleton";
+import { Motion } from "@/constants/motion";
+import { Colors, Fonts } from "@/constants/theme";
+import { useAuth } from "@/lib/auth-context";
+import { useDataStore } from "@/lib/data-store";
+import { router, useFocusEffect } from "expo-router";
+import { useCallback, useMemo, useState } from "react";
+import {
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
+import Animated, {
+  FadeInDown,
+  FadeInLeft,
+  FadeInRight,
+  FadeOutLeft,
+  FadeOutRight,
+} from "react-native-reanimated";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 export default function FeedScreen() {
   const insets = useSafeAreaInsets();
-  const [entries, setEntries] = useState<DailyEntry[]>([]);
+  const { session } = useAuth();
+  const dataStore = useDataStore();
   const [refreshing, setRefreshing] = useState(false);
   const [currentDate, setCurrentDate] = useState(new Date());
-  const fadeAnim = useRef(new Animated.Value(0)).current;
+  // +1 = moved to next month (content enters from the right), -1 = previous
+  const [monthDirection, setMonthDirection] = useState(1);
 
   const currentMonth = currentDate.getMonth() + 1;
   const currentYear = currentDate.getFullYear();
-  const monthName = currentDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  const monthName = currentDate.toLocaleDateString("en-US", {
+    month: "long",
+    year: "numeric",
+  });
 
-  // Reload entries when screen comes into focus
+  // Get entries from DataStore (already prefetched).
+  // Sort newest-first: primary key is the day, secondary key is createdAt
+  // so multiple highlights on the same day surface the freshest one on top.
+  const entries = useMemo(() => {
+    const monthEntries = dataStore.getEntriesForMonth(
+      currentYear,
+      currentMonth,
+    );
+    return [...monthEntries].sort((a, b) => {
+      if (a.date !== b.date) {
+        return new Date(b.date).getTime() - new Date(a.date).getTime();
+      }
+      const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return bTime - aTime;
+    });
+  }, [dataStore, currentYear, currentMonth]);
+
+  // Bucket entries by day (preserving the sorted order: newest day first,
+  // newest entry within a day first).
+  const entriesByDay = useMemo(() => {
+    const groups: { date: string; entries: typeof entries }[] = [];
+    for (const entry of entries) {
+      const last = groups[groups.length - 1];
+      if (last && last.date === entry.date) {
+        last.entries.push(entry);
+      } else {
+        groups.push({ date: entry.date, entries: [entry] });
+      }
+    }
+    return groups;
+  }, [entries]);
+
+  // Only show loading if no entries are ready AND still loading
+  const loading = !dataStore.entriesReady && entries.length === 0;
+
+  // Load entries for current month if not already cached
+  const loadEntries = useCallback(async () => {
+    if (!session) return;
+
+    // Only fetch if we don't have entries for this month
+    const monthEntries = dataStore.getEntriesForMonth(
+      currentYear,
+      currentMonth,
+    );
+    if (monthEntries.length === 0) {
+      await dataStore.refreshEntries(currentYear, currentMonth);
+    }
+
+    // Prefetch adjacent months in background
+    const shiftMonth = (year: number, month: number, delta: number) => {
+      const date = new Date(year, month - 1 + delta, 1);
+      return { year: date.getFullYear(), month: date.getMonth() + 1 };
+    };
+
+    const prev = shiftMonth(currentYear, currentMonth, -1);
+    const next = shiftMonth(currentYear, currentMonth, 1);
+    void dataStore.refreshEntries(prev.year, prev.month);
+    void dataStore.refreshEntries(next.year, next.month);
+  }, [currentMonth, currentYear, session, dataStore]);
+
+  // Reload entries when screen comes into focus or month changes
   useFocusEffect(
     useCallback(() => {
       loadEntries();
-    }, [currentMonth, currentYear])
+    }, [loadEntries]),
   );
-
-  useEffect(() => {
-    // Fade in animation for entries
-    Animated.timing(fadeAnim, {
-      toValue: 1,
-      duration: 300,
-      useNativeDriver: true,
-    }).start();
-  }, [entries]);
-
-  const loadEntries = async () => {
-    // Wait for auth to be ready first
-    const isReady = await waitForAuth();
-    if (!isReady) {
-      console.log('[FeedScreen] Auth not ready, skipping load');
-      return;
-    }
-
-    console.log('[FeedScreen] Loading entries for', currentYear, currentMonth);
-    const monthEntries = await getEntriesForMonth(currentYear, currentMonth);
-    console.log('[FeedScreen] Loaded', monthEntries.length, 'entries');
-    const sorted = monthEntries.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-    setEntries(sorted);
-  };
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await loadEntries();
-    setRefreshing(false);
+    try {
+      await dataStore.refreshEntries(currentYear, currentMonth, {
+        force: true,
+      });
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const changeMonth = (direction: number) => {
+    setMonthDirection(direction);
     setCurrentDate((prev) => {
       const newDate = new Date(prev);
       newDate.setMonth(prev.getMonth() + direction);
@@ -64,9 +130,27 @@ export default function FeedScreen() {
     });
   };
 
+  const formatTime = (iso: string): string => {
+    const d = new Date(iso);
+    return d.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  };
+
   const formatDate = (dateString: string): string => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+    const [yearStr, monthStr, dayStr] = dateString.split("-");
+    const date = new Date(
+      parseInt(yearStr, 10),
+      parseInt(monthStr, 10) - 1,
+      parseInt(dayStr, 10),
+    );
+    const weekday = date.toLocaleDateString("en-US", { weekday: "short" });
+    const md = date.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+    });
+    return `${weekday} · ${md}`;
   };
 
   return (
@@ -74,8 +158,13 @@ export default function FeedScreen() {
       <ScrollView
         style={styles.container}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.ink} />
-        }>
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={Colors.ink}
+          />
+        }
+      >
         <View style={[styles.header, { paddingTop: Math.max(insets.top, 16) }]}>
           <View style={styles.titleContainer}>
             <Text style={styles.title}>Feed</Text>
@@ -84,30 +173,91 @@ export default function FeedScreen() {
         </View>
 
         <View style={styles.monthHeader}>
-          <TouchableOpacity onPress={() => changeMonth(-1)} style={styles.navButton}>
-            <IconSymbol name="chevron.left" size={24} color={Colors.ink} />
-          </TouchableOpacity>
+          <IconButton onPress={() => changeMonth(-1)}>
+            <IconSymbol name="chevron.left" size={22} color={Colors.ink} />
+          </IconButton>
           <Text style={styles.monthText}>{monthName}</Text>
-          <TouchableOpacity onPress={() => changeMonth(1)} style={styles.navButton}>
-            <IconSymbol name="chevron.right" size={24} color={Colors.ink} />
-          </TouchableOpacity>
+          <IconButton onPress={() => changeMonth(1)}>
+            <IconSymbol name="chevron.right" size={22} color={Colors.ink} />
+          </IconButton>
         </View>
 
-        {entries.length === 0 ? (
+        {loading ? (
+          <View style={styles.entriesContainer}>
+            <SkeletonCard height={140} style={styles.skeletonSpacing} />
+            <SkeletonCard height={100} style={styles.skeletonSpacing} />
+            <SkeletonCard height={180} style={styles.skeletonSpacing} />
+          </View>
+        ) : entries.length === 0 ? (
           <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>No journal entries yet</Text>
+            <View style={styles.emptyIconWrap}>
+              <IconSymbol
+                name="book.closed.fill"
+                size={36}
+                color={Colors.ink}
+              />
+            </View>
+            <Text style={styles.emptyText}>Your feed is empty</Text>
             <Text style={styles.emptyHint}>
-              Start writing on the Tracker tab
+              Capture a highlight on the Tracker tab to start your journal.
             </Text>
+            <PressableScale
+              style={styles.emptyCta}
+              onPress={() => router.push("/(tabs)" as any)}
+            >
+              <Text style={styles.emptyCtaText}>Go to Tracker</Text>
+            </PressableScale>
           </View>
         ) : (
-          <Animated.View style={[styles.entriesContainer, { opacity: fadeAnim }]}>
-            {entries.map((entry) => (
-              <View key={entry.id} style={styles.entryWrapper}>
-                <Text style={styles.date}>{formatDate(entry.date)}</Text>
-                <FeedEntryCard entry={entry} />
-              </View>
-            ))}
+          <Animated.View
+            key={`${currentYear}-${currentMonth}`}
+            style={styles.entriesContainer}
+            entering={(monthDirection > 0 ? FadeInRight : FadeInLeft).duration(
+              Motion.base,
+            )}
+            exiting={(monthDirection > 0 ? FadeOutLeft : FadeOutRight).duration(
+              Motion.fast,
+            )}
+          >
+            {(() => {
+              let cardIndex = 0;
+              return entriesByDay.map((group) => (
+                <View key={group.date} style={styles.dayGroup}>
+                  <View style={styles.dateRow}>
+                    <View style={styles.dateDot} />
+                    <Text style={styles.date}>{formatDate(group.date)}</Text>
+                    {group.entries.length > 1 && (
+                      <Text style={styles.dateCount}>
+                        · {group.entries.length}
+                      </Text>
+                    )}
+                  </View>
+                  {group.entries.map((entry) => {
+                    const delay =
+                      Math.min(cardIndex++, Motion.staggerCap) * Motion.stagger;
+                    return (
+                      <Animated.View
+                        key={entry.id}
+                        style={styles.entryRow}
+                        entering={FadeInDown.delay(delay)
+                          .springify()
+                          .damping(16)
+                          .stiffness(140)}
+                      >
+                        <FeedEntryCard
+                          entry={entry}
+                          timeLabel={
+                            entry.createdAt
+                              ? formatTime(entry.createdAt)
+                              : undefined
+                          }
+                        />
+                      </Animated.View>
+                    );
+                  })}
+                </View>
+              ));
+            })()}
           </Animated.View>
         )}
       </ScrollView>
@@ -120,78 +270,137 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   header: {
-    paddingHorizontal: 16,
-    paddingBottom: 16,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingBottom: 24,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-end",
   },
   titleContainer: {
-    position: 'relative',
+    position: "relative",
+    paddingBottom: 12,
   },
   title: {
     fontSize: 32,
-    fontWeight: '700',
+    fontWeight: "700",
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
     letterSpacing: 1,
   },
   titleUnderline: {
-    position: 'absolute',
-    bottom: -4,
+    position: "absolute",
+    bottom: 0,
     left: 0,
-    right: -8,
-    height: 3,
+    width: 48,
+    height: 4,
     backgroundColor: Colors.accent,
     borderRadius: 2,
-    opacity: 0.6,
   },
   monthHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     paddingHorizontal: 16,
     paddingVertical: 16,
     marginBottom: 8,
   },
-  navButton: {
-    padding: 8,
-  },
   monthText: {
     fontSize: 20,
-    fontWeight: '600',
+    fontWeight: "600",
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
   },
   entriesContainer: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 20,
+    paddingBottom: 24,
   },
-  entryWrapper: {
-    marginBottom: 24,
+  skeletonSpacing: {
+    marginBottom: 28,
+  },
+  dayGroup: {
+    marginBottom: 36,
+  },
+  dateRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 10,
+    marginLeft: 2,
+    gap: 8,
+  },
+  dateDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: Colors.accent,
   },
   date: {
     fontSize: 14,
-    fontWeight: '600',
-    color: Colors.textSecondary,
-    marginBottom: 8,
+    fontWeight: "700",
+    color: Colors.ink,
     fontFamily: Fonts.handwriting,
-    letterSpacing: 0.3,
+    letterSpacing: 0.2,
+  },
+  dateCount: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+  },
+  entryRow: {
+    marginBottom: 18,
   },
   emptyContainer: {
     marginHorizontal: 16,
     marginTop: 32,
-    alignItems: 'center',
+    alignItems: "center",
     paddingVertical: 32,
   },
-  emptyText: {
-    fontSize: 16,
+  loadingContainer: {
+    marginHorizontal: 16,
+    marginTop: 32,
+    alignItems: "center",
+    paddingVertical: 32,
+    gap: 12,
+  },
+  loadingText: {
+    fontSize: 14,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
-    marginBottom: 8,
+  },
+  emptyIconWrap: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: "rgba(26, 26, 26, 0.06)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 16,
+  },
+  emptyText: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: Colors.ink,
+    fontFamily: Fonts.handwriting,
+    marginBottom: 6,
   },
   emptyHint: {
     fontSize: 14,
     color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    textAlign: "center",
+    marginBottom: 20,
+    lineHeight: 20,
+    paddingHorizontal: 32,
+  },
+  emptyCta: {
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    backgroundColor: Colors.ink,
+    borderRadius: 12,
+  },
+  emptyCtaText: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: Colors.paper,
     fontFamily: Fonts.handwriting,
   },
 });

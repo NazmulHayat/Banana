@@ -1,75 +1,103 @@
-import { useState, useEffect } from 'react';
-import { View, Text, Image, StyleSheet, Dimensions } from 'react-native';
-import { PaperCard } from './ui/paper-card';
-import { Colors, Fonts } from '@/constants/theme';
-import { DailyEntry } from '@/lib/db';
+import { Colors, Fonts } from "@/constants/theme";
+import { DailyEntry } from "@/lib/db";
 import {
-  LayoutType,
-  ImageDimension,
   determineLayout,
-} from '@/lib/layout-algorithm';
+  ImageDimension,
+  LayoutType,
+} from "@/lib/layout-algorithm";
+import { getImageUrl } from "@/lib/media";
+import { useEffect, useState } from "react";
+import {
+  ActivityIndicator,
+  Dimensions,
+  Image,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import { ImageViewer } from "./ui/image-viewer";
+import { PaperCard } from "./ui/paper-card";
 
 interface FeedEntryCardProps {
   entry: DailyEntry;
+  /** Optional small timestamp shown in the top-right of the card. */
+  timeLabel?: string;
 }
 
-export function FeedEntryCard({ entry }: FeedEntryCardProps) {
-  const [imageDimensions, setImageDimensions] = useState<ImageDimension[]>([]);
+interface ResolvedImage {
+  path: string;
+  url: string;
+  dim: ImageDimension;
+}
+
+export function FeedEntryCard({ entry, timeLabel }: FeedEntryCardProps) {
+  const [resolved, setResolved] = useState<ResolvedImage[]>([]);
   const [layoutDecision, setLayoutDecision] = useState<{
     layoutType: LayoutType;
-    imageDimensions: ImageDimension[];
     imageCount: number;
   } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [viewerUri, setViewerUri] = useState<string | null>(null);
 
   useEffect(() => {
-    loadImageDimensions();
-  }, [entry.mediaUrls]);
+    let cancelled = false;
 
-  const loadImageDimensions = async () => {
-    if (!entry.mediaUrls || entry.mediaUrls.length === 0) {
-      setImageDimensions([]);
-      const decision = determineLayout(entry, []);
-      setLayoutDecision(decision);
-      setLoading(false);
-      return;
-    }
-
-    try {
-      const dimensions: ImageDimension[] = [];
-      for (const url of entry.mediaUrls) {
-        await new Promise<ImageDimension>((resolve, reject) => {
-          Image.getSize(
-            url,
-            (width, height) => {
-              resolve({ width, height });
-            },
-            (error) => {
-              // Fallback to default dimensions if image fails to load
-              resolve({ width: 400, height: 300 });
-            }
-          );
-        }).then((dim) => dimensions.push(dim));
+    async function load() {
+      const paths = entry.mediaPaths ?? [];
+      if (paths.length === 0) {
+        setResolved([]);
+        setLayoutDecision({ layoutType: "TEXT_ONLY", imageCount: 0 });
+        setLoading(false);
+        return;
       }
 
-      setImageDimensions(dimensions);
-      const decision = determineLayout(entry, dimensions);
-      setLayoutDecision(decision);
-    } catch (error) {
-      // Fallback to default dimensions
-      const defaultDims = entry.mediaUrls.map(() => ({ width: 400, height: 300 }));
-      setImageDimensions(defaultDims);
-      const decision = determineLayout(entry, defaultDims);
-      setLayoutDecision(decision);
-    } finally {
+      // Resolve signed URLs for each path, then fetch dimensions
+      const items: ResolvedImage[] = [];
+      for (const path of paths) {
+        const url = await getImageUrl(path);
+        if (!url) continue;
+        const dim = await new Promise<ImageDimension>((resolveDim) => {
+          Image.getSize(
+            url,
+            (width, height) => resolveDim({ width, height }),
+            () => resolveDim({ width: 400, height: 300 }),
+          );
+        });
+        items.push({ path, url, dim });
+      }
+
+      if (cancelled) return;
+      setResolved(items);
+      const decision = determineLayout(
+        entry,
+        items.map((i) => i.dim),
+      );
+      setLayoutDecision({
+        layoutType: decision.layoutType,
+        imageCount: items.length,
+      });
       setLoading(false);
     }
-  };
+
+    setLoading(true);
+    void load();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [entry]);
 
   if (loading || !layoutDecision) {
     return (
       <PaperCard style={styles.card}>
-        <Text style={styles.loadingText}>Loading...</Text>
+        {timeLabel && <Text style={styles.timeLabel}>{timeLabel}</Text>}
+        {entry.text ? <Text style={styles.text}>{entry.text}</Text> : null}
+        {(entry.mediaPaths ?? []).length > 0 && (
+          <View style={styles.loadingImages}>
+            <ActivityIndicator size="small" color={Colors.textSecondary} />
+          </View>
+        )}
       </PaperCard>
     );
   }
@@ -77,108 +105,127 @@ export function FeedEntryCard({ entry }: FeedEntryCardProps) {
   const { layoutType, imageCount } = layoutDecision;
 
   return (
-    <PaperCard style={styles.card}>
-      {layoutType === 'TEXT_ONLY' && <TextOnlyLayout entry={entry} />}
-      {layoutType === 'TEXT_WITH_IMAGES' && (
-        <TextWithImagesLayout entry={entry} imageDimensions={imageDimensions} imageCount={imageCount} />
-      )}
-    </PaperCard>
-  );
-}
-
-// Layout Components
-
-function TextOnlyLayout({ entry }: { entry: DailyEntry }) {
-  return (
     <>
-      {entry.text ? <Text style={styles.text}>{entry.text}</Text> : null}
+      <PaperCard style={styles.card}>
+        {timeLabel && <Text style={styles.timeLabel}>{timeLabel}</Text>}
+        {layoutType === "TEXT_ONLY" && (
+          <>
+            {entry.text ? <Text style={styles.text}>{entry.text}</Text> : null}
+          </>
+        )}
+        {layoutType === "TEXT_WITH_IMAGES" && (
+          <TextWithImagesLayout
+            entry={entry}
+            resolved={resolved}
+            imageCount={imageCount}
+            onImagePress={(url) => setViewerUri(url)}
+          />
+        )}
+      </PaperCard>
+      <ImageViewer
+        uri={viewerUri}
+        visible={viewerUri !== null}
+        onClose={() => setViewerUri(null)}
+      />
     </>
   );
 }
 
 function TextWithImagesLayout({
   entry,
-  imageDimensions,
+  resolved,
   imageCount,
+  onImagePress,
 }: {
   entry: DailyEntry;
-  imageDimensions: ImageDimension[];
+  resolved: ResolvedImage[];
   imageCount: number;
+  onImagePress: (url: string) => void;
 }) {
-  const screenWidth = Dimensions.get('window').width;
-  const contentWidth = screenWidth - 64; // Card padding + margins
-  const gap = 4;
+  // Page padding (20 each side from feed.tsx) + card padding (20 each side from PaperCard)
+  const screenWidth = Dimensions.get("window").width;
+  const contentWidth = screenWidth - 80;
+  const gap = 6;
+
+  // Single-image height cap so a tall portrait doesn't take over the screen.
+  // Multi-image grids fill the full card width with square thumbnails.
+  const MAX_SINGLE_HEIGHT = 320;
 
   return (
     <>
       {entry.text ? <Text style={styles.text}>{entry.text}</Text> : null}
       <View style={[styles.imagesContainer, { width: contentWidth }]}>
-        {entry.mediaUrls!.map((url, index) => {
-          const image = imageDimensions[index];
-          const aspectRatio = image.width / image.height;
-          
+        {resolved.map((item, index) => {
+          const aspectRatio = item.dim.width / item.dim.height;
           let imageWidth: number;
           let imageHeight: number;
 
           if (imageCount === 1) {
-            // 1 image: full width
+            // Full card width; only cap vertical so tall portraits crop instead
+            // of dominating the screen. Tap-to-zoom shows the full image anyway.
             imageWidth = contentWidth;
-            imageHeight = Math.min(imageWidth / aspectRatio, 400);
+            imageHeight = Math.min(imageWidth / aspectRatio, MAX_SINGLE_HEIGHT);
           } else if (imageCount === 2) {
-            // 2 images: side by side (1:1 squares)
             imageWidth = (contentWidth - gap) / 2;
             imageHeight = imageWidth;
           } else if (imageCount === 3) {
-            // 3 images: first two side by side (1:1), then third full width
             if (index < 2) {
-              // First two: side by side, square
               imageWidth = (contentWidth - gap) / 2;
               imageHeight = imageWidth;
             } else {
-              // Third: full width
               imageWidth = contentWidth;
-              imageHeight = Math.min(imageWidth / aspectRatio, 300);
+              imageHeight = Math.min(imageWidth / aspectRatio, 220);
             }
           } else {
-            // 4+ images: 2x2 grid (2 images per row, 1:1 squares)
+            // 4+ images → 2×N square grid, each cell half card width
             imageWidth = (contentWidth - gap) / 2;
             imageHeight = imageWidth;
           }
 
-          // Calculate margins
-          const marginRight = 
-            imageCount === 2 
-              ? (index === 0 ? gap : 0)
-              : imageCount === 3 
-              ? (index < 2 && index === 0 ? gap : 0)
-              : imageCount >= 4
-              ? (index % 2 === 0 ? gap : 0)
-              : 0;
+          const marginRight =
+            imageCount === 2
+              ? index === 0
+                ? gap
+                : 0
+              : imageCount === 3
+                ? index < 2 && index === 0
+                  ? gap
+                  : 0
+                : imageCount >= 4
+                  ? index % 2 === 0
+                    ? gap
+                    : 0
+                  : 0;
 
-          const marginBottom = 
-            imageCount === 2 
+          const marginBottom =
+            imageCount === 2
               ? 0
               : imageCount === 3
-              ? (index < 2 ? gap : 0)
-              : imageCount >= 4
-              ? (index < imageCount - 2 ? gap : 0)
-              : 0;
+                ? index < 2
+                  ? gap
+                  : 0
+                : imageCount >= 4
+                  ? index < imageCount - 2
+                    ? gap
+                    : 0
+                  : 0;
 
           return (
-            <Image
-              key={index}
-              source={{ uri: url }}
-              style={[
-                styles.image,
-                {
-                  width: imageWidth,
-                  height: imageHeight,
-                  marginRight: marginRight,
-                  marginBottom: marginBottom,
-                },
-              ]}
-              resizeMode="cover"
-            />
+            <TouchableOpacity
+              key={item.path}
+              activeOpacity={0.85}
+              onPress={() => onImagePress(item.url)}
+              style={{ marginRight, marginBottom }}
+            >
+              <Image
+                source={{ uri: item.url }}
+                style={[
+                  styles.image,
+                  { width: imageWidth, height: imageHeight },
+                ]}
+                resizeMode="cover"
+              />
+            </TouchableOpacity>
           );
         })}
       </View>
@@ -187,31 +234,38 @@ function TextWithImagesLayout({
 }
 
 const styles = StyleSheet.create({
-  card: {
-    marginHorizontal: 0,
-    marginBottom: 0,
-  },
-  loadingText: {
-    fontSize: 14,
+  card: { marginHorizontal: 0, marginBottom: 0 },
+  timeLabel: {
+    fontSize: 11,
+    fontWeight: "600",
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
+    letterSpacing: 0.3,
+    marginBottom: 6,
+    opacity: 0.85,
+  },
+  loadingImages: {
+    marginTop: 8,
+    paddingVertical: 24,
+    alignItems: "center",
   },
   text: {
     fontSize: 16,
     color: Colors.ink,
-    lineHeight: 26,
+    lineHeight: 24,
     fontFamily: Fonts.handwriting,
-    marginBottom: 12,
+    marginBottom: 10,
   },
   imagesContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    marginTop: 0,
-    alignSelf: 'flex-start',
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginTop: 4,
+    alignSelf: "center",
+    justifyContent: "center",
   },
   image: {
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: Colors.shadow,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(26, 26, 26, 0.08)",
   },
 });

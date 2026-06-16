@@ -28,10 +28,3 @@ console.log(
 export function isSupabaseConfigured(): boolean {
   return Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
 }
-
-export async function getCurrentUser() {
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  return user;
-}

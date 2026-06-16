@@ -1,8 +1,9 @@
 import { Colors, Fonts } from '@/constants/theme';
 import { Habit, HabitLog } from '@/lib/db';
 import { useRef } from 'react';
-import { ScrollView, StyleSheet, Text, View, TouchableOpacity } from 'react-native';
+import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { HabitCell } from './ui/habit-cell';
+import { IconSymbol } from './ui/icon-symbol';
 
 interface HabitGridProps {
   habits: Habit[];
@@ -69,6 +70,32 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, o
   const cellWidth = 62; // 60 + 2 margin
   const totalHabitsWidth = habits.length * cellWidth;
 
+  if (habits.length === 0) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <Text style={styles.title}>HABITS</Text>
+        </View>
+        <View style={styles.emptyCard}>
+          <View style={styles.emptyIconWrap}>
+            <IconSymbol name="leaf.fill" size={32} color={Colors.accent} />
+          </View>
+          <Text style={styles.emptyTitle}>Start tracking</Text>
+          <Text style={styles.emptyHint}>
+            Add habits like Exercise, Read, or Hydrate to build your routine.
+          </Text>
+          <TouchableOpacity
+            style={styles.emptyCta}
+            onPress={onEdit}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.emptyCtaText}>+ Add Your First Habit</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -79,7 +106,7 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, o
       </View>
       <View style={styles.gridWrapper}>
         {/* Header row container */}
-        <View 
+        <View
           ref={headerRef}
           onLayout={handleHeaderLayout}
           style={styles.headerRowContainer}>
@@ -287,5 +314,50 @@ const styles = StyleSheet.create({
     width: 60,
     height: 60,
     marginRight: 2,
+  },
+  emptyCard: {
+    backgroundColor: Colors.card,
+    borderRadius: 14,
+    paddingVertical: 32,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.shadow,
+  },
+  emptyIconWrap: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    backgroundColor: `${Colors.accent}26`,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  emptyTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: Colors.ink,
+    fontFamily: Fonts.handwriting,
+    marginBottom: 6,
+  },
+  emptyHint: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    textAlign: 'center',
+    marginBottom: 20,
+    lineHeight: 20,
+  },
+  emptyCta: {
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    backgroundColor: Colors.ink,
+    borderRadius: 10,
+  },
+  emptyCtaText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: Colors.paper,
+    fontFamily: Fonts.handwriting,
   },
 });

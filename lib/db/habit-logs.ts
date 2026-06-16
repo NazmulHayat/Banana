@@ -1,174 +1,192 @@
-import { isSupabaseConfigured, supabase, SUPABASE_URL } from "../supabase";
-import { sessionManager } from "./session-manager";
-import { DateFormats } from "./schema";
-import type { HabitLog } from "./types";
+// Habit logs — encrypted "did the user complete this habit on this day"
+// One row per (habit, day), keyed by day_bucket = HMAC(masterKey, "habitlog:<habitId>:<date>").
 
-function getLogDayBucket(habitId: string, date: string): string {
-  return `${habitId}:${date}`;
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import {
+  AAD,
+  decryptJson,
+  encryptJson,
+  habitLogDayBucket,
+  habitLogMonthBucket,
+  keyring,
+} from "../crypto";
+import { supabase } from "../supabase";
+import { DateFormats } from "./schema";
+import type { HabitLog, HabitLogPayload } from "./types";
+
+// Storage key is a protocol constant, not branding — renaming orphans caches.
+const LOGS_STORAGE_KEY = "banana_habit_logs_v2";
+const logsMonthCache = new Map<string, HabitLog[]>(); // userId:YYYY-MM
+
+function monthKey(userId: string, yearMonth: string): string {
+  return `${userId}:${yearMonth}`;
 }
 
-function getMonthBucket(date: string): string {
-  return date.slice(0, 7);
+function storageKey(userId: string, yearMonth: string): string {
+  return `${LOGS_STORAGE_KEY}:${userId}:${yearMonth}`;
+}
+
+export function getCachedHabitLogsForMonth(
+  year: number,
+  month: number,
+  userId: string,
+): HabitLog[] | null {
+  return (
+    logsMonthCache.get(
+      monthKey(userId, DateFormats.formatYearMonth(year, month)),
+    ) ?? null
+  );
+}
+
+export function setCachedHabitLogsForMonth(
+  year: number,
+  month: number,
+  userId: string,
+  logs: HabitLog[],
+): void {
+  const ym = DateFormats.formatYearMonth(year, month);
+  logsMonthCache.set(monthKey(userId, ym), logs);
+  void AsyncStorage.setItem(storageKey(userId, ym), JSON.stringify(logs)).catch(
+    () => {},
+  );
+}
+
+export function clearHabitLogsCache(): void {
+  logsMonthCache.clear();
+}
+
+export async function loadHabitLogsFromStorage(
+  year: number,
+  month: number,
+  userId: string,
+): Promise<HabitLog[] | null> {
+  try {
+    const ym = DateFormats.formatYearMonth(year, month);
+    const raw = await AsyncStorage.getItem(storageKey(userId, ym));
+    if (!raw) return null;
+    const logs = JSON.parse(raw) as HabitLog[];
+    logsMonthCache.set(monthKey(userId, ym), logs);
+    return logs;
+  } catch {
+    return null;
+  }
+}
+
+async function requireUserId(): Promise<string> {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (!session) throw new Error("Not signed in");
+  return session.user.id;
 }
 
 export async function toggleHabitLog(
   habitId: string,
   date: string,
   currentCompleted?: boolean,
-): Promise<void> {
-  if (!isSupabaseConfigured()) return;
+): Promise<HabitLog> {
+  if (!keyring.isUnlocked()) throw new Error("Encryption is locked");
+  const userId = await requireUserId();
+  const mk = keyring.getMasterKey();
+  const dBucket = habitLogDayBucket(mk, habitId, date);
+  const mBucket = habitLogMonthBucket(mk, date.slice(0, 7));
 
-  const userId = await sessionManager.getUserId();
-  const accessToken = await sessionManager.getAccessToken();
-  const dayBucket = getLogDayBucket(habitId, date);
-  const monthBucket = getMonthBucket(date);
-
-  // Fast path: if caller knows current state, just flip it
+  const aad = AAD.habitLog(dBucket, userId);
   let completed: boolean;
   if (typeof currentCompleted === "boolean") {
     completed = !currentCompleted;
   } else {
-    // Fallback: check current value from DB (plaintext)
+    // Read current from server
     const { data: existing } = await supabase
       .from("habit_logs")
-      .select("completed")
+      .select("ciphertext, nonce")
       .eq("owner_id", userId)
-      .eq("day_bucket", dayBucket)
+      .eq("day_bucket", dBucket)
       .maybeSingle();
-
     if (existing) {
-      completed = !existing.completed;
+      const payload = decryptJson<HabitLogPayload>(
+        mk,
+        {
+          ciphertext: existing.ciphertext as string,
+          nonce: existing.nonce as string,
+        },
+        aad,
+      );
+      completed = !payload.completed;
     } else {
       completed = true;
     }
   }
 
-  const response = await fetch(
-    `${SUPABASE_URL}/functions/v1/encrypt-and-save`,
+  const payload: HabitLogPayload = { habitId, date, completed };
+  const blob = encryptJson(mk, payload, aad);
+
+  const { error } = await supabase.from("habit_logs").upsert(
     {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify({
-        table: "habit_logs",
-        data: { habitId, date, completed },
-        owner_id: userId,
-        day_bucket: dayBucket,
-        month_bucket: monthBucket,
-      }),
+      owner_id: userId,
+      day_bucket: dBucket,
+      month_bucket: mBucket,
+      ciphertext: blob.ciphertext,
+      nonce: blob.nonce,
     },
+    { onConflict: "owner_id,day_bucket" },
   );
-
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.error || "Failed to save habit log");
+  if (error) {
+    throw new Error(`Failed to save habit log: ${error.message}`);
   }
-}
 
-export async function setHabitLog(
-  habitId: string,
-  date: string,
-  completed: boolean,
-): Promise<void> {
-  if (!isSupabaseConfigured()) return;
+  // Invalidate month cache for that month so next read is fresh
+  const ym = date.slice(0, 7);
+  logsMonthCache.delete(monthKey(userId, ym));
 
-  const userId = await sessionManager.getUserId();
-  const accessToken = await sessionManager.getAccessToken();
-  const dayBucket = getLogDayBucket(habitId, date);
-  const monthBucket = getMonthBucket(date);
-
-  const response = await fetch(
-    `${SUPABASE_URL}/functions/v1/encrypt-and-save`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify({
-        table: "habit_logs",
-        data: { habitId, date, completed },
-        owner_id: userId,
-        day_bucket: dayBucket,
-        month_bucket: monthBucket,
-      }),
-    },
-  );
-
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.error || "Failed to save habit log");
-  }
+  return { habitId, date, completed };
 }
 
 export async function getHabitLogsForMonth(
   year: number,
   month: number,
 ): Promise<HabitLog[]> {
-  if (!isSupabaseConfigured()) return [];
+  if (!keyring.isUnlocked()) return [];
+  const userId = await requireUserId();
+  const mk = keyring.getMasterKey();
+  const ym = DateFormats.formatYearMonth(year, month);
+  const mBucket = habitLogMonthBucket(mk, ym);
 
-  try {
-    const userId = await sessionManager.getUserId();
-    const accessToken = await sessionManager.getAccessToken();
-    const monthBucket = DateFormats.formatYearMonth(year, month);
+  const { data, error } = await supabase
+    .from("habit_logs")
+    .select("ciphertext, nonce, day_bucket")
+    .eq("owner_id", userId)
+    .eq("month_bucket", mBucket);
 
-    const response = await fetch(
-      `${SUPABASE_URL}/functions/v1/fetch-and-decrypt?table=habit_logs&owner_id=${userId}&month_bucket=${monthBucket}`,
-      { headers: { Authorization: `Bearer ${accessToken}` } },
-    );
-
-    if (!response.ok) return [];
-
-    const { data } = await response.json();
-    return (data || []).map((item: any) => ({
-      habitId: item.habitId,
-      date: item.date,
-      completed: item.completed,
-    }));
-  } catch {
+  if (error) {
+    if (__DEV__) console.error("[habit_logs] Fetch error:", error.message);
     return [];
   }
-}
 
-export async function getHabitLog(
-  habitId: string,
-  date: string,
-): Promise<HabitLog | null> {
-  if (!isSupabaseConfigured()) return null;
-
-  try {
-    const userId = await sessionManager.getUserId();
-    const accessToken = await sessionManager.getAccessToken();
-    const dayBucket = getLogDayBucket(habitId, date);
-
-    const response = await fetch(
-      `${SUPABASE_URL}/functions/v1/fetch-and-decrypt?table=habit_logs&owner_id=${userId}&day_bucket=${dayBucket}`,
-      { headers: { Authorization: `Bearer ${accessToken}` } },
-    );
-
-    if (!response.ok) return null;
-    const { data } = await response.json();
-    if (!data?.[0]) return null;
-
-    const item = data[0];
-    return {
-      habitId: item.habitId,
-      date: item.date,
-      completed: item.completed,
-    };
-  } catch {
-    return null;
+  const logs: HabitLog[] = [];
+  for (const row of data ?? []) {
+    try {
+      const payload = decryptJson<HabitLogPayload>(
+        mk,
+        {
+          ciphertext: row.ciphertext as string,
+          nonce: row.nonce as string,
+        },
+        AAD.habitLog(row.day_bucket as string, userId),
+      );
+      logs.push({
+        habitId: payload.habitId,
+        date: payload.date,
+        completed: payload.completed,
+      });
+    } catch (e) {
+      if (__DEV__) console.warn("[habit_logs] Failed to decrypt log:", e);
+    }
   }
+
+  setCachedHabitLogsForMonth(year, month, userId, logs);
+  return logs;
 }
 
-export async function deleteLogsForHabit(_habitId: string): Promise<void> {}
-
-export async function deleteAllHabitLogs(): Promise<void> {
-  if (!isSupabaseConfigured()) return;
-  try {
-    const userId = await sessionManager.getUserId();
-    await supabase.from("habit_logs").delete().eq("owner_id", userId);
-  } catch {}
-}
+// Back-compat name used by data-store.tsx
+export const getHabitLogsForMonthDirect = getHabitLogsForMonth;

@@ -1,16 +1,16 @@
-import { useState } from 'react';
+import { BrandMark } from '@/components/ui/brand-mark';
+import { PaperBackground } from '@/components/ui/paper-background';
+import { Colors, Fonts } from '@/constants/theme';
+import { router } from 'expo-router';
 import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
   KeyboardAvoidingView,
   Platform,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
-import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Colors, Fonts } from '@/constants/theme';
-import { PaperBackground } from '@/components/ui/paper-background';
 
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
@@ -22,10 +22,12 @@ export default function LoginScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
         <View style={[styles.content, { paddingTop: insets.top + 80 }]}>
-          <Text style={styles.logo}>🍌</Text>
-          <Text style={styles.title}>Banana</Text>
+          <View style={styles.logo}>
+            <BrandMark size={40} blink float />
+          </View>
+          <Text style={styles.title}>Aight Bet</Text>
           <Text style={styles.subtitle}>
-            Your private, encrypted journal
+            Get your shit done!
           </Text>
 
           <View style={styles.buttonContainer}>
@@ -47,6 +49,23 @@ export default function LoginScreen() {
           </View>
         </View>
 
+        {__DEV__ && (
+          <View style={styles.devRow}>
+            <TouchableOpacity
+              onPress={() => router.push('/onboarding/welcome' as any)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.devLink}>Onboarding →</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => router.replace('/(tabs)' as any)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.devLink}>Skip to app →</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         <Text style={[styles.footer, { paddingBottom: insets.bottom + 24 }]}>
           End-to-end encrypted. Only you can read your data.
         </Text>
@@ -65,14 +84,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   logo: {
-    fontSize: 80,
-    marginBottom: 16,
+    marginBottom: 24,
   },
   title: {
     fontSize: 36,
-    fontWeight: '700',
     color: Colors.ink,
-    fontFamily: Fonts.handwriting,
+    fontFamily: Fonts.handwritingMedium,
     marginBottom: 8,
     textAlign: 'center',
   },
@@ -124,5 +141,17 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwriting,
     textAlign: 'center',
     paddingHorizontal: 24,
+  },
+  devRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 24,
+    paddingBottom: 12,
+  },
+  devLink: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    textDecorationLine: 'underline',
   },
 });

@@ -1,59 +1,59 @@
-import { useState } from 'react';
+import { IconSymbol } from "@/components/ui/icon-symbol";
+import { PaperBackground } from "@/components/ui/paper-background";
+import { Colors, Fonts } from "@/constants/theme";
+import { signupTransient } from "@/lib/auth/signup-transient";
+import { supabase } from "@/lib/supabase";
+import { router } from "expo-router";
+import { useState } from "react";
 import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
   Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-} from 'react-native';
-import { router } from 'expo-router';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { supabase } from '@/lib/supabase';
-import { Colors, Fonts } from '@/constants/theme';
-import { PaperBackground } from '@/components/ui/paper-background';
-import { IconSymbol } from '@/components/ui/icon-symbol';
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 export default function SignupScreen() {
   const insets = useSafeAreaInsets();
-  const [username, setUsername] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
+  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [checkingUsername, setCheckingUsername] = useState(false);
-  const [usernameError, setUsernameError] = useState('');
+  const [usernameError, setUsernameError] = useState("");
   const [usernameAvailable, setUsernameAvailable] = useState(false);
-  const [passwordError, setPasswordError] = useState('');
+  const [passwordError, setPasswordError] = useState("");
   const [showPassword, setShowPassword] = useState(false);
 
-  const validateEmail = (email: string): boolean => {
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-  };
+  const validateEmail = (e: string): boolean =>
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 
   const validateUsername = (value: string): string | null => {
     const clean = value.toLowerCase().trim();
-    if (clean.length < 3) return 'At least 3 characters';
-    if (clean.length > 20) return 'Max 20 characters';
-    if (!/^[a-z0-9_]+$/.test(clean)) return 'Only letters, numbers, underscores';
+    if (clean.length < 3) return "At least 3 characters";
+    if (clean.length > 20) return "Max 20 characters";
+    if (!/^[a-z0-9_]+$/.test(clean))
+      return "Only letters, numbers, underscores";
     return null;
   };
 
   const validatePassword = (pass: string): string | null => {
-    if (pass.length < 8) return 'At least 8 characters';
-    if (!/[A-Z]/.test(pass)) return 'Include an uppercase letter';
-    if (!/[a-z]/.test(pass)) return 'Include a lowercase letter';
-    if (!/[0-9]/.test(pass)) return 'Include a number';
+    if (pass.length < 8) return "At least 8 characters";
+    if (!/[A-Z]/.test(pass)) return "Include an uppercase letter";
+    if (!/[a-z]/.test(pass)) return "Include a lowercase letter";
+    if (!/[0-9]/.test(pass)) return "Include a number";
     return null;
   };
 
   const checkUsernameAvailability = async (value: string) => {
     const clean = value.toLowerCase().trim();
     const validationError = validateUsername(clean);
-    
     if (validationError) {
       setUsernameError(validationError);
       setUsernameAvailable(false);
@@ -61,103 +61,113 @@ export default function SignupScreen() {
     }
 
     setCheckingUsername(true);
-    setUsernameError('');
+    setUsernameError("");
 
     try {
-      const { data: existing } = await supabase
-        .from('accounts')
-        .select('id')
-        .eq('username', clean)
-        .single();
+      const { data, error } = await supabase.rpc("username_available", {
+        check_username: clean,
+      });
 
-      if (existing) {
-        setUsernameError('Username taken');
+      if (error) {
+        // Best effort — let signup attempt handle the real check
+        setUsernameError("");
+        setUsernameAvailable(true);
+        return;
+      }
+      if (data === false) {
+        setUsernameError("Username taken");
         setUsernameAvailable(false);
       } else {
-        setUsernameError('');
+        setUsernameError("");
         setUsernameAvailable(true);
       }
-    } catch {
-      // No match found = available
-      setUsernameError('');
-      setUsernameAvailable(true);
     } finally {
       setCheckingUsername(false);
     }
   };
 
   const handleSignup = async () => {
-    // Validate all fields
     if (!username.trim()) {
-      setUsernameError('Username is required');
+      setUsernameError("Username is required");
       return;
     }
-
     const usernameValidation = validateUsername(username);
     if (usernameValidation) {
       setUsernameError(usernameValidation);
       return;
     }
-
     if (!usernameAvailable) {
-      Alert.alert('Username unavailable', 'Please choose a different username.');
+      Alert.alert(
+        "Username unavailable",
+        "Please choose a different username.",
+      );
       return;
     }
-
     if (!email.trim() || !validateEmail(email)) {
-      Alert.alert('Invalid email', 'Please enter a valid email address.');
+      Alert.alert("Invalid email", "Please enter a valid email address.");
       return;
     }
-
     const passwordValidation = validatePassword(password);
     if (passwordValidation) {
       setPasswordError(passwordValidation);
       return;
     }
-
     if (password !== confirmPassword) {
-      setPasswordError('Passwords do not match');
+      setPasswordError("Passwords do not match");
       return;
     }
 
     setLoading(true);
-    setPasswordError('');
+    setPasswordError("");
 
     try {
-      // Sign up with Supabase Auth (creates user with hashed password)
+      const cleanEmail = email.trim().toLowerCase();
+      const cleanUsername = username.toLowerCase().trim();
+
       const { data, error } = await supabase.auth.signUp({
-        email: email.trim().toLowerCase(),
-        password: password,
-        options: {
-          data: {
-            username: username.toLowerCase().trim(),
-          },
-        },
+        email: cleanEmail,
+        password,
+        options: { data: { username: cleanUsername } },
       });
 
       if (error) {
-        if (error.message.includes('already registered')) {
-          Alert.alert('Email in use', 'This email is already registered. Try signing in instead.');
+        if (error.message.toLowerCase().includes("already registered")) {
+          Alert.alert(
+            "Email in use",
+            "This email is already registered. Try signing in instead.",
+          );
         } else {
-          Alert.alert('Error', error.message);
+          Alert.alert("Error", error.message);
         }
         setLoading(false);
         return;
       }
 
-      if (data.user) {
-        // Navigate to verify screen
+      // Stash password so verify screen can derive the encryption keyring
+      signupTransient.set({
+        email: cleanEmail,
+        username: cleanUsername,
+        password,
+      });
+
+      if (data.session) {
+        // Email confirmation disabled — go straight to keyring setup
+        router.replace({
+          pathname: "/auth/recovery-setup",
+          params: { source: "signup" },
+        });
+      } else {
         router.push({
-          pathname: '/auth/verify',
-          params: { 
-            email: email.trim().toLowerCase(),
-            username: username.toLowerCase().trim(),
-            isNewUser: 'true',
+          pathname: "/auth/verify",
+          params: {
+            email: cleanEmail,
+            username: cleanUsername,
+            isNewUser: "true",
           },
         });
       }
-    } catch (err) {
-      Alert.alert('Error', 'Something went wrong. Please try again.');
+    } catch {
+      Alert.alert("Error", "Something went wrong. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -167,15 +177,15 @@ export default function SignupScreen() {
     <PaperBackground>
       <KeyboardAvoidingView
         style={styles.container}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
-        <ScrollView 
+        <ScrollView
           contentContainerStyle={[styles.content, { paddingTop: insets.top + 20 }]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <TouchableOpacity 
-            style={styles.backButton} 
+          <TouchableOpacity
+            style={styles.backButton}
             onPress={() => router.back()}
             activeOpacity={0.7}
           >
@@ -185,11 +195,10 @@ export default function SignupScreen() {
 
           <Text style={styles.title}>Create Account</Text>
           <Text style={styles.subtitle}>
-            Join Banana and start journaling privately
+            Join Aight Bet and start journaling privately
           </Text>
 
           <View style={styles.form}>
-            {/* Username */}
             <Text style={styles.label}>Username</Text>
             <View style={styles.usernameContainer}>
               <Text style={styles.prefix}>@</Text>
@@ -197,15 +206,13 @@ export default function SignupScreen() {
                 style={styles.usernameInput}
                 value={username}
                 onChangeText={(text) => {
-                  const clean = text.toLowerCase().replace(/[^a-z0-9_]/g, '');
+                  const clean = text.toLowerCase().replace(/[^a-z0-9_]/g, "");
                   setUsername(clean);
                   setUsernameAvailable(false);
-                  setUsernameError('');
+                  setUsernameError("");
                 }}
                 onBlur={() => {
-                  if (username.length >= 3) {
-                    checkUsernameAvailability(username);
-                  }
+                  if (username.length >= 3) checkUsernameAvailability(username);
                 }}
                 placeholder="yourname"
                 placeholderTextColor={Colors.textSecondary}
@@ -213,20 +220,23 @@ export default function SignupScreen() {
                 autoCorrect={false}
                 maxLength={20}
               />
-              {checkingUsername && (
-                <Text style={styles.checking}>...</Text>
-              )}
+              {checkingUsername && <Text style={styles.checking}>...</Text>}
               {usernameAvailable && !checkingUsername && (
-                <IconSymbol name="checkmark.circle.fill" size={20} color="#4caf50" />
+                <IconSymbol
+                  name="checkmark.circle.fill"
+                  size={20}
+                  color={Colors.success}
+                />
               )}
             </View>
             {usernameError ? (
               <Text style={styles.error}>{usernameError}</Text>
             ) : (
-              <Text style={styles.hint}>3-20 characters: letters, numbers, underscores</Text>
+              <Text style={styles.hint}>
+                3-20 characters: letters, numbers, underscores
+              </Text>
             )}
 
-            {/* Email */}
             <Text style={styles.label}>Email</Text>
             <TextInput
               style={styles.input}
@@ -240,15 +250,14 @@ export default function SignupScreen() {
               autoComplete="email"
             />
 
-            {/* Password */}
             <Text style={styles.label}>Password</Text>
             <View style={styles.passwordContainer}>
               <TextInput
                 style={styles.passwordInput}
                 value={password}
-                onChangeText={(text) => {
-                  setPassword(text);
-                  setPasswordError('');
+                onChangeText={(t) => {
+                  setPassword(t);
+                  setPasswordError("");
                 }}
                 placeholder="Create a password"
                 placeholderTextColor={Colors.textSecondary}
@@ -260,23 +269,24 @@ export default function SignupScreen() {
                 onPress={() => setShowPassword(!showPassword)}
                 style={styles.eyeButton}
               >
-                <IconSymbol 
-                  name={showPassword ? 'eye.slash' : 'eye'} 
-                  size={20} 
-                  color={Colors.textSecondary} 
+                <IconSymbol
+                  name={showPassword ? "eye.slash" : "eye"}
+                  size={20}
+                  color={Colors.textSecondary}
                 />
               </TouchableOpacity>
             </View>
-            <Text style={styles.hint}>Min 8 chars, uppercase, lowercase, number</Text>
+            <Text style={styles.hint}>
+              Min 8 chars, uppercase, lowercase, number
+            </Text>
 
-            {/* Confirm Password */}
             <Text style={styles.label}>Confirm Password</Text>
             <TextInput
               style={styles.input}
               value={confirmPassword}
-              onChangeText={(text) => {
-                setConfirmPassword(text);
-                setPasswordError('');
+              onChangeText={(t) => {
+                setConfirmPassword(t);
+                setPasswordError("");
               }}
               placeholder="Confirm your password"
               placeholderTextColor={Colors.textSecondary}
@@ -284,7 +294,20 @@ export default function SignupScreen() {
               autoCapitalize="none"
               autoCorrect={false}
             />
-            {passwordError ? <Text style={styles.error}>{passwordError}</Text> : null}
+            {passwordError ? (
+              <Text style={styles.error}>{passwordError}</Text>
+            ) : null}
+
+            <View style={styles.privacyCallout}>
+              <IconSymbol name="lock.fill" size={16} color={Colors.ink} />
+              <Text style={styles.privacyText}>
+                Your password encrypts your data.{" "}
+                <Text style={styles.privacyBold}>
+                  If you forget it, only your recovery key can restore access.
+                </Text>{" "}
+                We'll show it to you next.
+              </Text>
+            </View>
 
             <TouchableOpacity
               style={[styles.button, loading && styles.buttonDisabled]}
@@ -293,14 +316,14 @@ export default function SignupScreen() {
               activeOpacity={0.7}
             >
               <Text style={styles.buttonText}>
-                {loading ? 'Creating account...' : 'Create Account'}
+                {loading ? "Creating account..." : "Create Account"}
               </Text>
             </TouchableOpacity>
           </View>
 
           <View style={styles.signinContainer}>
             <Text style={styles.signinText}>Already have an account? </Text>
-            <TouchableOpacity onPress={() => router.replace('/auth/signin')}>
+            <TouchableOpacity onPress={() => router.replace("/auth/signin")}>
               <Text style={styles.signinLink}>Sign In</Text>
             </TouchableOpacity>
           </View>
@@ -313,18 +336,9 @@ export default function SignupScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  content: {
-    flexGrow: 1,
-    paddingHorizontal: 24,
-  },
-  backButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 24,
-  },
+  container: { flex: 1 },
+  content: { flexGrow: 1, paddingHorizontal: 24 },
+  backButton: { flexDirection: "row", alignItems: "center", marginBottom: 24 },
   backText: {
     fontSize: 16,
     color: Colors.ink,
@@ -333,7 +347,7 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 28,
-    fontWeight: '700',
+    fontWeight: "700",
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
     marginBottom: 8,
@@ -344,20 +358,17 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwriting,
     marginBottom: 24,
   },
-  form: {
-    width: '100%',
-    maxWidth: 400,
-  },
+  form: { width: "100%", maxWidth: 400 },
   label: {
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: "600",
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
     marginBottom: 8,
     marginTop: 8,
   },
   input: {
-    width: '100%',
+    width: "100%",
     height: 52,
     borderWidth: 1.5,
     borderColor: Colors.ink,
@@ -370,9 +381,9 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   usernameContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    width: '100%',
+    flexDirection: "row",
+    alignItems: "center",
+    width: "100%",
     height: 52,
     borderWidth: 1.5,
     borderColor: Colors.ink,
@@ -388,22 +399,18 @@ const styles = StyleSheet.create({
   },
   usernameInput: {
     flex: 1,
-    height: '100%',
+    height: "100%",
     paddingHorizontal: 4,
     paddingRight: 12,
     fontSize: 16,
     fontFamily: Fonts.handwriting,
     color: Colors.ink,
   },
-  checking: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    paddingRight: 12,
-  },
+  checking: { fontSize: 14, color: Colors.textSecondary, paddingRight: 12 },
   passwordContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    width: '100%',
+    flexDirection: "row",
+    alignItems: "center",
+    width: "100%",
     height: 52,
     borderWidth: 1.5,
     borderColor: Colors.ink,
@@ -413,18 +420,16 @@ const styles = StyleSheet.create({
   },
   passwordInput: {
     flex: 1,
-    height: '100%',
+    height: "100%",
     paddingHorizontal: 16,
     fontSize: 16,
     fontFamily: Fonts.handwriting,
     color: Colors.ink,
   },
-  eyeButton: {
-    padding: 12,
-  },
+  eyeButton: { padding: 12 },
   error: {
     fontSize: 13,
-    color: '#d32f2f',
+    color: Colors.danger,
     fontFamily: Fonts.handwriting,
     marginBottom: 8,
   },
@@ -434,27 +439,45 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwriting,
     marginBottom: 8,
   },
+  privacyCallout: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    backgroundColor: "rgba(255, 179, 128, 0.18)",
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginTop: 16,
+    borderWidth: 1,
+    borderColor: Colors.shadow,
+  },
+  privacyText: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 18,
+    color: Colors.ink,
+    fontFamily: Fonts.handwriting,
+  },
+  privacyBold: { fontWeight: "700" },
   button: {
-    width: '100%',
+    width: "100%",
     height: 52,
     backgroundColor: Colors.ink,
     borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: "center",
+    alignItems: "center",
     marginTop: 16,
   },
-  buttonDisabled: {
-    opacity: 0.6,
-  },
+  buttonDisabled: { opacity: 0.6 },
   buttonText: {
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: "600",
     color: Colors.paper,
     fontFamily: Fonts.handwriting,
   },
   signinContainer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
+    flexDirection: "row",
+    justifyContent: "center",
     marginTop: 24,
   },
   signinText: {
@@ -466,6 +489,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: Colors.accent,
     fontFamily: Fonts.handwriting,
-    fontWeight: '600',
+    fontWeight: "600",
   },
 });

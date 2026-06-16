@@ -1,135 +1,297 @@
-import { isSupabaseConfigured, supabase, SUPABASE_URL } from "../supabase";
-import {
-  deriveKeyFromUuid,
-  generateDayBucket,
-  generateMonthBucket,
-} from "./crypto";
-import { sessionManager } from "./session-manager";
-import { DateFormats } from "./schema";
-import type { DailyEntry, EntryPayload, LegacyEntryPayload } from "./types";
+// Entries — encrypted journal entries, one row per day.
+// Multiple "highlights" can live within a single day's encrypted payload.
 
-function payloadToEntries(
-  payload: EntryPayload | LegacyEntryPayload,
-  fallbackId: string,
-): DailyEntry[] {
-  if ("entries" in payload && Array.isArray(payload.entries)) {
-    return payload.entries.map((e) => ({
-      id: e.id,
-      date: payload.date,
-      text: e.text,
-      mediaUrls: e.localMediaUrls || [],
-      createdAt: e.createdAt,
-    }));
-  }
-  const legacy = payload as LegacyEntryPayload;
-  return [
-    {
-      id: fallbackId,
-      date: legacy.date,
-      text: legacy.text,
-      mediaUrls: legacy.localMediaUrls || [],
-      createdAt: legacy.createdAt,
-    },
-  ];
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import {
+  AAD,
+  dayBucket,
+  decryptJson,
+  encryptJson,
+  keyring,
+  monthBucket,
+} from "../crypto";
+import { supabase } from "../supabase";
+import { DateFormats } from "./schema";
+import type { DailyEntry, EntryPayload } from "./types";
+
+// ----------------------------------------------------------------------------
+// Caches
+// ----------------------------------------------------------------------------
+const entriesMonthCache = new Map<string, DailyEntry[]>(); // userId:YYYY-MM
+const entriesDayCache = new Map<string, DailyEntry[]>(); // userId:YYYY-MM-DD
+// Storage key is a protocol constant, not branding — renaming orphans caches.
+const ASYNC_STORAGE_PREFIX = "banana_entries_v2";
+
+function monthKey(userId: string, yearMonth: string): string {
+  return `${userId}:${yearMonth}`;
 }
 
-function entriesToPayload(entries: DailyEntry[], date: string): EntryPayload {
+function dayKey(userId: string, date: string): string {
+  return `${userId}:${date}`;
+}
+
+function storageKey(userId: string, yearMonth: string): string {
+  return `${ASYNC_STORAGE_PREFIX}:${userId}:${yearMonth}`;
+}
+
+export function getCachedEntriesForMonth(
+  year: number,
+  month: number,
+  userId: string,
+): DailyEntry[] | null {
+  return (
+    entriesMonthCache.get(
+      monthKey(userId, DateFormats.formatYearMonth(year, month)),
+    ) ?? null
+  );
+}
+
+export function setCachedEntriesForMonth(
+  year: number,
+  month: number,
+  userId: string,
+  entries: DailyEntry[],
+): void {
+  const ym = DateFormats.formatYearMonth(year, month);
+  entriesMonthCache.set(monthKey(userId, ym), entries);
+  void AsyncStorage.setItem(storageKey(userId, ym), JSON.stringify(entries)).catch(
+    () => {},
+  );
+}
+
+export function upsertEntryInCache(entry: DailyEntry, userId: string): void {
+  const ym = entry.date.slice(0, 7);
+  const mKey = monthKey(userId, ym);
+  const existing = entriesMonthCache.get(mKey);
+  if (existing) {
+    const next = [...existing];
+    const i = next.findIndex((e) => e.id === entry.id);
+    if (i >= 0) next[i] = entry;
+    else next.push(entry);
+    entriesMonthCache.set(mKey, next);
+    void AsyncStorage.setItem(
+      storageKey(userId, ym),
+      JSON.stringify(next),
+    ).catch(() => {});
+  }
+  const dKey = dayKey(userId, entry.date);
+  const dayExisting = entriesDayCache.get(dKey);
+  if (dayExisting) {
+    const next = [...dayExisting];
+    const i = next.findIndex((e) => e.id === entry.id);
+    if (i >= 0) next[i] = entry;
+    else next.push(entry);
+    entriesDayCache.set(dKey, next);
+  }
+}
+
+export function clearEntriesCache(): void {
+  entriesMonthCache.clear();
+  entriesDayCache.clear();
+}
+
+export async function loadEntriesForMonthFromStorage(
+  year: number,
+  month: number,
+  userId: string,
+): Promise<DailyEntry[] | null> {
+  try {
+    const ym = DateFormats.formatYearMonth(year, month);
+    const raw = await AsyncStorage.getItem(storageKey(userId, ym));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as DailyEntry[];
+    entriesMonthCache.set(monthKey(userId, ym), parsed);
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Helpers
+// ----------------------------------------------------------------------------
+function payloadToEntries(payload: EntryPayload): DailyEntry[] {
+  return payload.entries.map((e) => ({
+    id: e.id,
+    date: payload.date,
+    text: e.text,
+    mediaPaths: e.mediaPaths ?? [],
+    createdAt: e.createdAt,
+  }));
+}
+
+function entriesToPayload(date: string, entries: DailyEntry[]): EntryPayload {
   return {
     date,
     entries: entries.map((e) => ({
       id: e.id,
       text: e.text,
       createdAt: e.createdAt,
-      localMediaUrls: e.mediaUrls,
+      mediaPaths: e.mediaPaths,
     })),
   };
 }
 
+async function requireUserId(): Promise<string> {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (!session) throw new Error("Not signed in");
+  return session.user.id;
+}
+
+// ----------------------------------------------------------------------------
+// Public API
+// ----------------------------------------------------------------------------
+
+/**
+ * Save (insert or merge) a single entry for the given day.
+ * Multiple entries per day are merged into one encrypted row.
+ */
 export async function saveEntry(entry: DailyEntry): Promise<void> {
-  if (!isSupabaseConfigured()) return;
+  if (!keyring.isUnlocked()) throw new Error("Encryption is locked");
+  const userId = await requireUserId();
+  const mk = keyring.getMasterKey();
 
-  const userId = await sessionManager.getUserId();
-  const accessToken = await sessionManager.getAccessToken();
-  const key = deriveKeyFromUuid(userId);
-  const dayBucket = generateDayBucket(key, entry.date);
-  const monthBucket = generateMonthBucket(key, entry.date.slice(0, 7));
+  const dBucket = dayBucket(mk, entry.date);
+  const mBucket = monthBucket(mk, entry.date.slice(0, 7));
 
-  // Fetch existing entry to merge
+  // Fetch existing row (if any) to merge same-day highlights
   const { data: existing } = await supabase
     .from("entries")
-    .select("id")
+    .select("ciphertext, nonce")
     .eq("owner_id", userId)
-    .eq("day_bucket", dayBucket)
+    .eq("day_bucket", dBucket)
     .maybeSingle();
 
-  let allEntries: DailyEntry[] = [];
+  let merged: DailyEntry[] = [];
   if (existing) {
-    const fetchResponse = await fetch(
-      `${SUPABASE_URL}/functions/v1/fetch-and-decrypt?table=entries&owner_id=${userId}&day_bucket=${dayBucket}`,
-      { headers: { Authorization: `Bearer ${accessToken}` } },
-    );
-    if (fetchResponse.ok) {
-      const { data: decrypted } = await fetchResponse.json();
-      if (decrypted?.[0]) {
-        allEntries = payloadToEntries(decrypted[0], entry.id);
+    try {
+      const decrypted = decryptJson<EntryPayload>(
+        mk,
+        {
+          ciphertext: existing.ciphertext as string,
+          nonce: existing.nonce as string,
+        },
+        AAD.entry(dBucket, userId),
+      );
+      merged = payloadToEntries(decrypted);
+    } catch (e) {
+      if (__DEV__) {
+        console.warn("[entries] Failed to decrypt existing day, replacing:", e);
       }
     }
   }
 
-  const existingIndex = allEntries.findIndex((e) => e.id === entry.id);
-  if (existingIndex >= 0) {
-    allEntries[existingIndex] = entry;
-  } else {
-    allEntries.push(entry);
-  }
+  const idx = merged.findIndex((e) => e.id === entry.id);
+  if (idx >= 0) merged[idx] = entry;
+  else merged.push(entry);
 
-  const payload = entriesToPayload(allEntries, entry.date);
+  const payload = entriesToPayload(entry.date, merged);
+  const blob = encryptJson(mk, payload, AAD.entry(dBucket, userId));
 
-  const response = await fetch(
-    `${SUPABASE_URL}/functions/v1/encrypt-and-save`,
+  const { error } = await supabase.from("entries").upsert(
     {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify({
-        table: "entries",
-        data: payload,
-        owner_id: userId,
-        day_bucket: dayBucket,
-        month_bucket: monthBucket,
-      }),
+      owner_id: userId,
+      day_bucket: dBucket,
+      month_bucket: mBucket,
+      ciphertext: blob.ciphertext,
+      nonce: blob.nonce,
     },
+    { onConflict: "owner_id,day_bucket" },
   );
 
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.error || "Failed to save entry");
+  if (error) {
+    throw new Error(`Failed to save entry: ${error.message}`);
   }
+
+  // Update caches
+  for (const e of merged) upsertEntryInCache(e, userId);
+}
+
+/**
+ * Delete one specific entry id (within a day). If the day becomes empty,
+ * deletes the entire row.
+ */
+export async function deleteEntry(entryId: string, date: string): Promise<void> {
+  if (!keyring.isUnlocked()) throw new Error("Encryption is locked");
+  const userId = await requireUserId();
+  const mk = keyring.getMasterKey();
+  const dBucket = dayBucket(mk, date);
+
+  const { data: existing } = await supabase
+    .from("entries")
+    .select("ciphertext, nonce")
+    .eq("owner_id", userId)
+    .eq("day_bucket", dBucket)
+    .maybeSingle();
+
+  if (!existing) return;
+
+  const aad = AAD.entry(dBucket, userId);
+  const decrypted = decryptJson<EntryPayload>(
+    mk,
+    {
+      ciphertext: existing.ciphertext as string,
+      nonce: existing.nonce as string,
+    },
+    aad,
+  );
+  const remaining = decrypted.entries.filter((e) => e.id !== entryId);
+
+  if (remaining.length === 0) {
+    await supabase
+      .from("entries")
+      .delete()
+      .eq("owner_id", userId)
+      .eq("day_bucket", dBucket);
+  } else {
+    const blob = encryptJson(mk, { ...decrypted, entries: remaining }, aad);
+    await supabase
+      .from("entries")
+      .update({ ciphertext: blob.ciphertext, nonce: blob.nonce })
+      .eq("owner_id", userId)
+      .eq("day_bucket", dBucket);
+  }
+
+  // Invalidate caches for that month
+  const ym = date.slice(0, 7);
+  entriesMonthCache.delete(monthKey(userId, ym));
+  entriesDayCache.delete(dayKey(userId, date));
 }
 
 export async function getEntriesForDate(date: string): Promise<DailyEntry[]> {
-  if (!isSupabaseConfigured()) return [];
+  if (!keyring.isUnlocked()) return [];
+  const userId = await requireUserId();
+  const mk = keyring.getMasterKey();
+  const dKey = dayKey(userId, date);
 
+  const cached = entriesDayCache.get(dKey);
+  if (cached) return cached;
+
+  const dBucket = dayBucket(mk, date);
+  const { data, error } = await supabase
+    .from("entries")
+    .select("ciphertext, nonce")
+    .eq("owner_id", userId)
+    .eq("day_bucket", dBucket)
+    .maybeSingle();
+
+  if (error || !data) return [];
   try {
-    const userId = await sessionManager.getUserId();
-    const accessToken = await sessionManager.getAccessToken();
-    const key = deriveKeyFromUuid(userId);
-    const dayBucket = generateDayBucket(key, date);
-
-    const response = await fetch(
-      `${SUPABASE_URL}/functions/v1/fetch-and-decrypt?table=entries&owner_id=${userId}&day_bucket=${dayBucket}`,
-      { headers: { Authorization: `Bearer ${accessToken}` } },
+    const decrypted = decryptJson<EntryPayload>(
+      mk,
+      {
+        ciphertext: data.ciphertext as string,
+        nonce: data.nonce as string,
+      },
+      AAD.entry(dBucket, userId),
     );
-
-    if (!response.ok) return [];
-
-    const { data } = await response.json();
-    if (!data?.[0]) return [];
-
-    return payloadToEntries(data[0], "");
-  } catch {
+    const entries = payloadToEntries(decrypted);
+    entriesDayCache.set(dKey, entries);
+    return entries;
+  } catch (e) {
+    if (__DEV__) console.error("[entries] Decrypt failure for date", date, e);
     return [];
   }
 }
@@ -138,84 +300,55 @@ export async function getEntriesForMonth(
   year: number,
   month: number,
 ): Promise<DailyEntry[]> {
-  if (!isSupabaseConfigured()) return [];
+  if (!keyring.isUnlocked()) return [];
+  const userId = await requireUserId();
+  const mk = keyring.getMasterKey();
+  const ym = DateFormats.formatYearMonth(year, month);
+  const mBucket = monthBucket(mk, ym);
 
-  try {
-    const userId = await sessionManager.getUserId();
-    const accessToken = await sessionManager.getAccessToken();
-    const key = deriveKeyFromUuid(userId);
-    const monthBucket = generateMonthBucket(
-      key,
-      DateFormats.formatYearMonth(year, month),
-    );
+  const { data, error } = await supabase
+    .from("entries")
+    .select("ciphertext, nonce, day_bucket")
+    .eq("owner_id", userId)
+    .eq("month_bucket", mBucket);
 
-    const response = await fetch(
-      `${SUPABASE_URL}/functions/v1/fetch-and-decrypt?table=entries&owner_id=${userId}&month_bucket=${monthBucket}`,
-      { headers: { Authorization: `Bearer ${accessToken}` } },
-    );
-
-    if (!response.ok) return [];
-
-    const { data } = await response.json();
-    const entries: DailyEntry[] = [];
-    for (const item of data || []) {
-      entries.push(...payloadToEntries(item, item._id || ""));
-    }
-    return entries;
-  } catch {
+  if (error) {
+    if (__DEV__) console.error("[entries] Month fetch error:", error.message);
     return [];
   }
+
+  const all: DailyEntry[] = [];
+  for (const row of data ?? []) {
+    try {
+      const decrypted = decryptJson<EntryPayload>(
+        mk,
+        {
+          ciphertext: row.ciphertext as string,
+          nonce: row.nonce as string,
+        },
+        AAD.entry(row.day_bucket as string, userId),
+      );
+      all.push(...payloadToEntries(decrypted));
+    } catch (e) {
+      if (__DEV__) console.warn("[entries] Failed to decrypt a row:", e);
+    }
+  }
+
+  setCachedEntriesForMonth(year, month, userId, all);
+  return all;
 }
 
-export async function deleteEntry(
-  entryId: string,
-  date: string,
+export async function prefetchEntriesForMonth(
+  year: number,
+  month: number,
 ): Promise<void> {
-  if (!isSupabaseConfigured()) return;
-
+  if (!keyring.isUnlocked()) return;
   try {
-    const userId = await sessionManager.getUserId();
-    const accessToken = await sessionManager.getAccessToken();
-    const key = deriveKeyFromUuid(userId);
-    const dayBucket = generateDayBucket(key, date);
-
-    const response = await fetch(
-      `${SUPABASE_URL}/functions/v1/fetch-and-decrypt?table=entries&owner_id=${userId}&day_bucket=${dayBucket}`,
-      { headers: { Authorization: `Bearer ${accessToken}` } },
-    );
-
-    if (!response.ok) return;
-
-    const { data } = await response.json();
-    if (!data?.[0]) return;
-
-    let allEntries = payloadToEntries(data[0], entryId);
-    allEntries = allEntries.filter((e) => e.id !== entryId);
-
-    if (allEntries.length === 0) {
-      await supabase
-        .from("entries")
-        .delete()
-        .eq("owner_id", userId)
-        .eq("day_bucket", dayBucket);
-    } else {
-      const payload = entriesToPayload(allEntries, date);
-      const monthBucket = generateMonthBucket(key, date.slice(0, 7));
-
-      await fetch(`${SUPABASE_URL}/functions/v1/encrypt-and-save`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({
-          table: "entries",
-          data: payload,
-          owner_id: userId,
-          day_bucket: dayBucket,
-          month_bucket: monthBucket,
-        }),
-      });
-    }
-  } catch {}
+    const userId = await requireUserId();
+    const ym = DateFormats.formatYearMonth(year, month);
+    if (entriesMonthCache.has(monthKey(userId, ym))) return;
+    await getEntriesForMonth(year, month);
+  } catch {
+    // best effort
+  }
 }

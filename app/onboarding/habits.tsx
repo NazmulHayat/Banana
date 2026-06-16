@@ -1,59 +1,62 @@
-import { useEffect, useRef, useState } from 'react';
+import { HabitCell } from "@/components/ui/habit-cell";
+import { IconSymbol } from "@/components/ui/icon-symbol";
+import { PaperBackground } from "@/components/ui/paper-background";
+import { Colors, Fonts } from "@/constants/theme";
+import { useAuth } from "@/lib/auth-context";
+import { getHabits, Habit, saveHabits } from "@/lib/db";
+import { LinearGradient } from "expo-linear-gradient";
+import { Href, router } from "expo-router";
+import { useEffect, useRef, useState } from "react";
 import {
-  View,
-  Text,
-  StyleSheet,
-  Animated,
-  TouchableOpacity,
-  TextInput,
-  ScrollView,
-  Dimensions,
-  KeyboardAvoidingView,
-  Platform,
-} from 'react-native';
-import { router, Href } from 'expo-router';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
-import { PaperBackground } from '@/components/ui/paper-background';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { HabitCell } from '@/components/ui/habit-cell';
-import { Colors, Fonts } from '@/constants/theme';
-import { Habit, saveHabits, waitForAuth, getHabits } from '@/lib/db';
+    Animated,
+    Dimensions,
+    KeyboardAvoidingView,
+    Platform,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-const { width, height } = Dimensions.get('window');
+const { width, height } = Dimensions.get("window");
 
 // Calculate cell size to fill screen width (6 columns: 1 day + 5 habits)
 const GRID_PADDING = 8; // horizontal padding on each side
 const CELL_GAP = 2; // gap between cells
 const NUM_COLUMNS = 6;
-const CALCULATED_CELL_SIZE = Math.floor((width - (GRID_PADDING * 2) - (CELL_GAP * (NUM_COLUMNS - 1))) / NUM_COLUMNS);
+const CALCULATED_CELL_SIZE = Math.floor(
+  (width - GRID_PADDING * 2 - CELL_GAP * (NUM_COLUMNS - 1)) / NUM_COLUMNS,
+);
 
 const HABIT_SUGGESTIONS = [
-  { name: 'Exercise', emoji: '💪' },
-  { name: 'Read', emoji: '📚' },
-  { name: 'Meditate', emoji: '🧘' },
-  { name: 'Journal', emoji: '✍️' },
-  { name: 'Hydrate', emoji: '💧' },
-  { name: 'Sleep 8hrs', emoji: '😴' },
-  { name: 'No phone', emoji: '📵' },
-  { name: 'Walk', emoji: '🚶' },
-  { name: 'Stretch', emoji: '🤸' },
-  { name: 'Vitamins', emoji: '💊' },
+  { name: "Exercise", emoji: "💪" },
+  { name: "Read", emoji: "📚" },
+  { name: "Meditate", emoji: "🧘" },
+  { name: "Journal", emoji: "✍️" },
+  { name: "Hydrate", emoji: "💧" },
+  { name: "Sleep 8hrs", emoji: "😴" },
+  { name: "No phone", emoji: "📵" },
+  { name: "Walk", emoji: "🚶" },
+  { name: "Stretch", emoji: "🤸" },
+  { name: "Vitamins", emoji: "💊" },
 ];
 
 // Demo habits for the preview animation
-const DEMO_HABITS = ['Exercise', 'Read', 'Meditate', 'Hydrate', 'Sleep'];
+const DEMO_HABITS = ["Exercise", "Read", "Meditate", "Hydrate", "Sleep"];
 
 // Generate realistic demo data - just enough to show the concept
 const generateRealisticMonth = () => {
   const days = 18; // Fewer days - just enough to show the effect
   const patterns: boolean[][] = [];
-  
+
   for (let day = 0; day < days; day++) {
     const dayOfWeek = day % 7;
     const isWeekend = dayOfWeek === 5 || dayOfWeek === 6;
     const isEarlyWeek = day < 7;
-    
+
     const row: boolean[] = [
       // Exercise - 75% consistent, worse on weekends
       isWeekend ? Math.random() > 0.5 : Math.random() > 0.25,
@@ -68,19 +71,20 @@ const generateRealisticMonth = () => {
     ];
     patterns.push(row);
   }
-  
+
   return patterns;
 };
 
 const DEMO_DATA = generateRealisticMonth();
 
-type Stage = 'demo' | 'transition' | 'select';
+type Stage = "demo" | "transition" | "select";
 
 export default function HabitsScreen() {
   const insets = useSafeAreaInsets();
-  const [stage, setStage] = useState<Stage>('demo');
+  const { session } = useAuth();
+  const [stage, setStage] = useState<Stage>("demo");
   const [selectedHabits, setSelectedHabits] = useState<string[]>([]);
-  const [customHabit, setCustomHabit] = useState('');
+  const [customHabit, setCustomHabit] = useState("");
   const [showPreview, setShowPreview] = useState(false);
 
   // Demo animation refs
@@ -96,7 +100,7 @@ export default function HabitsScreen() {
   const previewFade = useRef(new Animated.Value(0)).current;
   const previewSlide = useRef(new Animated.Value(50)).current;
   const suggestionsStagger = useRef(
-    HABIT_SUGGESTIONS.map(() => new Animated.Value(0))
+    HABIT_SUGGESTIONS.map(() => new Animated.Value(0)),
   ).current;
 
   useEffect(() => {
@@ -126,17 +130,18 @@ export default function HabitsScreen() {
     const rowHeight = cellSize + CELL_GAP;
     // Only scroll through about 8-10 rows - just to show movement
     const scrollDistance = rowHeight * 8;
-    
+
     let startTime: number;
     const animateScroll = (timestamp: number) => {
       if (!startTime) startTime = timestamp;
       const progress = (timestamp - startTime) / scrollDuration;
-      
+
       if (progress < 1 && demoScrollRef.current) {
         // Smooth ease-in-out for more natural feel
-        const easeProgress = progress < 0.5
-          ? 2 * progress * progress
-          : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+        const easeProgress =
+          progress < 0.5
+            ? 2 * progress * progress
+            : 1 - Math.pow(-2 * progress + 2, 2) / 2;
         const scrollY = easeProgress * scrollDistance;
         demoScrollRef.current.scrollTo({ y: scrollY, animated: false });
         requestAnimationFrame(animateScroll);
@@ -147,13 +152,13 @@ export default function HabitsScreen() {
         }, 500);
       }
     };
-    
+
     requestAnimationFrame(animateScroll);
   };
 
   const transitionToSelect = () => {
-    setStage('transition');
-    
+    setStage("transition");
+
     // Quick fade out demo - 400ms
     Animated.timing(demoFade, {
       toValue: 0,
@@ -180,7 +185,7 @@ export default function HabitsScreen() {
             duration: 350,
             useNativeDriver: true,
           }).start(() => {
-            setStage('select');
+            setStage("select");
             showSelectionUI();
           });
         }, 1200);
@@ -211,14 +216,14 @@ export default function HabitsScreen() {
           friction: 6,
           tension: 100,
           useNativeDriver: true,
-        })
-      )
+        }),
+      ),
     ).start();
   };
 
   useEffect(() => {
     // Show preview when habits are selected
-    if (selectedHabits.length > 0 && !showPreview && stage === 'select') {
+    if (selectedHabits.length > 0 && !showPreview && stage === "select") {
       setShowPreview(true);
       Animated.parallel([
         Animated.timing(previewFade, {
@@ -239,7 +244,7 @@ export default function HabitsScreen() {
     setSelectedHabits((prev) =>
       prev.includes(habitName)
         ? prev.filter((h) => h !== habitName)
-        : [...prev, habitName]
+        : [...prev, habitName],
     );
   };
 
@@ -247,29 +252,28 @@ export default function HabitsScreen() {
     const name = customHabit.trim();
     if (name && !selectedHabits.includes(name) && name.length <= 20) {
       setSelectedHabits((prev) => [...prev, name]);
-      setCustomHabit('');
+      setCustomHabit("");
     }
   };
 
   const handleContinue = async () => {
     if (selectedHabits.length === 0) return;
 
-    // Wait for auth to be ready before saving
-    console.log('[Onboarding] Waiting for auth before saving habits...');
-    const isReady = await waitForAuth();
-    if (!isReady) {
-      console.error('[Onboarding] Auth not ready, cannot save habits');
+    if (!session) {
+      console.error("[Onboarding] No session, cannot save habits");
       return;
     }
 
     // Get existing habits first to merge with new ones
     const existingHabits = await getHabits();
-    console.log('[Onboarding] Found', existingHabits.length, 'existing habits');
+    console.log("[Onboarding] Found", existingHabits.length, "existing habits");
 
     // Create new habits only for names that don't exist
-    const existingNames = new Set(existingHabits.map(h => h.name.toLowerCase()));
+    const existingNames = new Set(
+      existingHabits.map((h) => h.name.toLowerCase()),
+    );
     const newHabits: Habit[] = selectedHabits
-      .filter(name => !existingNames.has(name.toLowerCase()))
+      .filter((name) => !existingNames.has(name.toLowerCase()))
       .map((name, index) => ({
         id: Date.now().toString() + index,
         name,
@@ -278,40 +282,65 @@ export default function HabitsScreen() {
 
     // Merge existing and new habits
     const allHabits = [...existingHabits, ...newHabits];
-    console.log('[Onboarding] Saving', allHabits.length, 'habits (', newHabits.length, 'new)');
+    console.log(
+      "[Onboarding] Saving",
+      allHabits.length,
+      "habits (",
+      newHabits.length,
+      "new)",
+    );
 
     await saveHabits(allHabits);
-    
+
     // Verify save worked
     const savedHabits = await getHabits();
-    console.log('[Onboarding] Verified', savedHabits.length, 'habits saved');
+    console.log("[Onboarding] Verified", savedHabits.length, "habits saved");
 
-    router.push('/onboarding/feed-demo' as Href);
+    router.push("/onboarding/feed-demo" as Href);
   };
 
-  const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const dayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
   const cellSize = CALCULATED_CELL_SIZE;
 
   // Demo stage - show animated month view with actual HabitCell component
-  if (stage === 'demo') {
+  if (stage === "demo") {
     return (
       <PaperBackground>
         <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
-          <Animated.View style={[styles.demoHeader, { opacity: demoTitleFade }]}>
+          <Animated.View
+            style={[styles.demoHeader, { opacity: demoTitleFade }]}
+          >
             <Text style={styles.demoTitle}>Imagine tracking your habits</Text>
-            <Text style={styles.demoSubtitle}>Day by day, building momentum...</Text>
+            <Text style={styles.demoSubtitle}>
+              Day by day, building momentum...
+            </Text>
           </Animated.View>
 
           <Animated.View style={[styles.demoContainer, { opacity: demoFade }]}>
             <View style={styles.demoGridWrapper}>
               {/* Fixed header row */}
               <View style={styles.demoHeaderRow}>
-                <View style={[styles.demoDayHeaderCell, { width: cellSize, height: cellSize }]}>
+                <View
+                  style={[
+                    styles.demoDayHeaderCell,
+                    { width: cellSize, height: cellSize },
+                  ]}
+                >
                   <Text style={styles.demoDayLabel}>DAY</Text>
                 </View>
                 {DEMO_HABITS.map((habit) => (
-                  <View key={habit} style={[styles.demoHabitHeader, { width: cellSize, height: cellSize }]}>
-                    <Text style={styles.demoHabitName} numberOfLines={2} adjustsFontSizeToFit>
+                  <View
+                    key={habit}
+                    style={[
+                      styles.demoHabitHeader,
+                      { width: cellSize, height: cellSize },
+                    ]}
+                  >
+                    <Text
+                      style={styles.demoHabitName}
+                      numberOfLines={2}
+                      adjustsFontSizeToFit
+                    >
                       {habit}
                     </Text>
                   </View>
@@ -328,16 +357,24 @@ export default function HabitsScreen() {
                 >
                   {DEMO_DATA.map((row, dayIndex) => (
                     <View key={dayIndex} style={styles.demoRow}>
-                      <View style={[styles.demoDayCell, { width: cellSize, height: cellSize }]}>
+                      <View
+                        style={[
+                          styles.demoDayCell,
+                          { width: cellSize, height: cellSize },
+                        ]}
+                      >
                         <Text style={styles.demoDayName}>
                           {dayNames[dayIndex % 7]}
                         </Text>
                         <Text style={styles.demoDayNumber}>{dayIndex + 1}</Text>
                       </View>
                       {row.map((completed, habitIndex) => (
-                        <View 
-                          key={habitIndex} 
-                          style={[styles.demoCellWrapper, { width: cellSize, height: cellSize }]}
+                        <View
+                          key={habitIndex}
+                          style={[
+                            styles.demoCellWrapper,
+                            { width: cellSize, height: cellSize },
+                          ]}
                         >
                           <HabitCell
                             completed={completed}
@@ -349,10 +386,15 @@ export default function HabitsScreen() {
                     </View>
                   ))}
                 </ScrollView>
-                
+
                 {/* Bottom fade gradient - professional edge blur effect */}
                 <LinearGradient
-                  colors={[`${Colors.paper}00`, `${Colors.paper}40`, `${Colors.paper}CC`, Colors.paper]}
+                  colors={[
+                    `${Colors.paper}00`,
+                    `${Colors.paper}40`,
+                    `${Colors.paper}CC`,
+                    Colors.paper,
+                  ]}
                   locations={[0, 0.3, 0.7, 1]}
                   style={styles.bottomFadeGradient}
                   pointerEvents="none"
@@ -362,7 +404,12 @@ export default function HabitsScreen() {
           </Animated.View>
 
           {/* Progress indicator */}
-          <View style={[styles.progressContainer, { paddingBottom: insets.bottom + 12 }]}>
+          <View
+            style={[
+              styles.progressContainer,
+              { paddingBottom: insets.bottom + 12 },
+            ]}
+          >
             <View style={styles.progressDot} />
             <View style={[styles.progressDot, styles.progressDotActive]} />
             <View style={styles.progressDot} />
@@ -373,10 +420,16 @@ export default function HabitsScreen() {
   }
 
   // Transition stage - "You can do just the same"
-  if (stage === 'transition') {
+  if (stage === "transition") {
     return (
       <PaperBackground>
-        <View style={[styles.container, styles.centerContent, { paddingTop: insets.top }]}>
+        <View
+          style={[
+            styles.container,
+            styles.centerContent,
+            { paddingTop: insets.top },
+          ]}
+        >
           <Animated.View
             style={[
               styles.transitionContainer,
@@ -399,7 +452,7 @@ export default function HabitsScreen() {
     <PaperBackground>
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <ScrollView
           style={styles.container}
@@ -462,7 +515,11 @@ export default function HabitsScreen() {
                       {habit.name}
                     </Text>
                     {isSelected && (
-                      <IconSymbol name="checkmark" size={16} color={Colors.paper} />
+                      <IconSymbol
+                        name="checkmark"
+                        size={16}
+                        color={Colors.paper}
+                      />
                     )}
                   </TouchableOpacity>
                 </Animated.View>
@@ -529,7 +586,8 @@ export default function HabitsScreen() {
         >
           <View style={styles.selectedCount}>
             <Text style={styles.selectedCountText}>
-              {selectedHabits.length} habit{selectedHabits.length !== 1 ? 's' : ''} selected
+              {selectedHabits.length} habit
+              {selectedHabits.length !== 1 ? "s" : ""} selected
             </Text>
           </View>
 
@@ -562,8 +620,8 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   centerContent: {
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: "center",
+    alignItems: "center",
   },
   contentContainer: {
     paddingHorizontal: 24,
@@ -575,17 +633,17 @@ const styles = StyleSheet.create({
   },
   demoTitle: {
     fontSize: 26,
-    fontWeight: '600',
+    fontWeight: "600",
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
-    textAlign: 'center',
+    textAlign: "center",
     marginBottom: 8,
   },
   demoSubtitle: {
     fontSize: 16,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
-    textAlign: 'center',
+    textAlign: "center",
   },
   demoContainer: {
     flex: 1,
@@ -593,78 +651,78 @@ const styles = StyleSheet.create({
   },
   demoGridWrapper: {
     flex: 1,
-    backgroundColor: 'transparent',
+    backgroundColor: "transparent",
   },
   demoHeaderRow: {
-    flexDirection: 'row',
+    flexDirection: "row",
     marginBottom: 2,
   },
   demoDayHeaderCell: {
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: "center",
+    alignItems: "center",
     borderWidth: 1.5,
     borderColor: Colors.ink,
     marginRight: 2,
-    backgroundColor: 'transparent',
+    backgroundColor: "transparent",
   },
   demoDayLabel: {
     fontSize: 10,
-    fontWeight: '700',
+    fontWeight: "700",
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
   },
   demoHabitHeader: {
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: "center",
+    alignItems: "center",
     borderWidth: 1.5,
     borderColor: Colors.ink,
     marginRight: 2,
     paddingHorizontal: 2,
-    backgroundColor: 'transparent',
+    backgroundColor: "transparent",
   },
   demoHabitName: {
     fontSize: 9,
-    fontWeight: '700',
+    fontWeight: "700",
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
-    textAlign: 'center',
+    textAlign: "center",
   },
   demoScrollContainer: {
     flex: 1,
-    position: 'relative',
-    overflow: 'hidden',
+    position: "relative",
+    overflow: "hidden",
   },
   demoScroll: {
     flex: 1,
   },
   bottomFadeGradient: {
-    position: 'absolute',
+    position: "absolute",
     bottom: 0,
     left: 0,
     right: 0,
     height: 120,
   },
   demoRow: {
-    flexDirection: 'row',
+    flexDirection: "row",
     marginBottom: 2,
   },
   demoDayCell: {
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: "center",
+    alignItems: "center",
     borderWidth: 1.5,
     borderColor: Colors.ink,
     marginRight: 2,
-    backgroundColor: 'transparent',
+    backgroundColor: "transparent",
   },
   demoDayName: {
     fontSize: 8,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
-    fontWeight: '700',
+    fontWeight: "700",
   },
   demoDayNumber: {
     fontSize: 14,
-    fontWeight: '700',
+    fontWeight: "700",
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
   },
@@ -673,22 +731,22 @@ const styles = StyleSheet.create({
   },
   // Transition stage styles
   transitionContainer: {
-    alignItems: 'center',
+    alignItems: "center",
     paddingHorizontal: 32,
   },
   transitionText: {
     fontSize: 28,
-    fontWeight: '600',
+    fontWeight: "600",
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
-    textAlign: 'center',
+    textAlign: "center",
     marginBottom: 12,
   },
   transitionSubtext: {
     fontSize: 20,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
-    textAlign: 'center',
+    textAlign: "center",
   },
   // Selection stage styles
   header: {
@@ -696,7 +754,7 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 28,
-    fontWeight: '600',
+    fontWeight: "600",
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
     marginBottom: 8,
@@ -708,14 +766,14 @@ const styles = StyleSheet.create({
     lineHeight: 24,
   },
   suggestionsContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexDirection: "row",
+    flexWrap: "wrap",
     gap: 10,
     marginBottom: 32,
   },
   suggestionPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     backgroundColor: Colors.card,
     paddingVertical: 12,
     paddingHorizontal: 16,
@@ -734,7 +792,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
-    fontWeight: '500',
+    fontWeight: "500",
   },
   suggestionTextSelected: {
     color: Colors.paper,
@@ -749,7 +807,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   customInputRow: {
-    flexDirection: 'row',
+    flexDirection: "row",
     gap: 12,
   },
   customInput: {
@@ -769,8 +827,8 @@ const styles = StyleSheet.create({
     height: 52,
     backgroundColor: Colors.ink,
     borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: "center",
+    alignItems: "center",
   },
   addButtonDisabled: {
     opacity: 0.4,
@@ -785,8 +843,8 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   miniPreviewChips: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexDirection: "row",
+    flexWrap: "wrap",
     gap: 8,
   },
   miniPreviewChip: {
@@ -799,10 +857,10 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
-    fontWeight: '500',
+    fontWeight: "500",
   },
   bottomContainer: {
-    position: 'absolute',
+    position: "absolute",
     bottom: 0,
     left: 0,
     right: 0,
@@ -813,7 +871,7 @@ const styles = StyleSheet.create({
     borderTopColor: Colors.shadow,
   },
   selectedCount: {
-    alignItems: 'center',
+    alignItems: "center",
     marginBottom: 12,
   },
   selectedCountText: {
@@ -825,7 +883,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.ink,
     paddingVertical: 18,
     borderRadius: 30,
-    alignItems: 'center',
+    alignItems: "center",
     marginBottom: 16,
   },
   continueButtonDisabled: {
@@ -833,13 +891,13 @@ const styles = StyleSheet.create({
   },
   continueButtonText: {
     fontSize: 18,
-    fontWeight: '600',
+    fontWeight: "600",
     color: Colors.paper,
     fontFamily: Fonts.handwriting,
   },
   progressContainer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
+    flexDirection: "row",
+    justifyContent: "center",
     gap: 8,
   },
   progressDot: {

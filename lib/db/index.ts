@@ -1,89 +1,55 @@
 export type {
-  Habit,
-  DailyEntry,
-  HabitLog,
   AccountRow,
-  ProfileRow,
-  EntryRow,
-  EntryMediaRow,
-  HabitRow,
-  HabitLogRow,
+  DailyEntry,
   EntryPayload,
-  LegacyEntryPayload,
-  HabitPayload,
+  Habit,
+  HabitLog,
   HabitLogPayload,
-  KdfParams,
-  EncryptedData,
-} from './types';
+  HabitPayload,
+} from "./types";
 
 export {
-  Tables,
   AccountColumns,
-  ProfileColumns,
+  DateFormats,
   EntryColumns,
   EntryMediaColumns,
   HabitColumns,
-  HabitLogColumns,
-  UsernameRules,
   HabitLimits,
-  DateFormats,
+  HabitLogColumns,
+  ProfileColumns,
   SCHEMA_VERSION,
-} from './schema';
+  Tables,
+  UsernameRules,
+} from "./schema";
 
 export {
-  saveEntry,
+  clearEntriesCache,
+  deleteEntry,
+  getCachedEntriesForMonth,
   getEntriesForDate,
   getEntriesForMonth,
-  deleteEntry,
-} from './entries';
+  loadEntriesForMonthFromStorage,
+  prefetchEntriesForMonth,
+  saveEntry,
+  setCachedEntriesForMonth,
+  upsertEntryInCache,
+} from "./entries";
 
 export {
-  saveHabits,
+  clearHabitsCache,
+  getCachedHabits,
   getHabits,
-  addHabit,
-  updateHabit,
-  deleteHabit,
-  deleteAllHabits,
-} from './habits';
+  loadHabitsFromStorage,
+  saveHabits,
+  setCachedHabits,
+} from "./habits";
 
 export {
-  toggleHabitLog,
-  setHabitLog,
+  clearHabitLogsCache,
+  getCachedHabitLogsForMonth,
   getHabitLogsForMonth,
-  getHabitLog,
-  deleteLogsForHabit,
-  deleteAllHabitLogs,
-} from './habit-logs';
-
-export { clearKeyCache } from './crypto';
-
-export async function isDatabaseReady(): Promise<boolean> {
-  const { isSupabaseConfigured, supabase } = await import('../supabase');
-  if (!isSupabaseConfigured()) return false;
-  const { data: { user } } = await supabase.auth.getUser();
-  return !!user;
-}
-
-/**
- * Wait for authentication to be ready before proceeding.
- * Returns true if authenticated, false if timeout or not authenticated.
- */
-export async function waitForAuth(maxWaitMs: number = 5000): Promise<boolean> {
-  const { isSupabaseConfigured, supabase } = await import('../supabase');
-  if (!isSupabaseConfigured()) return false;
-  
-  const startTime = Date.now();
-  const checkInterval = 100; // Check every 100ms
-  
-  while (Date.now() - startTime < maxWaitMs) {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (session) {
-      console.log('[DB] Auth ready after', Date.now() - startTime, 'ms');
-      return true;
-    }
-    await new Promise(resolve => setTimeout(resolve, checkInterval));
-  }
-  
-  console.warn('[DB] Auth not ready after', maxWaitMs, 'ms');
-  return false;
-}
+  getHabitLogsForMonthDirect,
+  loadHabitLogsFromStorage,
+  setCachedHabitLogsForMonth,
+  toggleHabitLog,
+} from "./habit-logs";

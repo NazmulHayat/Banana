@@ -1,34 +1,37 @@
-import { useEffect, useRef, useState } from 'react';
+import { IconSymbol } from "@/components/ui/icon-symbol";
+import { PaperBackground } from "@/components/ui/paper-background";
+import { PaperCard } from "@/components/ui/paper-card";
+import { Colors, Fonts } from "@/constants/theme";
+import { useAuth } from "@/lib/auth-context";
+import { DailyEntry, saveEntry } from "@/lib/db";
+import { useOnboarding } from "@/lib/onboarding-context";
+import { Href, router } from "expo-router";
+import { useEffect, useRef, useState } from "react";
 import {
-  View,
-  Text,
-  StyleSheet,
-  Animated,
-  TouchableOpacity,
-  Dimensions,
-  TextInput,
-  KeyboardAvoidingView,
-  Platform,
-} from 'react-native';
-import { router, Href } from 'expo-router';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { PaperBackground } from '@/components/ui/paper-background';
-import { PaperCard } from '@/components/ui/paper-card';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors, Fonts } from '@/constants/theme';
-import { useOnboarding } from '@/lib/onboarding-context';
-import { DailyEntry, saveEntry, waitForAuth } from '@/lib/db';
+    Animated,
+    Dimensions,
+    KeyboardAvoidingView,
+    Platform,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-const { width, height } = Dimensions.get('window');
+const { width, height } = Dimensions.get("window");
 
-const DEFAULT_ENTRY_TEXT = 'Started a new journey of tracking my habits! Here we go 🍌';
+const DEFAULT_ENTRY_TEXT =
+  "Started a new journey of tracking my habits! Here we go 🍌";
 
-type Stage = 'intro' | 'input' | 'saving' | 'feed';
+type Stage = "intro" | "input" | "saving" | "feed";
 
 export default function FeedDemoScreen() {
   const insets = useSafeAreaInsets();
   const { completeOnboarding } = useOnboarding();
-  const [stage, setStage] = useState<Stage>('intro');
+  const { session } = useAuth();
+  const [stage, setStage] = useState<Stage>("intro");
   const [journalText, setJournalText] = useState(DEFAULT_ENTRY_TEXT);
 
   // Animations
@@ -57,7 +60,7 @@ export default function FeedDemoScreen() {
     ]).start(() => {
       // Show input area after intro
       setTimeout(() => {
-        setStage('input');
+        setStage("input");
         Animated.parallel([
           Animated.timing(inputFade, {
             toValue: 1,
@@ -77,29 +80,25 @@ export default function FeedDemoScreen() {
   const handleSave = async () => {
     if (!journalText.trim()) return;
 
-    setStage('saving');
-    
-    // Wait for auth to be ready before saving
-    console.log('[FeedDemo] Waiting for auth before saving entry...');
-    const isReady = await waitForAuth();
-    if (!isReady) {
-      console.error('[FeedDemo] Auth not ready, cannot save entry');
-      setStage('input');
+    setStage("saving");
+    if (!session) {
+      console.error("[FeedDemo] No session, cannot save entry");
+      setStage("input");
       return;
     }
-    
+
     // Save the entry with today's date
     const entry: DailyEntry = {
-      id: 'onboarding-' + Date.now().toString(),
-      date: new Date().toISOString().split('T')[0],
+      id: "onboarding-" + Date.now().toString(),
+      date: new Date().toISOString().split("T")[0],
       text: journalText.trim(),
-      mediaUrls: [],
+      mediaPaths: [],
       createdAt: new Date().toISOString(),
     };
-    console.log('[FeedDemo] Saving entry...');
+    console.log("[FeedDemo] Saving entry...");
     await saveEntry(entry);
-    console.log('[FeedDemo] Entry saved');
-    
+    console.log("[FeedDemo] Entry saved");
+
     // Saving animation
     Animated.sequence([
       Animated.spring(savingScale, {
@@ -110,7 +109,7 @@ export default function FeedDemoScreen() {
       Animated.delay(1000),
     ]).start(() => {
       // Transition to feed view
-      setStage('feed');
+      setStage("feed");
       Animated.parallel([
         Animated.timing(feedTransition, {
           toValue: 1,
@@ -137,25 +136,25 @@ export default function FeedDemoScreen() {
   const handleFinish = async () => {
     // Mark onboarding as complete
     await completeOnboarding();
-    
+
     // Navigate to feed to show their saved entry
-    router.replace('/(tabs)/feed' as Href);
+    router.replace("/(tabs)/feed" as Href);
   };
 
   const handleSkip = async () => {
     await completeOnboarding();
-    router.replace('/(tabs)' as Href);
+    router.replace("/(tabs)" as Href);
   };
 
   return (
     <PaperBackground>
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <View style={[styles.container, { paddingTop: insets.top + 20 }]}>
           {/* Intro/Input Stage */}
-          {(stage === 'intro' || stage === 'input') && (
+          {(stage === "intro" || stage === "input") && (
             <View style={styles.introContainer}>
               <Animated.View
                 style={[
@@ -168,7 +167,8 @@ export default function FeedDemoScreen() {
               >
                 <Text style={styles.title}>One more thing...</Text>
                 <Text style={styles.subtitle}>
-                  Each day, capture a highlight or thought. These entries become your personal Feed - a timeline of your journey.
+                  Each day, capture a highlight or thought. These entries become
+                  your personal Feed - a timeline of your journey.
                 </Text>
               </Animated.View>
 
@@ -204,7 +204,11 @@ export default function FeedDemoScreen() {
                   disabled={!journalText.trim()}
                   activeOpacity={0.7}
                 >
-                  <IconSymbol name="arrow.right" size={20} color={Colors.paper} />
+                  <IconSymbol
+                    name="arrow.right"
+                    size={20}
+                    color={Colors.paper}
+                  />
                   <Text style={styles.saveButtonText}>Save to Feed</Text>
                 </TouchableOpacity>
 
@@ -220,7 +224,7 @@ export default function FeedDemoScreen() {
           )}
 
           {/* Saving animation */}
-          {stage === 'saving' && (
+          {stage === "saving" && (
             <View style={styles.savingContainer}>
               <Animated.View
                 style={[
@@ -233,12 +237,14 @@ export default function FeedDemoScreen() {
                 <IconSymbol name="checkmark" size={40} color={Colors.paper} />
               </Animated.View>
               <Text style={styles.savingText}>Saved!</Text>
-              <Text style={styles.savingSubtext}>See how it looks in your Feed...</Text>
+              <Text style={styles.savingSubtext}>
+                See how it looks in your Feed...
+              </Text>
             </View>
           )}
 
           {/* Feed demo view */}
-          {stage === 'feed' && (
+          {stage === "feed" && (
             <Animated.View
               style={[
                 styles.feedContainer,
@@ -253,7 +259,10 @@ export default function FeedDemoScreen() {
               </View>
 
               <Text style={styles.feedDate}>
-                {new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}
+                {new Date().toLocaleDateString("en-US", {
+                  month: "long",
+                  day: "numeric",
+                })}
               </Text>
 
               <Animated.View
@@ -284,21 +293,24 @@ export default function FeedDemoScreen() {
               </Animated.View>
 
               <Animated.View
-                style={[
-                  styles.feedExplanation,
-                  { opacity: buttonFade },
-                ]}
+                style={[styles.feedExplanation, { opacity: buttonFade }]}
               >
                 <Text style={styles.feedExplanationText}>
-                  Your entries will appear here, creating a timeline of your journey.
+                  Your entries will appear here, creating a timeline of your
+                  journey.
                 </Text>
               </Animated.View>
             </Animated.View>
           )}
 
           {/* Bottom section */}
-          <View style={[styles.bottomContainer, { paddingBottom: insets.bottom + 20 }]}>
-            {stage === 'feed' && (
+          <View
+            style={[
+              styles.bottomContainer,
+              { paddingBottom: insets.bottom + 20 },
+            ]}
+          >
+            {stage === "feed" && (
               <Animated.View style={{ opacity: buttonFade }}>
                 <TouchableOpacity
                   style={styles.finishButton}
@@ -336,7 +348,7 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 28,
-    fontWeight: '600',
+    fontWeight: "600",
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
     marginBottom: 12,
@@ -352,11 +364,11 @@ const styles = StyleSheet.create({
   },
   inputLabel: {
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: "600",
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
     marginBottom: 12,
-    textTransform: 'uppercase',
+    textTransform: "uppercase",
     letterSpacing: 1,
   },
   inputBox: {
@@ -376,9 +388,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   saveButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
     backgroundColor: Colors.ink,
     paddingVertical: 18,
     borderRadius: 30,
@@ -390,12 +402,12 @@ const styles = StyleSheet.create({
   },
   saveButtonText: {
     fontSize: 18,
-    fontWeight: '600',
+    fontWeight: "600",
     color: Colors.paper,
     fontFamily: Fonts.handwriting,
   },
   skipButton: {
-    alignItems: 'center',
+    alignItems: "center",
     paddingVertical: 12,
   },
   skipButtonText: {
@@ -405,21 +417,21 @@ const styles = StyleSheet.create({
   },
   savingContainer: {
     flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: "center",
+    alignItems: "center",
   },
   savingCircle: {
     width: 80,
     height: 80,
     borderRadius: 40,
     backgroundColor: Colors.ink,
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: "center",
+    alignItems: "center",
     marginBottom: 16,
   },
   savingText: {
     fontSize: 24,
-    fontWeight: '600',
+    fontWeight: "600",
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
     marginBottom: 8,
@@ -437,12 +449,12 @@ const styles = StyleSheet.create({
   },
   feedTitle: {
     fontSize: 32,
-    fontWeight: '700',
+    fontWeight: "700",
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
   },
   feedTitleUnderline: {
-    position: 'absolute',
+    position: "absolute",
     bottom: -4,
     left: 0,
     width: 60,
@@ -452,7 +464,7 @@ const styles = StyleSheet.create({
   },
   feedDate: {
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: "600",
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
     marginBottom: 12,
@@ -470,13 +482,13 @@ const styles = StyleSheet.create({
     lineHeight: 28,
   },
   feedExplanation: {
-    alignItems: 'center',
+    alignItems: "center",
   },
   feedExplanationText: {
     fontSize: 15,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
-    textAlign: 'center',
+    textAlign: "center",
     lineHeight: 22,
   },
   bottomContainer: {
@@ -486,18 +498,18 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.ink,
     paddingVertical: 18,
     borderRadius: 30,
-    alignItems: 'center',
+    alignItems: "center",
     marginBottom: 16,
   },
   finishButtonText: {
     fontSize: 18,
-    fontWeight: '600',
+    fontWeight: "600",
     color: Colors.paper,
     fontFamily: Fonts.handwriting,
   },
   progressContainer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
+    flexDirection: "row",
+    justifyContent: "center",
     gap: 8,
   },
   progressDot: {
