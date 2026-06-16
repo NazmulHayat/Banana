@@ -1,3 +1,4 @@
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
 import { PaperCard } from "@/components/ui/paper-card";
@@ -172,6 +173,10 @@ export default function ProfileScreen() {
   const [recoveryKey, setRecoveryKey] = useState("");
   const [recoveryLoading, setRecoveryLoading] = useState(false);
   const [recoveryError, setRecoveryError] = useState("");
+
+  // Sign-out confirmation (reusable ConfirmDialog drives the confirm step)
+  const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
 
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
   const [oldPassword, setOldPassword] = useState("");
@@ -536,14 +541,19 @@ export default function ProfileScreen() {
   };
 
   const handleSignOut = () => {
-    Alert.alert("Sign out", "Are you sure you want to sign out?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Sign out",
-        style: "destructive",
-        onPress: async () => await signOut(),
-      },
-    ]);
+    setShowSignOutConfirm(true);
+  };
+
+  const handleConfirmSignOut = async () => {
+    setSigningOut(true);
+    try {
+      await signOut();
+    } finally {
+      // signOut typically unmounts this screen; reset defensively in case it
+      // returns without navigating away.
+      setSigningOut(false);
+      setShowSignOutConfirm(false);
+    }
   };
 
   return (
@@ -1035,6 +1045,18 @@ export default function ProfileScreen() {
           </ScrollView>
         </KeyboardAvoidingView>
       </Modal>
+
+      {/* ============ SIGN OUT CONFIRM ============ */}
+      <ConfirmDialog
+        visible={showSignOutConfirm}
+        title="Sign out?"
+        message="You'll need your password to unlock your encrypted journal again."
+        confirmLabel="Sign out"
+        destructive
+        loading={signingOut}
+        onConfirm={handleConfirmSignOut}
+        onCancel={() => setShowSignOutConfirm(false)}
+      />
     </PaperBackground>
   );
 }
