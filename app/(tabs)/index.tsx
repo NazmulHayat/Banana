@@ -1,5 +1,6 @@
 import { HabitGrid } from "@/components/habit-grid";
 import { HighlightInput } from "@/components/highlight-input";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { IconButton } from "@/components/ui/icon-button";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
@@ -58,6 +59,10 @@ export default function TrackerScreen() {
   const [showHabitModal, setShowHabitModal] = useState(false);
   const [editingHabit, setEditingHabit] = useState<Habit | null>(null);
   const [habitName, setHabitName] = useState("");
+
+  // Delete-habit confirmation (reusable ConfirmDialog drives the confirm step)
+  const [habitToDelete, setHabitToDelete] = useState<Habit | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   // Entry save state (upload + persist)
   const [savingEntry, setSavingEntry] = useState(false);
@@ -389,37 +394,38 @@ export default function TrackerScreen() {
     }
   };
 
-  const handleDeleteHabit = async (habit: Habit) => {
-    Alert.alert(
-      "Delete habit",
-      `Are you sure you want to delete "${habit.name}"? This will also delete all logs for this habit.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            const updatedHabits = realHabits.filter((h) => h.id !== habit.id);
+  // Open the reusable confirm dialog for the chosen habit.
+  const handleDeleteHabit = (habit: Habit) => {
+    setHabitToDelete(habit);
+  };
 
-            // Optimistic update via DataStore
-            dataStore.updateHabits(updatedHabits);
-            setShowHabitModal(false);
+  // Runs the existing delete logic, driven by ConfirmDialog's confirm + loading.
+  const handleConfirmDeleteHabit = async () => {
+    const habit = habitToDelete;
+    if (!habit) return;
+    setDeleting(true);
 
-            try {
-              await saveHabits(updatedHabits);
-              await dataStore.refreshHabitLogs(currentYear, currentMonth);
-            } catch (error) {
-              console.error("[TrackerScreen] Failed to delete habit:", error);
-              Alert.alert(
-                "Delete failed",
-                "Could not delete habit. Please try again.",
-              );
-              await dataStore.refreshHabits();
-            }
-          },
-        },
-      ],
-    );
+    const updatedHabits = realHabits.filter((h) => h.id !== habit.id);
+
+    // Optimistic update via DataStore
+    dataStore.updateHabits(updatedHabits);
+    setShowHabitModal(false);
+
+    try {
+      await saveHabits(updatedHabits);
+      await dataStore.refreshHabitLogs(currentYear, currentMonth);
+      setHabitToDelete(null);
+    } catch (error) {
+      console.error("[TrackerScreen] Failed to delete habit:", error);
+      Alert.alert(
+        "Delete failed",
+        "Could not delete habit. Please try again.",
+      );
+      await dataStore.refreshHabits();
+      setHabitToDelete(null);
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const handleHeaderLayout = (y: number) => {
@@ -693,6 +699,21 @@ export default function TrackerScreen() {
             <Text style={styles.snackbarText}>{snackbar.message}</Text>
           </Animated.View>
         )}
+
+        <ConfirmDialog
+          visible={habitToDelete !== null}
+          title="Delete habit?"
+          message={
+            habitToDelete
+              ? `"${habitToDelete.name}" and all of its logs will be removed. This can't be undone.`
+              : undefined
+          }
+          confirmLabel="Delete"
+          destructive
+          loading={deleting}
+          onConfirm={handleConfirmDeleteHabit}
+          onCancel={() => setHabitToDelete(null)}
+        />
       </View>
     </PaperBackground>
   );
