@@ -11,6 +11,7 @@ import {
   keyring,
 } from "../crypto";
 import { supabase } from "../supabase";
+import { enqueuePendingWrite } from "./pending-writes";
 import { DateFormats } from "./schema";
 import type { HabitLog, HabitLogPayload } from "./types";
 
@@ -88,9 +89,9 @@ export async function toggleHabitLog(
   if (!keyring.isUnlocked()) throw new Error("Encryption is locked");
   const userId = await requireUserId();
   const mk = keyring.getMasterKey();
+  // Only the day bucket / AAD are needed here to read the current state; the
+  // month bucket and final encryption happen inside upsertHabitLog.
   const dBucket = habitLogDayBucket(mk, habitId, date);
-  const mBucket = habitLogMonthBucket(mk, date.slice(0, 7));
-
   const aad = AAD.habitLog(dBucket, userId);
   let completed: boolean;
   if (typeof currentCompleted === "boolean") {
@@ -118,7 +119,32 @@ export async function toggleHabitLog(
     }
   }
 
-  const payload: HabitLogPayload = { habitId, date, completed };
+  // Persist the exact computed state via the idempotent upsert helper. On a
+  // server/network failure it queues the final HabitLog for retry instead of
+  // throwing (NFR-1) — we still return that log so the optimistic UI stays
+  // correct and the queued write replays it verbatim later.
+  return upsertHabitLog({ habitId, date, completed });
+}
+
+/**
+ * Write an exact habit-log state (idempotent upsert — sets `completed` to the
+ * given value, never toggles). Used by `toggleHabitLog` for the normal write
+ * and by the data-store flush executor when replaying a queued `habitLog`.
+ * On write failure the log is durably enqueued for retry (NFR-1) and returned.
+ */
+export async function upsertHabitLog(log: HabitLog): Promise<HabitLog> {
+  if (!keyring.isUnlocked()) throw new Error("Encryption is locked");
+  const userId = await requireUserId();
+  const mk = keyring.getMasterKey();
+  const dBucket = habitLogDayBucket(mk, log.habitId, log.date);
+  const mBucket = habitLogMonthBucket(mk, log.date.slice(0, 7));
+  const aad = AAD.habitLog(dBucket, userId);
+
+  const payload: HabitLogPayload = {
+    habitId: log.habitId,
+    date: log.date,
+    completed: log.completed,
+  };
   const blob = encryptJson(mk, payload, aad);
 
   const { error } = await supabase.from("habit_logs").upsert(
@@ -132,14 +158,16 @@ export async function toggleHabitLog(
     { onConflict: "owner_id,day_bucket" },
   );
   if (error) {
-    throw new Error(`Failed to save habit log: ${error.message}`);
+    // NFR-1: queue the exact final state for retry rather than dropping it.
+    if (__DEV__) console.warn("[habit_logs] Save failed, queued for retry");
+    await enqueuePendingWrite(userId, { kind: "habitLog", payload: log });
   }
 
   // Invalidate month cache for that month so next read is fresh
-  const ym = date.slice(0, 7);
+  const ym = log.date.slice(0, 7);
   logsMonthCache.delete(monthKey(userId, ym));
 
-  return { habitId, date, completed };
+  return { habitId: log.habitId, date: log.date, completed: log.completed };
 }
 
 export async function getHabitLogsForMonth(

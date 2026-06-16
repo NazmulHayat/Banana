@@ -11,6 +11,7 @@ import React, {
   useRef,
   useState,
 } from "react";
+import { AppState } from "react-native";
 import {
   deleteEntry as dbDeleteEntry,
   getCachedEntriesForMonth,
@@ -22,8 +23,20 @@ import {
   getCachedHabitLogsForMonth,
   getHabitLogsForMonthDirect,
   setCachedHabitLogsForMonth,
+  upsertHabitLog as dbUpsertHabitLog,
 } from "./db/habit-logs";
-import { getCachedHabits, getHabits, setCachedHabits } from "./db/habits";
+import {
+  getCachedHabits,
+  getHabits,
+  saveHabits as dbSaveHabits,
+  setCachedHabits,
+} from "./db/habits";
+import {
+  clearPendingWrites,
+  flushPendingWrites,
+  pendingWriteCount as dbPendingWriteCount,
+  type PendingWrite,
+} from "./db/pending-writes";
 import { DateFormats } from "./db/schema";
 import type { DailyEntry, Habit, HabitLog } from "./db/types";
 import { supabase } from "./supabase";
@@ -64,6 +77,11 @@ interface DataState {
 
   // Overall state
   initialLoadComplete: boolean;
+
+  // Durable pending-writes queue (NFR-1). Count of saves that failed and are
+  // queued for retry; refreshed after each flush. A future slice surfaces this
+  // as a "will sync" indicator.
+  pendingWriteCount: number;
 }
 
 interface DataActions {
@@ -146,6 +164,8 @@ export function DataProvider({ children, session }: DataProviderProps) {
   const [profileReady, setProfileReady] = useState(false);
 
   const [initialLoadComplete, setInitialLoadComplete] = useState(false);
+
+  const [pendingWriteCount, setPendingWriteCount] = useState(0);
 
   const prefetchedRef = useRef(false);
 
@@ -471,9 +491,45 @@ export function DataProvider({ children, session }: DataProviderProps) {
   );
 
   // ============================================================================
+  // Pending-writes flush (NFR-1: no silent data loss)
+  // ============================================================================
+  // Replays each queued write through its matching persist (entry→saveEntry,
+  // habits→saveHabits, habitLog→upsertHabitLog). All three persists are
+  // idempotent upserts, so replaying is safe. If a persist still can't reach the
+  // server it re-enqueues a fresh copy of the same write (rather than throwing),
+  // so the write is never lost (NFR-1) and the queue simply persists until the
+  // network recovers. The count is refreshed from storage after the flush.
+  const flushQueue = useCallback(async (): Promise<void> => {
+    if (!session) return;
+    const userId = session.user.id;
+
+    const executor = async (item: PendingWrite): Promise<void> => {
+      switch (item.kind) {
+        case "entry":
+          await dbSaveEntry(item.payload);
+          return;
+        case "habits":
+          await dbSaveHabits(item.payload);
+          return;
+        case "habitLog":
+          await dbUpsertHabitLog(item.payload);
+          return;
+      }
+    };
+
+    await flushPendingWrites(userId, executor);
+    setPendingWriteCount(await dbPendingWriteCount(userId));
+  }, [session]);
+
+  // ============================================================================
   // Clear on Logout
   // ============================================================================
   const clearAll = useCallback(() => {
+    // Drop the queue if we still know who the user is. On a logout that has
+    // already nulled the session the queue stays keyed to that userId — it's
+    // per-user, harmless, and flushed on their next sign-in.
+    if (session) void clearPendingWrites(session.user.id);
+    setPendingWriteCount(0);
     setHabits([]);
     setHabitsLoading(false);
     setHabitsReady(false);
@@ -490,7 +546,7 @@ export function DataProvider({ children, session }: DataProviderProps) {
     setProfileReady(false);
     setInitialLoadComplete(false);
     prefetchedRef.current = false;
-  }, []);
+  }, [session]);
 
   // ============================================================================
   // Priority-Based Initial Load
@@ -512,6 +568,9 @@ export function DataProvider({ children, session }: DataProviderProps) {
       ]);
 
       setInitialLoadComplete(true);
+
+      // NFR-1: replay any writes that were queued in a previous session.
+      await flushQueue();
     }
 
     void load();
@@ -521,7 +580,20 @@ export function DataProvider({ children, session }: DataProviderProps) {
     refreshHabitLogs,
     refreshEntries,
     refreshProfile,
+    flushQueue,
   ]);
+
+  // ============================================================================
+  // Flush the pending-writes queue when the app returns to the foreground
+  // (NFR-1) — covers writes that failed while backgrounded/offline.
+  // ============================================================================
+  useEffect(() => {
+    if (!session) return;
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") void flushQueue();
+    });
+    return () => sub.remove();
+  }, [session, flushQueue]);
 
   // Clear data on logout
   useEffect(() => {
@@ -551,6 +623,7 @@ export function DataProvider({ children, session }: DataProviderProps) {
       profileLoading,
       profileReady,
       initialLoadComplete,
+      pendingWriteCount,
 
       // Actions
       refreshHabits,
@@ -582,6 +655,7 @@ export function DataProvider({ children, session }: DataProviderProps) {
       profileLoading,
       profileReady,
       initialLoadComplete,
+      pendingWriteCount,
       refreshHabits,
       refreshHabitLogs,
       refreshEntries,
