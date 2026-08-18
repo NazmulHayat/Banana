@@ -1,10 +1,10 @@
 import { Motion } from "@/constants/motion";
-import { Colors, Hairline } from "@/constants/theme";
+import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { fromDayKey } from "@/lib/dates";
 import type { HeatCell } from "@/lib/stats";
 import { useReduceMotion } from "@/lib/use-reduce-motion";
 import { useEffect, useRef, useState } from "react";
-import { Animated, type LayoutChangeEvent } from "react-native";
+import { Animated, type LayoutChangeEvent, StyleSheet, Text } from "react-native";
 import Svg, { Defs, Line, Pattern, Rect } from "react-native-svg";
 
 interface HabitHeatmapProps {
@@ -16,6 +16,8 @@ interface HabitHeatmapProps {
   gap?: number;
   /** Tap a day — used for the journal-highlight sheet. */
   onDayPress?: (cell: HeatCell) => void;
+  /** Said when there are no days to draw. Never render a zero-height grid. */
+  emptyLabel?: string;
   /**
    * Name of the single habit being shown, if any. Only used to make the
    * spoken label say what it's actually about ("Exercise, March 4, done")
@@ -63,6 +65,7 @@ export function HabitHeatmap({
   rows = 7,
   gap = 4,
   onDayPress,
+  emptyLabel = "No days to show in this range yet.",
   habitName,
 }: HabitHeatmapProps) {
   const [width, setWidth] = useState(0);
@@ -82,6 +85,12 @@ export function HabitHeatmap({
       useNativeDriver: true,
     }).start();
   }, [enter, cells.length, reduceMotion]);
+
+  // An empty window would draw a zero-height SVG — a blank frame with no
+  // explanation. Say why instead. (After the hooks: order must never change.)
+  if (cells.length === 0) {
+    return <Text style={styles.empty}>{emptyLabel}</Text>;
+  }
 
   const cols = Math.max(1, Math.ceil(cells.length / rows));
   const cell = width > 0 ? (width - gap * (cols - 1)) / cols : 0;
@@ -154,3 +163,13 @@ export function HabitHeatmap({
     </Animated.View>
   );
 }
+
+const styles = StyleSheet.create({
+  empty: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    lineHeight: 21,
+    paddingVertical: 8,
+  },
+});

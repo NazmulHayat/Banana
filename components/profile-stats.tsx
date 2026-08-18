@@ -5,15 +5,12 @@ import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { todayKey } from "@/lib/dates";
 import { type Habit } from "@/lib/db";
 import {
-  bestDayOfWeek,
-  buildInsight,
   computeAllHabitStats,
   computeOverallStats,
-  hadRecentComeback,
-  monthOverMonthTrend,
-  weekendComparison,
+  daysToRecord,
 } from "@/lib/stats";
 import { useRecentHabitLogs } from "@/lib/use-recent-logs";
+import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 import { StyleSheet, Text, View } from "react-native";
 
@@ -25,64 +22,95 @@ interface ProfileStatsProps {
 }
 
 /**
- * The free "stats peek" on the profile hub: a headline streak, a couple of
- * supporting numbers, and a one-line insight — a tease that taps into the full
- * (paid) analysis. Loads the last 12 months of logs; renders loading + empty
- * states so it never shows a blank frame.
+ * The stats peek on the profile hub: a headline streak, a couple of supporting
+ * numbers, and one line about where you stand against your own record — the
+ * doorway into the full analysis (which is free, and always has been).
+ *
+ * Every state is tappable. Loading and no-habits used to render a bare card
+ * OUTSIDE the pressable, which left the only entrance to the whole analysis
+ * surface dead exactly when a new user first arrives. Loading still opens the
+ * analysis (that screen has its own skeleton); with no habits the card leads
+ * where it should — to adding one.
+ *
+ * The rotating "your story" sentence deliberately lives on the analysis screen
+ * only. It used to render here AND there, one tap apart.
  */
 export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
   const { logs, loading } = useRecentHabitLogs(12, refreshToken);
 
+  const open = (where: "/analysis" | "/habits") => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push(where);
+  };
+
   if (loading) {
     return (
-      <PaperCard style={styles.card}>
-        <Skeleton width="40%" height={12} />
-        <View style={{ height: 12 }} />
-        <Skeleton width="55%" height={34} />
-        <View style={{ height: 14 }} />
-        <Skeleton width="85%" height={13} />
-      </PaperCard>
+      <PressableScale
+        scaleTo={0.98}
+        onPress={() => open("/analysis")}
+        accessibilityLabel="Your momentum, still loading"
+        accessibilityHint="Opens your full analysis"
+      >
+        <PaperCard style={styles.card}>
+          <Skeleton width="40%" height={12} />
+          <View style={{ height: 12 }} />
+          <Skeleton width="55%" height={34} />
+          <View style={{ height: 14 }} />
+          <Skeleton width="85%" height={13} />
+        </PaperCard>
+      </PressableScale>
     );
   }
 
   if (habits.length === 0) {
     return (
-      <PaperCard style={styles.card}>
-        <Text style={styles.emptyText}>Add a habit to start tracking streaks.</Text>
-      </PaperCard>
+      <PressableScale
+        scaleTo={0.98}
+        onPress={() => open("/habits")}
+        accessibilityLabel="No habits yet. Add your first habit"
+        accessibilityHint="Opens your habits"
+      >
+        <PaperCard style={styles.card}>
+          <Text style={styles.eyebrow}>your momentum</Text>
+          <Text style={styles.emptyText}>
+            Nothing to measure yet. Add a habit and your streaks, records and
+            story start filling in from day one.
+          </Text>
+          <View style={styles.ctaRow}>
+            <Text style={styles.cta}>Add your first habit</Text>
+            <Text style={styles.arrow}>→</Text>
+          </View>
+        </PaperCard>
+      </PressableScale>
     );
   }
 
   const today = todayKey();
-  const [ty, tm] = today.split("-").map(Number);
   // Passing `habits` is what turns on eligibility windows, future-day clamping
   // and orphan filtering in the engine (bug D13) — never omit it here.
-  const scope = { habits };
   const perHabit = computeAllHabitStats(habits, logs, today);
   const overall = computeOverallStats(perHabit, logs, today, habits);
 
-  const best = bestDayOfWeek(logs, today, scope);
-  const weekend = weekendComparison(logs, today, 90, scope);
-  const trend = monthOverMonthTrend(logs, today, scope);
-  const insight = buildInsight(
-    {
-      bestDow: best?.dow ?? null,
-      weekendDrop: weekend.weekdayRate > 0 && weekend.weekendRate < weekend.weekdayRate * 0.6,
-      currentStreak: overall.bestCurrentStreak,
-      longestStreak: overall.bestLongestStreak,
-      trendDelta: trend.delta,
-      hadComeback: hadRecentComeback(logs, today, scope),
-    },
-    ty * 12 + tm,
+  const toRecord = daysToRecord(
+    overall.bestCurrentStreak,
+    overall.bestLongestStreak,
   );
+  const standing =
+    overall.totalCompletions === 0
+      ? "Nothing ticked yet — today can be day one."
+      : overall.bestLongestStreak === 0
+        ? "Your first streak starts with two days in a row."
+        : toRecord > 0
+          ? `${toRecord} day${toRecord === 1 ? "" : "s"} from your best ever run of ${overall.bestLongestStreak}.`
+          : "You're at your best streak ever right now.";
 
   return (
     <PressableScale
       scaleTo={0.98}
-      onPress={() => router.push("/analysis")}
+      onPress={() => open("/analysis")}
       accessibilityLabel={`Your momentum. Best streak ${overall.bestCurrentStreak} day${
         overall.bestCurrentStreak === 1 ? "" : "s"
-      }. ${insight}`}
+      }. ${standing}`}
       accessibilityHint="Opens your full analysis"
     >
       <PaperCard style={styles.card}>
@@ -97,7 +125,7 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
             {overall.perfectDays > 0 ? ` · ${overall.perfectDays} perfect` : ""}
           </Text>
         </View>
-        <Text style={styles.insight}>{insight}</Text>
+        <Text style={styles.standing}>{standing}</Text>
         <View style={styles.ctaRow}>
           <Text style={styles.cta}>See full analysis</Text>
           <Text style={styles.arrow}>→</Text>
@@ -110,10 +138,11 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
 const styles = StyleSheet.create({
   card: { paddingVertical: 18 },
   emptyText: {
-    fontSize: 13,
-    color: Colors.textSecondary,
+    fontSize: 14.5,
+    color: Colors.ink,
     fontFamily: Fonts.handwriting,
-    textAlign: "center",
+    lineHeight: 21,
+    marginTop: 4,
   },
   eyebrow: {
     fontSize: 12,
@@ -141,7 +170,7 @@ const styles = StyleSheet.create({
     marginLeft: 12,
     marginBottom: 4,
   },
-  insight: {
+  standing: {
     fontSize: 14.5,
     color: Colors.ink,
     fontFamily: Fonts.handwriting,

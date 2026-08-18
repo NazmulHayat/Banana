@@ -6,6 +6,8 @@ import { HabitHeatmap } from "@/components/habit-heatmap";
 import { JournalStatsCard } from "@/components/journal-stats-card";
 import { RecordsBoard } from "@/components/records-board";
 import { StatSparkline } from "@/components/stat-sparkline";
+import { PressableScale } from "@/components/ui/pressable-scale";
+import { SectionTitle } from "@/components/ui/settings-row";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { todayKey } from "@/lib/dates";
@@ -32,6 +34,7 @@ import {
   type StatsScope,
   weekendComparison,
 } from "@/lib/stats";
+import * as Haptics from "expo-haptics";
 import { type Href, router } from "expo-router";
 import { useState } from "react";
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
@@ -61,7 +64,22 @@ const RANGES = [
   { label: "Year", days: 365, months: 12 },
 ] as const;
 
+/**
+ * The range the user last picked, remembered for the life of the app session
+ * so drilling into a habit and coming back doesn't silently snap to 6 months.
+ * A module-level value on purpose: a preference this small doesn't earn a new
+ * AsyncStorage key, and components don't own persistence in this codebase.
+ */
+let lastRangeDays: number = 183;
+
 const pct = (r: number): number => Math.round(r * 100);
+
+// "a", "a and b", "a, b and c" — for the one honest line about what's still
+// filling in. Oxford-free, matches the app's spoken tone.
+function listOf(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
 
 // Drop the leading points from before anything was trackable, so the line
 // starts where the user's history does instead of at a fake 0%.
@@ -71,11 +89,28 @@ function trimToHistory(points: RatePoint[]): RatePoint[] {
 }
 
 /**
- * The analysis surface, shared by the overview and per-habit screens: the
- * Tight 4, the four analysis modules (journal, comparison, consistency score,
- * correlations) and the calm gamification band (records + stamps). All math
- * comes from the pure `lib/stats` / `lib/gamification` engines; this file only
- * arranges it and picks the right state to render.
+ * The analysis surface, shared by the overview and per-habit screens.
+ *
+ * INFORMATION HIERARCHY (three titled groups, one hero, no nav bar):
+ *
+ *   hero            best/current streak · this month %   ← the only place both appear
+ *   How it's going  your story · consistency (heatmap + score) · progress
+ *   Against your best  streak vs record · records board · stamps
+ *   Patterns        by habit · what goes together
+ *   Your journal    FR-AN1 stats
+ *
+ * Each number lives in exactly ONE place: the streak is in the hero (the
+ * "record" section talks only about the longest and the distance to it, and
+ * the records board drops its duplicate streak row), and this month's rate is
+ * in the hero (Progress leads with the month-over-month delta instead).
+ *
+ * PROGRESSIVE DISCLOSURE: a module that could only say "nothing here yet" is
+ * not rendered at all. A new user gets the hero, their story, the heatmap and
+ * the habit list — then ONE honest line naming what unlocks as they go, rather
+ * than seven identical empty panels.
+ *
+ * All math comes from the pure `lib/stats` / `lib/gamification` engines; this
+ * file only arranges it and picks the right state to render.
  */
 export function AnalysisContent({
   habits,
@@ -87,8 +122,20 @@ export function AnalysisContent({
   failedMonths = 0,
   onRetry,
 }: AnalysisContentProps) {
-  const [rangeDays, setRangeDays] = useState<number>(183);
+  const [rangeDays, setRangeDays] = useState<number>(lastRangeDays);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
+
+  const pickRange = (days: number) => {
+    if (days === rangeDays) return;
+    void Haptics.selectionAsync();
+    lastRangeDays = days;
+    setRangeDays(days);
+  };
+
+  const drillInto = (id: string) => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push(`/analysis/${id}` as Href);
+  };
 
   // 1 — loading.
   if (loading) {
@@ -103,12 +150,31 @@ export function AnalysisContent({
     );
   }
 
-  // 2 — per-habit view but the habit is gone (deleted).
+  // 2 — per-habit view but the habit is gone (deleted). A dead end with only a
+  // back button is a trap; offer both ways forward.
   const habit = habitId ? habits.find((h) => h.id === habitId) : undefined;
   if (habitId && !habit) {
     return (
       <View style={styles.wrap}>
-        <Text style={styles.empty}>This habit is no longer available.</Text>
+        <Text style={styles.goneTitle}>This habit was deleted</Text>
+        <Text style={styles.gone}>
+          Its history went with it. Everything else is still in your overall
+          analysis.
+        </Text>
+        <PressableScale
+          style={styles.goneCta}
+          onPress={() => router.replace("/analysis")}
+          accessibilityLabel="See overall analysis"
+        >
+          <Text style={styles.goneCtaText}>See overall analysis</Text>
+        </PressableScale>
+        <PressableScale
+          style={[styles.goneCta, styles.goneCtaQuiet]}
+          onPress={() => router.push("/habits")}
+          accessibilityLabel="Manage habits"
+        >
+          <Text style={styles.goneCtaQuietText}>Manage habits</Text>
+        </PressableScale>
       </View>
     );
   }
@@ -117,7 +183,17 @@ export function AnalysisContent({
   if (!habitId && habits.length === 0) {
     return (
       <View style={styles.wrap}>
-        <Text style={styles.empty}>Add a habit to start seeing your analysis.</Text>
+        <Text style={styles.gone}>
+          Add a habit and this page starts filling in from the first day you
+          tick it.
+        </Text>
+        <PressableScale
+          style={styles.goneCta}
+          onPress={() => router.push("/habits")}
+          accessibilityLabel="Add a habit"
+        >
+          <Text style={styles.goneCtaText}>Add a habit</Text>
+        </PressableScale>
       </View>
     );
   }
@@ -175,11 +251,34 @@ export function AnalysisContent({
   const journal = habitId ? null : computeJournalStats(entries, today);
   const comparison = habitId ? [] : habitComparison(habits, logs, today);
   const correlations = habitId ? [] : habitCorrelations(habits, logs, today);
-  const records = habitId ? [] : computeRecords({ habits, logs, entries, today });
+  // The streak record already has its own section directly above the board —
+  // showing it a third time is the redundancy, not the record.
+  const records = habitId
+    ? []
+    : computeRecords({ habits, logs, entries, today }).filter(
+        (r) => r.key !== "longestStreak" && r.record > 0,
+      );
 
   const trendUp = trend.delta >= 0;
   const recordProgress = longestStreak > 0 ? Math.min(1, currentStreak / longestStreak) : 0;
   const activeDays = overall?.activeDays ?? hs?.totalCompletions ?? 0;
+
+  // --- Progressive disclosure -------------------------------------------
+  // Render a module only when it has something to say; collect what's still
+  // locked into one honest line instead of a column of empty panels.
+  const showProgress = series.length > 1;
+  const showScore = consistency.daysCounted > 0;
+  const showRecords = !habitId && records.length > 0;
+  const showCorrelations = !habitId && correlations.length > 0;
+  const showJournal = !habitId && (entriesLoading || (journal?.totalEntries ?? 0) > 0);
+
+  const locked: string[] = [];
+  if (!showProgress) locked.push("your trend line, after a few more days");
+  if (!showRecords && !habitId) locked.push("records, once there's a best to beat");
+  if (!showCorrelations && !habitId) {
+    locked.push("what goes together, after a couple of weeks");
+  }
+  if (!showJournal && !habitId) locked.push("your journal, from the first highlight you write");
 
   return (
     <View style={styles.wrap}>
@@ -190,6 +289,9 @@ export function AnalysisContent({
           activeOpacity={0.85}
           disabled={!onRetry}
           style={styles.notice}
+          accessibilityRole="button"
+          accessibilityLabel="Some months couldn't be refreshed. Tap to try again."
+          accessibilityState={{ disabled: !onRetry }}
         >
           <Text style={styles.noticeText}>
             {totalCompletions > 0
@@ -200,7 +302,7 @@ export function AnalysisContent({
         </TouchableOpacity>
       )}
 
-      {/* ---- Free hero band (always visible) ---- */}
+      {/* ---- Hero band ---- */}
       {/* Each stat is one VoiceOver stop — a label and a bare number read as
           two unrelated fragments otherwise. */}
       <View style={styles.heroRow}>
@@ -238,183 +340,235 @@ export function AnalysisContent({
         </Text>
       ) : null}
 
-      {/* ---- The Tight 4 ---- */}
-      {/* 1 — Consistency heatmap */}
-      <View style={styles.section}>
-        <View style={styles.sectionHead}>
-          <Text style={styles.sectionLabel} accessibilityRole="header">
-            Consistency
+      {/* Per-habit: say plainly that this is a narrower view, and how to get
+          back to the wide one. It used to drop five modules in silence. */}
+      {habitId && (
+        <TouchableOpacity
+          style={styles.scopeNote}
+          activeOpacity={0.85}
+          onPress={() => router.replace("/analysis")}
+          accessibilityRole="button"
+          accessibilityLabel={`Showing ${habit?.name ?? "this habit"} only. See the overall analysis`}
+        >
+          <Text style={styles.scopeText}>
+            Just <Text style={styles.bold}>{habit?.name}</Text>. Records, stamps,
+            your journal and cross-habit patterns live on the overall analysis.
           </Text>
-          <View style={styles.segment} accessibilityRole="tablist">
-            {RANGES.map((r) => {
-              const on = r.days === rangeDays;
+          <Text style={styles.scopeLink}>See everything →</Text>
+        </TouchableOpacity>
+      )}
+
+      {/* ================= HOW IT'S GOING ================= */}
+      <View style={styles.group}>
+        <SectionTitle>How it&apos;s going</SectionTitle>
+
+        {/* Your story — the one rotating sentence, and the only prose here. */}
+        <View style={[styles.section, styles.sectionFirst]}>
+          <Text style={styles.insight}>{insight}</Text>
+        </View>
+
+        {/* Consistency: the calendar shape, then the score built from it. */}
+        <View style={styles.section}>
+          <View style={styles.sectionHead}>
+            <Text style={styles.sectionLabel} accessibilityRole="header">
+              Consistency
+            </Text>
+            <View style={styles.segment} accessibilityRole="tablist">
+              {RANGES.map((r) => {
+                const on = r.days === rangeDays;
+                return (
+                  <TouchableOpacity
+                    key={r.days}
+                    onPress={() => pickRange(r.days)}
+                    activeOpacity={0.85}
+                    style={[styles.segItem, on && styles.segItemOn]}
+                    // The pill is ~30pt tall by design; hitSlop takes the
+                    // target past 44pt without changing the layout.
+                    hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+                    accessibilityRole="tab"
+                    accessibilityLabel={`Show ${r.label.toLowerCase()}`}
+                    accessibilityState={{ selected: on }}
+                  >
+                    <Text style={[styles.segText, on && styles.segTextOn]}>{r.label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+          <HabitHeatmap
+            cells={cells}
+            onDayPress={(c) => setSelectedDay(c.date)}
+            habitName={habit?.name}
+          />
+          <Text style={styles.caption}>
+            Each square is a day · darker is stronger · tap to look back
+            {!habitId && overall && overall.perfectDays > 0
+              ? ` · ${overall.perfectDays} perfect day${overall.perfectDays === 1 ? "" : "s"} filled in solid`
+              : ""}
+          </Text>
+
+          {/* FR-AN3 — the score, sitting under the shape it's derived from. */}
+          {showScore && (
+            <View style={styles.subSection}>
+              <Text style={styles.subLabel} accessibilityRole="header">
+                Your score
+              </Text>
+              <ConsistencyScore result={consistency} />
+            </View>
+          )}
+        </View>
+
+        {/* Progress — leads with the delta; the rate itself is in the hero. */}
+        {showProgress && (
+          <View style={styles.section}>
+            <Text style={styles.sectionLabel} accessibilityRole="header">
+              Progress
+            </Text>
+            <Text
+              style={[styles.bigDelta, { color: trendUp ? Colors.success : Colors.danger }]}
+              accessibilityLabel={`${trendUp ? "Up" : "Down"} ${Math.abs(
+                Math.round(trend.delta),
+              )} percent versus last month`}
+            >
+              {trendUp ? "↑" : "↓"} {Math.abs(Math.round(trend.delta))}% vs last month
+            </Text>
+            <Text style={styles.caption2}>
+              {month.days > 0
+                ? `${month.done} of ${month.days} day${month.days === 1 ? "" : "s"} counted so far this month`
+                : "This month starts counting from the day you added it"}
+            </Text>
+            <View style={{ marginTop: 10 }}>
+              <StatSparkline values={series.map((p) => p.rate)} />
+            </View>
+            <Text style={styles.caption}>
+              {range.months > 0 ? `Last ${range.months} months` : `Last ${range.days} days`}
+            </Text>
+          </View>
+        )}
+      </View>
+
+      {/* ================= AGAINST YOUR BEST ================= */}
+      <View style={styles.group}>
+        <SectionTitle>Against your best</SectionTitle>
+
+        {/* Streak vs record — the longest and the distance to it. The current
+            streak is the hero number; it isn't repeated here. */}
+        <View style={[styles.section, styles.sectionFirst]}>
+          <Text style={styles.sectionLabel} accessibilityRole="header">
+            Longest run
+          </Text>
+          <Text style={styles.recordLine}>
+            <Text style={styles.bold}>{longestStreak}</Text> day
+            {longestStreak === 1 ? "" : "s"}
+            {toRecord > 0
+              ? ` · ${toRecord} more to beat it`
+              : longestStreak > 0
+                ? " · you're at your best ever 🎉"
+                : " · nothing to beat yet"}
+          </Text>
+          <View
+            style={styles.bar}
+            accessible
+            accessibilityLabel={`You are ${Math.round(recordProgress * 100)} percent of the way to your longest run`}
+          >
+            <View style={[styles.barFill, { width: `${recordProgress * 100}%` }]} />
+          </View>
+          <View style={styles.milestones}>
+            {[7, 30, 100].map((m) => {
+              const hit = longestStreak >= m;
               return (
-                <TouchableOpacity
-                  key={r.days}
-                  onPress={() => setRangeDays(r.days)}
-                  activeOpacity={0.7}
-                  style={[styles.segItem, on && styles.segItemOn]}
-                  // The pill is ~25pt tall by design; hitSlop takes the target
-                  // to 44pt without changing the layout.
-                  hitSlop={{ top: 12, bottom: 12 }}
-                  accessibilityRole="tab"
-                  accessibilityLabel={`Show ${r.label.toLowerCase()}`}
-                  accessibilityState={{ selected: on }}
+                <Text
+                  key={m}
+                  style={[styles.milestone, hit && styles.milestoneHit]}
+                  accessibilityLabel={`${m} day milestone, ${hit ? "reached" : "not yet"}`}
                 >
-                  <Text style={[styles.segText, on && styles.segTextOn]}>{r.label}</Text>
-                </TouchableOpacity>
+                  {hit ? "✓" : "○"} {m}
+                </Text>
               );
             })}
           </View>
         </View>
-        <HabitHeatmap
-          cells={cells}
-          onDayPress={(c) => setSelectedDay(c.date)}
-          habitName={habits.find((h) => h.id === habitId)?.name}
-        />
-        <Text style={styles.caption}>
-          Each square is a day · darker is stronger · tap to look back
-          {!habitId && overall && overall.perfectDays > 0
-            ? ` · ${overall.perfectDays} perfect day${overall.perfectDays === 1 ? "" : "s"} filled in solid`
-            : ""}
-        </Text>
+
+        {/* FR-G2 — records board (overview only, once a record exists). */}
+        {showRecords && (
+          <View style={styles.section}>
+            <Text style={styles.sectionLabel} accessibilityRole="header">
+              Records
+            </Text>
+            <Text style={styles.caption2}>
+              Beaten or tied — never lost. Every one of these is you against you.
+            </Text>
+            <View style={{ height: 6 }} />
+            <RecordsBoard records={records} />
+          </View>
+        )}
+
+        {/* FR-G3 — stamps (overview only). A link, not a panel: it stays even
+            when empty, because the stamp wall explains itself. */}
+        {!habitId && (
+          <TouchableOpacity
+            style={styles.section}
+            activeOpacity={0.85}
+            onPress={() => {
+              void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              router.push("/analysis/stamps");
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Stamps"
+            accessibilityHint="Everything you've already done, kept permanently"
+          >
+            <View style={styles.stampsRow}>
+              <View style={styles.stampsText}>
+                <Text style={styles.sectionLabel}>Stamps</Text>
+                <Text style={styles.insight}>
+                  Everything you&apos;ve already done, kept permanently.
+                </Text>
+              </View>
+              <Text style={styles.chev}>›</Text>
+            </View>
+          </TouchableOpacity>
+        )}
       </View>
 
-      {/* 2 — Progress trend (same range as the heatmap) */}
-      <View style={styles.section}>
-        <Text style={styles.sectionLabel} accessibilityRole="header">
-            Progress
-          </Text>
-        <View style={styles.trendRow}>
-          <Text style={styles.bigNum}>{month.days > 0 ? `${pct(month.rate)}%` : "—"}</Text>
-          <Text style={[styles.delta, { color: trendUp ? Colors.success : Colors.danger }]}>
-            {trendUp ? "↑" : "↓"} {Math.abs(Math.round(trend.delta))}% vs last month
-          </Text>
-        </View>
-        <Text style={styles.caption2}>
-          {month.days > 0
-            ? `${month.done} of ${month.days} day${month.days === 1 ? "" : "s"} counted so far this month`
-            : "This month starts counting from the day you added it"}
-        </Text>
-        <View style={{ marginTop: 8 }}>
-          {series.length > 1 ? (
-            <StatSparkline values={series.map((p) => p.rate)} />
-          ) : (
-            <Text style={styles.muted}>Not enough history for a line yet.</Text>
+      {/* ================= PATTERNS (overview only) ================= */}
+      {!habitId && (
+        <View style={styles.group}>
+          <SectionTitle>Patterns</SectionTitle>
+
+          {/* FR-AN2 — habit comparison */}
+          <View style={[styles.section, styles.sectionFirst]}>
+            <Text style={styles.sectionLabel} accessibilityRole="header">
+              By habit
+            </Text>
+            <HabitComparison rows={comparison} onSelect={drillInto} />
+          </View>
+
+          {/* FR-AN4 — correlations, once there's a pattern worth the name */}
+          {showCorrelations && (
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel} accessibilityRole="header">
+                What goes together
+              </Text>
+              <HabitCorrelations correlations={correlations} habits={habits} />
+            </View>
           )}
         </View>
-        <Text style={styles.caption}>
-          {range.months > 0 ? `Last ${range.months} months` : `Last ${range.days} days`}
-        </Text>
-      </View>
-
-      {/* 3 — Streak vs record */}
-      <View style={styles.section}>
-        <Text style={styles.sectionLabel} accessibilityRole="header">
-            Your record
-          </Text>
-        <Text style={styles.recordLine}>
-          🔥 {currentStreak} now · longest <Text style={styles.bold}>{longestStreak}</Text>
-          {toRecord > 0 ? ` · ${toRecord} to your record` : longestStreak > 0 ? " · at your best ever 🎉" : ""}
-        </Text>
-        <View style={styles.bar}>
-          <View style={[styles.barFill, { width: `${recordProgress * 100}%` }]} />
-        </View>
-        <View style={styles.milestones}>
-          {[7, 30, 100].map((m) => {
-            const hit = longestStreak >= m;
-            return (
-              <Text key={m} style={[styles.milestone, hit && styles.milestoneHit]}>
-                {hit ? "✓" : "○"} {m}
-              </Text>
-            );
-          })}
-        </View>
-      </View>
-
-      {/* FR-AN3 — consistency score, formula included */}
-      <View style={styles.section}>
-        <Text style={styles.sectionLabel} accessibilityRole="header">
-            Consistency score
-          </Text>
-        <ConsistencyScore result={consistency} />
-      </View>
-
-      {/* 4 — Written "your story" insight */}
-      <View style={styles.section}>
-        <Text style={styles.sectionLabel} accessibilityRole="header">
-            Your story
-          </Text>
-        <Text style={styles.insight}>{insight}</Text>
-      </View>
-
-      {/* FR-AN2 — habit comparison (overview only) */}
-      {!habitId && (
-        <View style={styles.section}>
-          <Text style={styles.sectionLabel} accessibilityRole="header">
-            By habit
-          </Text>
-          <HabitComparison
-            rows={comparison}
-            onSelect={(id) => router.push(`/analysis/${id}` as Href)}
-          />
-        </View>
       )}
 
-      {/* FR-AN4 — correlations (overview only) */}
-      {!habitId && (
-        <View style={styles.section}>
-          <Text style={styles.sectionLabel} accessibilityRole="header">
-            What goes together
-          </Text>
-          <HabitCorrelations correlations={correlations} habits={habits} />
-        </View>
-      )}
-
-      {/* FR-AN1 — journal stats (overview only) */}
-      {!habitId && (
-        <View style={styles.section}>
-          <Text style={styles.sectionLabel} accessibilityRole="header">
-            Your journal
-          </Text>
-          <JournalStatsCard stats={journal} loading={entriesLoading} />
-        </View>
-      )}
-
-      {/* FR-G2 — records board (overview only) */}
-      {!habitId && (
-        <View style={styles.section}>
-          <Text style={styles.sectionLabel} accessibilityRole="header">
-            Records
-          </Text>
-          <Text style={styles.caption2}>
-            Beaten or tied — never lost. Every one of these is you against you.
-          </Text>
-          <View style={{ height: 6 }} />
-          <RecordsBoard records={records} />
-        </View>
-      )}
-
-      {/* FR-G3 — stamps (overview only) */}
-      {!habitId && (
-        <TouchableOpacity
-          style={styles.section}
-          activeOpacity={0.85}
-          onPress={() => router.push("/analysis/stamps" as Href)}
-          accessibilityRole="button"
-          accessibilityLabel="Stamps"
-          accessibilityHint="Everything you've already done, kept permanently"
-        >
-          <View style={styles.stampsRow}>
-            <View style={styles.stampsText}>
-              <Text style={styles.sectionLabel}>Stamps</Text>
-              <Text style={styles.insight}>
-                Everything you&apos;ve already done, kept permanently.
-              </Text>
-            </View>
-            <Text style={styles.chev}>›</Text>
+      {/* ================= YOUR JOURNAL (overview only) ================= */}
+      {showJournal && (
+        <View style={styles.group}>
+          <SectionTitle>Your journal</SectionTitle>
+          <View style={[styles.section, styles.sectionFirst]}>
+            <JournalStatsCard stats={journal} loading={entriesLoading} />
           </View>
-        </TouchableOpacity>
+        </View>
+      )}
+
+      {/* One honest line about what's still filling in — instead of a stack of
+          modules all saying "nothing here yet". */}
+      {locked.length > 0 && (
+        <Text style={styles.locked}>Still filling in: {listOf(locked)}.</Text>
       )}
 
       <DayHighlightSheet
@@ -430,18 +584,39 @@ export function AnalysisContent({
 
 const styles = StyleSheet.create({
   wrap: { paddingHorizontal: 22 },
-  empty: {
+  // deleted-habit / no-habits states
+  goneTitle: {
+    fontSize: 20,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingSemiBold,
+    textAlign: "center",
+    marginTop: 40,
+    marginBottom: 8,
+  },
+  gone: {
     fontSize: 15,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
     textAlign: "center",
-    marginTop: 40,
+    lineHeight: 22,
+    marginTop: 24,
   },
-  muted: {
-    fontSize: 13,
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
+  goneCta: {
+    height: 50,
+    borderRadius: 14,
+    backgroundColor: Colors.ink,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 20,
   },
+  goneCtaText: { fontSize: 16, color: Colors.paper, fontFamily: Fonts.handwritingSemiBold },
+  goneCtaQuiet: {
+    backgroundColor: Colors.card,
+    borderWidth: 1.5,
+    borderColor: Colors.ink,
+    marginTop: 12,
+  },
+  goneCtaQuietText: { fontSize: 16, color: Colors.ink, fontFamily: Fonts.handwritingSemiBold },
   // offline / partial-load notice
   notice: {
     borderWidth: 1,
@@ -485,8 +660,38 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     marginBottom: 4,
   },
-  // sections
+  // per-habit scope note
+  scopeNote: {
+    borderWidth: 1,
+    borderColor: Hairline.strong,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginTop: 4,
+  },
+  scopeText: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    lineHeight: 20,
+  },
+  scopeLink: {
+    fontSize: 13,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingSemiBold,
+    marginTop: 8,
+  },
+  // groups + sections: the group title carries the weight, so the first
+  // section under it skips the rule and only siblings get one.
+  group: { marginTop: 28 },
   section: { paddingVertical: 18, borderTopWidth: 1, borderTopColor: Hairline.strong },
+  sectionFirst: { borderTopWidth: 0, paddingTop: 2 },
+  subSection: {
+    marginTop: 18,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: Hairline.base,
+  },
   sectionHead: {
     flexDirection: "row",
     alignItems: "center",
@@ -499,6 +704,13 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwritingMedium,
     letterSpacing: 0.3,
     marginBottom: 10,
+  },
+  subLabel: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwritingMedium,
+    letterSpacing: 0.3,
+    marginBottom: 8,
   },
   caption: {
     fontSize: 11.5,
@@ -515,14 +727,12 @@ const styles = StyleSheet.create({
   },
   // segmented range
   segment: { flexDirection: "row", gap: 4, marginBottom: 10 },
-  segItem: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999 },
+  segItem: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999 },
   segItemOn: { backgroundColor: Colors.ink },
   segText: { fontSize: 12, color: Colors.textSecondary, fontFamily: Fonts.handwritingMedium },
   segTextOn: { color: Colors.paper },
   // progress
-  trendRow: { flexDirection: "row", alignItems: "baseline", gap: 10 },
-  bigNum: { fontSize: 34, color: Colors.ink, fontFamily: Fonts.handwritingSemiBold },
-  delta: { fontSize: 14, fontFamily: Fonts.handwritingMedium },
+  bigDelta: { fontSize: 24, fontFamily: Fonts.handwritingSemiBold },
   // record
   recordLine: { fontSize: 15, color: Colors.ink, fontFamily: Fonts.handwriting, marginBottom: 10 },
   bold: { fontFamily: Fonts.handwritingSemiBold },
@@ -532,6 +742,14 @@ const styles = StyleSheet.create({
   milestone: { fontSize: 13, color: Colors.textSecondary, fontFamily: Fonts.handwritingMedium },
   milestoneHit: { color: Colors.ink },
   insight: { fontSize: 16, color: Colors.ink, fontFamily: Fonts.handwriting, lineHeight: 24 },
+  // what's still filling in
+  locked: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    lineHeight: 20,
+    marginTop: 28,
+  },
   // stamps row
   stampsRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   stampsText: { flex: 1, marginRight: 12 },

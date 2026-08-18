@@ -33,9 +33,13 @@ interface FeedEntryCardProps {
 
 interface ResolvedImage {
   path: string;
-  url: string;
+  /** null when the signed URL couldn't be minted — the tile becomes a retry. */
+  url: string | null;
   dim: ImageDimension;
 }
+
+/** Fallback size for a photo we couldn't measure (or couldn't reach at all). */
+const FALLBACK_DIM: ImageDimension = { width: 400, height: 300 };
 
 /** Top row: optional timestamp on the left, edit/delete actions on the right. */
 function CardHeader({
@@ -103,6 +107,9 @@ export function FeedEntryCard({
   } | null>(null);
   const [loading, setLoading] = useState(true);
   const [viewerUri, setViewerUri] = useState<string | null>(null);
+  // Bumped by the retry tile: signed URLs are only cached on success, so a
+  // re-run asks the server again.
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -120,12 +127,17 @@ export function FeedEntryCard({
       const items: ResolvedImage[] = [];
       for (const path of paths) {
         const url = await getImageUrl(path);
-        if (!url) continue;
+        // A photo whose URL failed used to vanish, so a photo-only entry
+        // rendered as an empty card. Keep its place and offer a retry.
+        if (!url) {
+          items.push({ path, url: null, dim: FALLBACK_DIM });
+          continue;
+        }
         const dim = await new Promise<ImageDimension>((resolveDim) => {
           Image.getSize(
             url,
             (width, height) => resolveDim({ width, height }),
-            () => resolveDim({ width: 400, height: 300 }),
+            () => resolveDim(FALLBACK_DIM),
           );
         });
         items.push({ path, url, dim });
@@ -150,7 +162,7 @@ export function FeedEntryCard({
     return () => {
       cancelled = true;
     };
-  }, [entry]);
+  }, [entry, attempt]);
 
   if (loading || !layoutDecision) {
     return (
@@ -193,6 +205,7 @@ export function FeedEntryCard({
             resolved={resolved}
             imageCount={imageCount}
             onImagePress={(url) => setViewerUri(url)}
+            onRetry={() => setAttempt((a) => a + 1)}
           />
         )}
       </PaperCard>
@@ -210,11 +223,14 @@ function TextWithImagesLayout({
   resolved,
   imageCount,
   onImagePress,
+  onRetry,
 }: {
   entry: DailyEntry;
   resolved: ResolvedImage[];
   imageCount: number;
   onImagePress: (url: string) => void;
+  /** Ask for the signed URLs again after one couldn't be minted. */
+  onRetry: () => void;
 }) {
   // Page padding (20 each side from feed.tsx) + card padding (20 each side from PaperCard)
   const screenWidth = Dimensions.get("window").width;
@@ -284,18 +300,50 @@ function TextWithImagesLayout({
                     : 0
                   : 0;
 
+          if (!item.url) {
+            return (
+              <TouchableOpacity
+                key={item.path}
+                activeOpacity={0.85}
+                onPress={onRetry}
+                style={{ marginRight, marginBottom }}
+                accessibilityRole="button"
+                accessibilityLabel={`Photo ${index + 1} of ${imageCount} didn't load`}
+                accessibilityHint="Tap to try loading it again"
+              >
+                <View
+                  style={[
+                    styles.image,
+                    styles.imageFallback,
+                    { width: imageWidth, height: imageHeight },
+                  ]}
+                >
+                  <IconSymbol
+                    name="photo"
+                    size={22}
+                    color={Colors.textSecondary}
+                  />
+                  <Text style={styles.imageFallbackText}>
+                    Didn&apos;t load · tap to retry
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            );
+          }
+
+          const url = item.url;
           return (
             <TouchableOpacity
               key={item.path}
               activeOpacity={0.85}
-              onPress={() => onImagePress(item.url)}
+              onPress={() => onImagePress(url)}
               style={{ marginRight, marginBottom }}
               accessibilityRole="button"
               accessibilityLabel={`Photo ${index + 1} of ${imageCount}`}
               accessibilityHint="Opens the photo full screen"
             >
               <Image
-                source={{ uri: item.url }}
+                source={{ uri: url }}
                 style={[
                   styles.image,
                   { width: imageWidth, height: imageHeight },
@@ -355,5 +403,18 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: Hairline.base,
+  },
+  imageFallback: {
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    backgroundColor: Hairline.faint,
+  },
+  imageFallbackText: {
+    fontSize: 11.5,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    textAlign: "center",
   },
 });

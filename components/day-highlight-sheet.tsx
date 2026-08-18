@@ -1,4 +1,5 @@
 import { IconSymbol } from "@/components/ui/icon-symbol";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { useDataStore } from "@/lib/data-store";
 import { fromDayKey, parseDayKey, todayKey } from "@/lib/dates";
@@ -46,29 +47,37 @@ export function DayHighlightSheet({ visible, date, habits, logs, onClose }: DayH
   const { refreshEntries } = useDataStore();
   const [entries, setEntries] = useState<DailyEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  // The month couldn't be read at all. Distinct from "nothing journaled" —
+  // an empty catch used to render the two identically.
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!visible || !date) return;
     let cancelled = false;
     const load = async () => {
       setLoading(true);
+      setFailed(false);
       const parts = parseDayKey(date);
       let month: DailyEntry[] = [];
+      let broke = false;
       try {
         // Use the returned array (already current) rather than a store getter.
         if (parts) month = await refreshEntries(parts.year, parts.month);
       } catch {
-        // Read degrades to whatever's cached — never block the sheet.
+        // Reads degrade — but the user is told, and can ask again.
+        broke = true;
       }
       if (cancelled) return;
       setEntries(month.filter((e) => e.date === date));
+      setFailed(broke);
       setLoading(false);
     };
     void load();
     return () => {
       cancelled = true;
     };
-  }, [visible, date, refreshEntries]);
+  }, [visible, date, refreshEntries, attempt]);
 
   // FR-G1 — was every habit that existed on this day completed? Eligibility
   // lives in the engine, so a habit added later never spoils an older day.
@@ -121,7 +130,22 @@ export function DayHighlightSheet({ visible, date, habits, logs, onClose }: DayH
 
           <Text style={[styles.section, { marginTop: 24 }]}>Journal</Text>
           {loading ? (
-            <Text style={styles.muted}>Loading…</Text>
+            <View accessibilityLabel="Loading this day's journal">
+              <Skeleton width="85%" height={14} />
+              <View style={{ height: 8 }} />
+              <Skeleton width="60%" height={14} />
+            </View>
+          ) : failed ? (
+            <TouchableOpacity
+              onPress={() => setAttempt((a) => a + 1)}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel="Couldn't load this day. Tap to try again."
+            >
+              <Text style={styles.retry}>
+                Couldn&apos;t load this day · tap to try again
+              </Text>
+            </TouchableOpacity>
           ) : entries.length > 0 ? (
             entries.map((e) => (
               <View key={e.id} style={styles.entry}>
@@ -182,5 +206,11 @@ const styles = StyleSheet.create({
   },
   entryText: { fontSize: 15, color: Colors.ink, fontFamily: Fonts.handwriting, lineHeight: 22 },
   muted: { fontSize: 14, color: Colors.textSecondary, fontFamily: Fonts.handwriting },
+  retry: {
+    fontSize: 14,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingMedium,
+    lineHeight: 21,
+  },
   mutedSmall: { fontSize: 12, color: Colors.textSecondary, fontFamily: Fonts.handwriting, marginTop: 6 },
 });
