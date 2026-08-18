@@ -21,10 +21,17 @@ interface HabitHeatmapProps {
 const levelOpacity = (l: number): number =>
   l === 1 ? 0.4 : l === 2 ? 0.7 : l === 3 ? 1 : 0;
 
+// Low-alpha ink hairlines — the one sanctioned literal (see frontend rules).
+// The fainter one marks days before any habit existed: not a miss, not yours.
+const HAIRLINE = "rgba(26,26,26,0.16)";
+const HAIRLINE_FAINT = "rgba(26,26,26,0.06)";
+
 /**
  * A crosshatch consistency heatmap drawn as a single SVG (one node, not N).
- * Darker = stronger; the all-time longest run is outlined in accent. Fades in
- * on mount. Pure presentation — feed it cells from `lib/stats.heatmapCells`.
+ * Darker = stronger; the all-time longest run is outlined in accent, and a
+ * perfect day (FR-G1 — every eligible habit done) is filled solid ink, the
+ * darkest mark on the grid. Fades in on mount. Pure presentation — feed it
+ * cells from `lib/stats.heatmapCells`.
  */
 export function HabitHeatmap({ cells, rows = 7, gap = 4, onDayPress }: HabitHeatmapProps) {
   const [width, setWidth] = useState(0);
@@ -67,6 +74,11 @@ export function HabitHeatmap({ cells, rows = 7, gap = 4, onDayPress }: HabitHeat
             const x = Math.floor(i / rows) * (cell + gap);
             const y = (i % rows) * (cell + gap);
             const op = levelOpacity(c.level);
+            const stroke = c.inLongest
+              ? Colors.accent
+              : c.eligible
+                ? HAIRLINE
+                : HAIRLINE_FAINT;
             return (
               <Rect
                 key={c.date}
@@ -75,9 +87,9 @@ export function HabitHeatmap({ cells, rows = 7, gap = 4, onDayPress }: HabitHeat
                 width={cell}
                 height={cell}
                 rx={3}
-                fill={op > 0 ? "url(#hm-hatch)" : "transparent"}
-                fillOpacity={op}
-                stroke={c.inLongest ? Colors.accent : "rgba(26,26,26,0.16)"}
+                fill={c.perfect ? Colors.ink : op > 0 ? "url(#hm-hatch)" : "transparent"}
+                fillOpacity={c.perfect ? 0.92 : op}
+                stroke={stroke}
                 strokeWidth={c.inLongest ? 1.5 : 1}
                 onPress={onDayPress ? () => onDayPress(c) : undefined}
               />

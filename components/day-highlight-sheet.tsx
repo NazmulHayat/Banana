@@ -1,8 +1,9 @@
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { Colors, Fonts } from "@/constants/theme";
 import { useDataStore } from "@/lib/data-store";
-import { fromDayKey, parseDayKey } from "@/lib/dates";
+import { fromDayKey, parseDayKey, todayKey } from "@/lib/dates";
 import type { DailyEntry, Habit, HabitLog } from "@/lib/db";
+import { perfectDays } from "@/lib/stats";
 import { useEffect, useState } from "react";
 import {
   Modal,
@@ -69,6 +70,11 @@ export function DayHighlightSheet({ visible, date, habits, logs, onClose }: DayH
     };
   }, [visible, date, refreshEntries]);
 
+  // FR-G1 — was every habit that existed on this day completed? Eligibility
+  // lives in the engine, so a habit added later never spoils an older day.
+  const isPerfect =
+    date !== null && perfectDays(habits, logs, todayKey()).includes(date);
+
   const nameById = new Map(habits.map((h) => [h.id, h.name] as const));
   const completed = date
     ? [
@@ -92,6 +98,7 @@ export function DayHighlightSheet({ visible, date, habits, logs, onClose }: DayH
         </View>
 
         <ScrollView contentContainerStyle={styles.body}>
+          {isPerfect && <Text style={styles.perfect}>A perfect day — everything you&apos;d taken on.</Text>}
           <Text style={styles.section}>Completed</Text>
           {completed.length > 0 ? (
             completed.map((n) => (
@@ -150,6 +157,12 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwritingMedium,
     letterSpacing: 0.3,
     marginBottom: 10,
+  },
+  perfect: {
+    fontSize: 15,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingSemiBold,
+    marginBottom: 14,
   },
   habitRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 6 },
   habitText: { fontSize: 16, color: Colors.ink, fontFamily: Fonts.handwritingMedium },
