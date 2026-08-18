@@ -11,9 +11,9 @@ import {
   keyring,
 } from "../crypto";
 import { supabase } from "../supabase";
-import { enqueuePendingWrite } from "./pending-writes";
 import { DateFormats } from "./schema";
 import type { HabitLog, HabitLogPayload } from "./types";
+import { UnrecoverableWriteError } from "./types";
 
 // Storage key is a protocol constant, not branding — renaming orphans caches.
 const LOGS_STORAGE_KEY = "banana_habit_logs_v2";
@@ -57,6 +57,43 @@ export function clearHabitLogsCache(): void {
 }
 
 /**
+ * Write one log into the cached month it belongs to (if that month is cached).
+ * A write used to invalidate the whole month, which offline left the tracker
+ * with no cached logs at all and nothing to refill them from.
+ */
+function upsertLogInCache(userId: string, log: HabitLog): void {
+  const ym = log.date.slice(0, 7);
+  const mKey = monthKey(userId, ym);
+  const month = logsMonthCache.get(mKey);
+  if (!month) return;
+  const next = [...month];
+  const i = next.findIndex(
+    (l) => l.habitId === log.habitId && l.date === log.date,
+  );
+  if (i >= 0) next[i] = log;
+  else next.push(log);
+  logsMonthCache.set(mKey, next);
+  void AsyncStorage.setItem(storageKey(userId, ym), JSON.stringify(next)).catch(
+    () => {},
+  );
+}
+
+/** Drop every cached log belonging to one habit, across all cached months (D12). */
+function removeHabitFromLogCaches(userId: string, habitId: string): void {
+  for (const [key, logs] of logsMonthCache) {
+    if (!key.startsWith(`${userId}:`)) continue;
+    const next = logs.filter((l) => l.habitId !== habitId);
+    if (next.length === logs.length) continue;
+    logsMonthCache.set(key, next);
+    const ym = key.slice(userId.length + 1);
+    void AsyncStorage.setItem(
+      storageKey(userId, ym),
+      JSON.stringify(next),
+    ).catch(() => {});
+  }
+}
+
+/**
  * AsyncStorage tier of the read path (in-memory Map -> AsyncStorage -> network).
  * Returns `null` when nothing is persisted for that month, `[]` when a month
  * that is genuinely empty was persisted. A hit is promoted back into the
@@ -84,7 +121,7 @@ async function requireUserId(): Promise<string> {
   const {
     data: { session },
   } = await supabase.auth.getSession();
-  if (!session) throw new Error("Not signed in");
+  if (!session) throw new UnrecoverableWriteError("Not signed in");
   return session.user.id;
 }
 
@@ -93,7 +130,9 @@ export async function toggleHabitLog(
   date: string,
   currentCompleted?: boolean,
 ): Promise<HabitLog> {
-  if (!keyring.isUnlocked()) throw new Error("Encryption is locked");
+  if (!keyring.isUnlocked()) {
+    throw new UnrecoverableWriteError("Encryption is locked");
+  }
   const userId = await requireUserId();
   const mk = keyring.getMasterKey();
   // Only the day bucket / AAD are needed here to read the current state; the
@@ -105,12 +144,18 @@ export async function toggleHabitLog(
     completed = !currentCompleted;
   } else {
     // Read current from server
-    const { data: existing } = await supabase
+    const { data: existing, error: readErr } = await supabase
       .from("habit_logs")
       .select("ciphertext, nonce")
       .eq("owner_id", userId)
       .eq("day_bucket", dBucket)
       .maybeSingle();
+    // Don't guess the current state from a failed read — a wrong guess flips
+    // the cell the wrong way. Callers pass `currentCompleted` from local state
+    // for exactly this reason.
+    if (readErr) {
+      throw new Error(`Failed to update habit: ${readErr.message}`);
+    }
     if (existing) {
       const payload = decryptJson<HabitLogPayload>(
         mk,
@@ -126,10 +171,8 @@ export async function toggleHabitLog(
     }
   }
 
-  // Persist the exact computed state via the idempotent upsert helper. On a
-  // server/network failure it queues the final HabitLog for retry instead of
-  // throwing (NFR-1) — we still return that log so the optimistic UI stays
-  // correct and the queued write replays it verbatim later.
+  // Persist the exact computed state via the idempotent upsert helper, which
+  // throws on failure so the caller can queue this log for retry (NFR-1).
   return upsertHabitLog({ habitId, date, completed });
 }
 
@@ -137,10 +180,12 @@ export async function toggleHabitLog(
  * Write an exact habit-log state (idempotent upsert — sets `completed` to the
  * given value, never toggles). Used by `toggleHabitLog` for the normal write
  * and by the data-store flush executor when replaying a queued `habitLog`.
- * On write failure the log is durably enqueued for retry (NFR-1) and returned.
+ * Throws on failure; the caller queues the retry (never this layer — D5).
  */
 export async function upsertHabitLog(log: HabitLog): Promise<HabitLog> {
-  if (!keyring.isUnlocked()) throw new Error("Encryption is locked");
+  if (!keyring.isUnlocked()) {
+    throw new UnrecoverableWriteError("Encryption is locked");
+  }
   const userId = await requireUserId();
   const mk = keyring.getMasterKey();
   const dBucket = habitLogDayBucket(mk, log.habitId, log.date);
@@ -164,17 +209,85 @@ export async function upsertHabitLog(log: HabitLog): Promise<HabitLog> {
     },
     { onConflict: "owner_id,day_bucket" },
   );
+  // NFR-1: never swallow a write error — the caller queues the exact final
+  // state and replays it verbatim later.
   if (error) {
-    // NFR-1: queue the exact final state for retry rather than dropping it.
-    if (__DEV__) console.warn("[habit_logs] Save failed, queued for retry");
-    await enqueuePendingWrite(userId, { kind: "habitLog", payload: log });
+    throw new Error(`Failed to update habit: ${error.message}`);
   }
 
-  // Invalidate month cache for that month so next read is fresh
-  const ym = log.date.slice(0, 7);
-  logsMonthCache.delete(monthKey(userId, ym));
+  // Keep the cached month in step with the write (no invalidation: offline the
+  // cache is the only copy the tracker has).
+  upsertLogInCache(userId, log);
 
   return { habitId: log.habitId, date: log.date, completed: log.completed };
+}
+
+/**
+ * Delete every habit log belonging to one habit (D12 — habit deletion used to
+ * orphan its logs forever, polluting analytics).
+ *
+ * `day_bucket` is HMAC(masterKey, "habitlog:<habitId>:<date>"), so the server
+ * cannot filter by habit for us and we cannot reverse a bucket into a date.
+ * The only exact way is to read this user's log rows (RLS-scoped), decrypt them
+ * client-side, and delete the buckets whose payload names this habit. Habit
+ * deletion is rare, so one scan is an acceptable price for not leaving rows
+ * behind. Throws on failure so the caller can queue the purge for retry.
+ */
+export async function deleteHabitLogsForHabit(habitId: string): Promise<void> {
+  if (!keyring.isUnlocked()) {
+    throw new UnrecoverableWriteError("Encryption is locked");
+  }
+  const userId = await requireUserId();
+  const mk = keyring.getMasterKey();
+
+  // Purge the local caches up front: the habit is gone from the user's list
+  // either way, so its logs must not survive in a cached month even if the
+  // server half has to be queued and replayed later.
+  removeHabitFromLogCaches(userId, habitId);
+
+  const { data, error } = await supabase
+    .from("habit_logs")
+    .select("ciphertext, nonce, day_bucket")
+    .eq("owner_id", userId);
+
+  if (error) {
+    throw new Error(`Failed to remove habit history: ${error.message}`);
+  }
+
+  const buckets: string[] = [];
+  for (const row of data ?? []) {
+    const dBucket = row.day_bucket as string;
+    try {
+      const payload = decryptJson<HabitLogPayload>(
+        mk,
+        {
+          ciphertext: row.ciphertext as string,
+          nonce: row.nonce as string,
+        },
+        AAD.habitLog(dBucket, userId),
+      );
+      if (payload.habitId === habitId) buckets.push(dBucket);
+    } catch (e) {
+      // A row we can't read isn't provably ours to delete — skip it, keep going.
+      if (__DEV__) console.warn("[habit_logs] Failed to decrypt log:", e);
+    }
+  }
+
+  // Chunked so a long history can't blow past the URL/statement limits.
+  const CHUNK = 100;
+  for (let i = 0; i < buckets.length; i += CHUNK) {
+    const { error: delErr } = await supabase
+      .from("habit_logs")
+      .delete()
+      .eq("owner_id", userId)
+      .in("day_bucket", buckets.slice(i, i + CHUNK));
+    if (delErr) {
+      throw new Error(`Failed to remove habit history: ${delErr.message}`);
+    }
+  }
+
+  // A refresh between the purge above and here could have re-cached the rows.
+  removeHabitFromLogCaches(userId, habitId);
 }
 
 export async function getHabitLogsForMonth(

@@ -9,7 +9,7 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "test": "npx tsx tests/crypto.test.ts && npx tsx tests/stats.test.ts && npx tsx tests/pending-writes.test.ts && npx tsx tests/dates.test.ts && npx tsx tests/db-cache.test.ts"
+    "test": "npx tsx tests/crypto.test.ts && npx tsx tests/stats.test.ts && npx tsx tests/pending-writes.test.ts && npx tsx tests/dates.test.ts && npx tsx tests/db-cache.test.ts && npx tsx tests/db-writes.test.ts"
   },
   "dependencies": {
     "@expo-google-fonts/shantell-sans": "^0.4.1",

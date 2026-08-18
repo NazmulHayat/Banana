@@ -15,11 +15,16 @@ export type {
   AccountRow,
   DailyEntry,
   EntryPayload,
+  EntryRef,
   Habit,
   HabitLog,
   HabitLogPayload,
   HabitPayload,
+  HabitRef,
+  WriteOutcome,
 } from "./types";
+
+export { UnrecoverableWriteError } from "./types";
 
 export {
   AccountColumns,
@@ -59,6 +64,7 @@ export {
 
 export {
   clearHabitLogsCache,
+  deleteHabitLogsForHabit,
   getCachedHabitLogsForMonth,
   getHabitLogsForMonth,
   getHabitLogsForMonthDirect,
@@ -74,6 +80,8 @@ export {
   flushPendingWrites,
   getPendingWrites,
   type PendingWrite,
+  type PendingWriteBody,
   pendingWriteCount,
+  pendingWriteKey,
   removePendingWrite,
 } from "./pending-writes";
