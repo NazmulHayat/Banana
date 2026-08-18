@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Demo C · Editorial</title>
+<link rel="stylesheet" href="base.css" />
+<style>
+  /* Editorial: bold type, big numbers, magazine feel */
+  .screen { padding:58px 22px 40px; }
+  .display { font-size:120px; font-weight:800; line-height:.86; letter-spacing:-4px; }
+  .kicker { font-size:13px; letter-spacing:1px; text-transform:uppercase; color:var(--textSecondary); }
+  .rule { height:2px; background:var(--ink); margin:14px 0; }
+  .rulefine { height:1px; background:var(--hairline); margin:16px 0; }
+  .lead { font-size:21px; font-weight:700; line-height:1.25; }
+  .navrow { padding:16px 0; border-radius:0; }
+  .navgroup { border:none; background:transparent; }
+  .navrow + .navrow { border-top:1px solid var(--hairline); }
+  .signout { color:var(--danger); text-align:center; margin-top:22px; font-weight:600; cursor:pointer; }
+  .metric { display:flex; align-items:baseline; gap:10px; }
+  .metric .big { font-size:54px; font-weight:800; line-height:1; }
+</style>
+</head>
+<body>
+<div class="stage"><div class="phone"><div class="notch"></div>
+
+  <!-- ===== HUB ===== -->
+  <div class="screen" id="hub">
+    <div class="identity" style="margin-bottom:20px;">
+      <div class="avatar">N</div>
+      <div style="flex:1;"><div style="font-size:18px; font-weight:700;">@nazmul</div><div class="muted" style="font-size:13px;">joined June 2026</div></div>
+      <div class="chev muted" style="font-size:18px;">›</div>
+    </div>
+
+    <!-- editorial peek -->
+    <div onclick="openAnalysis()" style="cursor:pointer;">
+      <div class="kicker">your best streak</div>
+      <div class="display" id="h-streak" style="margin:4px 0;">0</div>
+      <div class="lead">days in a row.<br/>Your strongest run yet.</div>
+      <div class="rule"></div>
+      <div class="insight">148 completions · 67 active days · 4 habits. <b>See the whole story →</b></div>
+    </div>
+
+    <div class="section-title" style="margin-top:26px;">Manage</div>
+    <div class="navgroup">
+      <div class="navrow" onclick="openAnalysis()"><div class="ic">📊</div><div class="tx"><div class="t">Stats &amp; analysis</div></div><div class="chev">›</div></div>
+      <div class="navrow"><div class="ic">✓</div><div class="tx"><div class="t">Habits</div></div><div class="chev">›</div></div>
+      <div class="navrow"><div class="ic">🔒</div><div class="tx"><div class="t">Security &amp; recovery</div></div><div class="chev">›</div></div>
+      <div class="navrow"><div class="ic">ⓘ</div><div class="tx"><div class="t">Privacy, terms &amp; support</div></div><div class="chev">›</div></div>
+    </div>
+    <div class="signout">Sign out</div>
+    <div style="height:50px;"></div>
+  </div>
+
+  <!-- ===== ANALYSIS OVERVIEW ===== -->
+  <div class="screen hidden" id="analysis" data-oninit="initAnalysis">
+    <div class="backrow" onclick="showScreen('hub')">←</div>
+    <div class="kicker">this month</div>
+    <div class="metric"><div class="big"><span id="a-rate">0</span>%</div><div class="lead trend-up">↑ up from 58%</div></div>
+    <div class="insight muted" style="margin-top:4px;">Your best month yet.</div>
+    <div class="rule"></div>
+
+    <div class="lockwrap locked" id="lockscope">
+      <div class="lockblur">
+        <div class="kicker">every day you showed up</div>
+        <div class="hm" id="a-heat" style="grid-template-rows:repeat(7,1fr); margin-top:10px;"></div>
+        <div class="rulefine"></div>
+        <div class="metric"><div class="kicker" style="width:90px;">streak</div><div class="lead">🔥 12 now · 21 best — <b>9 days to your record</b></div></div>
+        <div class="rulefine"></div>
+        <div class="lead" style="font-size:19px;">"You're a <span style="background:rgba(255,179,128,.4);">Tuesday person</span>. Weekends are where streaks go to die — except this month, you held on."</div>
+        <div class="rulefine"></div>
+        <div class="kicker">by habit</div>
+        <div id="a-habits" style="margin-top:8px;"></div>
+      </div>
+      <div class="lockcover"><div class="lk">🔓</div><h3>Unlock your full analysis</h3><p>Heatmaps, trends and your story — for every habit.</p>
+        <button class="btn accent" style="width:auto; padding:12px 22px;" onclick="setAll(false)">Start free trial</button></div>
+    </div>
+    <div style="height:60px;"></div>
+  </div>
+
+  <!-- ===== HABIT DRILL-IN ===== -->
+  <div class="screen hidden" id="habit" data-oninit="initHabit">
+    <div class="backrow" onclick="showScreen('analysis')">←</div>
+    <div class="kicker">Meditate · current streak</div>
+    <div class="display" id="hb-cur" style="margin:4px 0;">0</div>
+    <div class="lead">days, going strong. <span class="muted" style="font-weight:400;">Longest ever: 21.</span></div>
+    <div class="rule"></div>
+    <div class="lockwrap locked" id="lockscope2">
+      <div class="lockblur">
+        <div class="kicker">last 6 months</div>
+        <div class="hm" id="hb-heat" style="grid-template-rows:repeat(7,1fr); margin-top:10px;"></div>
+        <div class="rulefine"></div>
+        <div class="lead" style="font-size:19px;">"You do this in the morning, almost without fail. <b>73% this month</b>, up from 58%."</div>
+      </div>
+      <div class="lockcover"><div class="lk">🔓</div><h3>Unlock</h3><p>See this habit's full story.</p>
+        <button class="btn accent" style="width:auto; padding:12px 22px;" onclick="setLocked(document.getElementById('lockscope2'),false)">Start free trial</button></div>
+    </div>
+    <div style="height:60px;"></div>
+  </div>
+
+  <div class="statebar"><span>preview:</span>
+    <button data-lockbtn class="on" onclick="setAll(true)">🔒 Free</button>
+    <button data-unlockbtn onclick="setAll(false)">✨ Paid</button>
+  </div>
+</div></div>
+
+<script src="shared.js"></script>
+<script>
+  const year = genYear(7);
+  function setAll(locked){ ['lockscope','lockscope2'].forEach(id=>{const e=document.getElementById(id); if(e) setLocked(e,locked);});
+    document.querySelectorAll('[data-lockbtn]').forEach(b=>b.classList.toggle('on',locked)); document.querySelectorAll('[data-unlockbtn]').forEach(b=>b.classList.toggle('on',!locked)); }
+  function habitsList(host){ const hs=[['Meditate',73],['Read',58],['Workout',41],['No sugar',86]];
+    host.innerHTML = hs.map(([n,p])=>`<div onclick="openHabit()" style="display:flex; align-items:center; gap:12px; padding:9px 0; cursor:pointer;"><div style="flex:1; font-weight:600;">${n}</div><div style="width:120px;"><div class="bar"><i data-w="${p}"></i></div></div><div style="width:38px; text-align:right; font-weight:800;">${p}%</div></div>`).join(''); }
+  function kickBars(sel){ requestAnimationFrame(()=>document.querySelectorAll(sel+' .bar > i').forEach((b,i)=>setTimeout(()=>b.style.width=b.dataset.w+'%',80+i*60))); }
+
+  function initHub(){ countUp(document.getElementById('h-streak'),12,1100); }
+  function initAnalysis(){ countUp(document.getElementById('a-rate'),73,900); buildHeatmap(document.getElementById('a-heat'),year,24,{stagger:6}); habitsList(document.getElementById('a-habits')); kickBars('#analysis'); }
+  function initHabit(){ countUp(document.getElementById('hb-cur'),12,1000); buildHeatmap(document.getElementById('hb-heat'),year,24,{stagger:6}); }
+  function openAnalysis(){ setAll(true); showScreen('analysis'); }
+  function openHabit(){ setAll(true); showScreen('habit'); }
+  initHub();
+</script>
+</body>
+</html>

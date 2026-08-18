@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Aight Bet · Profile + analytics demos</title>
+<link rel="stylesheet" href="base.css" />
+<style>
+  body { background: var(--paper); }
+  body::before { content:''; position:fixed; inset:0; background-image: radial-gradient(var(--dot) 1px, transparent 1px); background-size:22px 22px; opacity:.4; pointer-events:none; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 40px 22px 80px; position:relative; }
+  .title { font-size: 32px; font-weight: 800; margin: 6px 0 4px; }
+  .sub { color: var(--textSecondary); font-size: 15px; margin-bottom: 26px; line-height:1.55; }
+  .demo { display:block; text-decoration:none; color:inherit; background:var(--card); border:1.5px solid var(--ink); border-radius:18px; padding:18px 20px; margin-bottom:14px; box-shadow:3px 4px 0 var(--shadow); }
+  .demo .num { font-size:12px; color:var(--textSecondary); font-weight:700; letter-spacing:1px; }
+  .demo h2 { margin:2px 0 6px; font-size:22px; }
+  .demo p { margin:0 0 8px; font-size:14px; line-height:1.55; }
+  .tag { display:inline-block; font-size:12px; background:rgba(255,179,128,.25); border:1px solid var(--ink); border-radius:999px; padding:3px 10px; margin:2px 6px 2px 0; }
+  .open { margin-top:8px; font-weight:700; }
+  .same { background:rgba(168,196,196,.18); border:1px solid var(--hairline); border-radius:14px; padding:14px 16px; font-size:13.5px; line-height:1.6; margin-bottom:22px; }
+  .note { font-size:13px; color:var(--textSecondary); margin-top:22px; line-height:1.6; }
+  code { background:rgba(26,26,26,.07); padding:1px 5px; border-radius:5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="title">Profile + analytics — 3 looks, same structure</div>
+  <div class="sub">Each demo is the full flow: <b>profile hub → analysis (locked) → drill into a habit</b>.
+    Use the <b>🔒 Free / ✨ Paid</b> toggle at the bottom to see the paywall vs the unlocked view.
+    Open on your phone for the real feel.</div>
+
+  <div class="same">
+    <b>Same in all three (already decided):</b> hub-and-spoke profile · free stats peek that taps into a
+    <b>paid</b> analysis page · overview + per-habit drill-in · the <b>Tight 4</b> cards
+    (consistency heatmap · progress trend · streak-vs-record · written "your story" insight).
+    <br/>You're choosing the <b>look</b>, not the features.
+  </div>
+
+  <a class="demo" href="demo-a-minimal.html">
+    <div class="num">DEMO A</div>
+    <h2>Minimal · paper</h2>
+    <p>Airy, hairline dividers, almost no boxes. Calmest and most on-brand with the journal feel —
+      lets the data breathe. My pick for "quietly premium."</p>
+    <span class="tag">calm</span><span class="tag">lots of whitespace</span><span class="tag">most on-brand</span>
+    <div class="open">Open demo A →</div>
+  </a>
+
+  <a class="demo" href="demo-b-carded.html">
+    <div class="num">DEMO B</div>
+    <h2>Carded · tactile</h2>
+    <p>Soft PaperCard blocks with the drawn-box shadow you already use elsewhere. Organized and
+      familiar — each insight sits in its own card. Most consistent with the current app.</p>
+    <span class="tag">structured</span><span class="tag">matches current UI</span><span class="tag">tactile</span>
+    <div class="open">Open demo B →</div>
+  </a>
+
+  <a class="demo" href="demo-c-editorial.html">
+    <div class="num">DEMO C</div>
+    <h2>Editorial · bold</h2>
+    <p>Huge numbers, heavy rules, magazine typography. Highest "wow" and most shareable — the
+      streak number is the headline. Boldest, furthest from the current look.</p>
+    <span class="tag">high wow</span><span class="tag">big type</span><span class="tag">shareable</span>
+    <div class="open">Open demo C →</div>
+  </a>
+
+  <div class="note">Throwaway HTML in <code>design-demos/</code> — not app code. Pick a look (or a mix);
+    I delete these and build it for real in React Native.</div>
+</div>
+</body>
+</html>

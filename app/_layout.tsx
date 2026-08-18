@@ -20,6 +20,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { AnimatedSplash } from "@/components/animated-splash";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
+import { DataProvider } from "@/lib/data-store";
 import { OnboardingProvider, useOnboarding } from "@/lib/onboarding-context";
 
 SplashScreen.preventAutoHideAsync();
@@ -101,11 +102,15 @@ function RootLayoutNav() {
   }, [session, keyringReady, loading, segments, hasCompletedOnboarding]);
 
   return (
-    <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="auth" />
-      <Stack.Screen name="onboarding" />
-      <Stack.Screen name="(tabs)" />
-    </Stack>
+    // DataProvider wraps the whole app (one shared store across the tabs and
+    // the pushed analysis/habits/security pages). Inert until a session exists.
+    <DataProvider session={session}>
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="auth" />
+        <Stack.Screen name="onboarding" />
+        <Stack.Screen name="(tabs)" />
+      </Stack>
+    </DataProvider>
   );
 }
 

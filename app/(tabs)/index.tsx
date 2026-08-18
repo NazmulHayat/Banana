@@ -21,7 +21,7 @@ import {
 } from "@/lib/db";
 import { DateFormats } from "@/lib/db/schema";
 import { uploadImage } from "@/lib/media";
-import { useFocusEffect } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     Alert,
@@ -527,7 +527,7 @@ export default function TrackerScreen() {
             currentMonth={currentMonth}
             currentYear={currentYear}
             onToggle={handleToggleHabit}
-            onEdit={() => handleOpenHabitModal()}
+            onEdit={() => router.push("/habits")}
             onReorder={handleReorderHabits}
             onHeaderLayout={handleHeaderLayout}
             headerRef={habitGridHeaderRef}
