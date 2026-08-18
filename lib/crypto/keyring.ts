@@ -54,10 +54,52 @@ interface ProfileBlob {
   recovery_key_hint: string | null;
 }
 
+/** What `setupNewUser` did — a fresh keyring, or one it resumed. */
+export interface KeyringSetupResult {
+  /**
+   * Formatted recovery key to show the user once. `null` only when an existing
+   * keyring was resumed and its display copy couldn't be read — the user views
+   * it in Settings → Security instead of being handed a new one.
+   */
+  recoveryKey: string | null;
+  /** True when an existing keyring was unlocked instead of a new one created. */
+  resumed: boolean;
+}
+
 const RECOVERY_KEY_BYTES = 32;
+
+/** Postgres unique-violation — the profile row was created by an earlier run. */
+const PG_UNIQUE_VIOLATION = "23505";
+
+// Every message here can end up in front of a user, so they stay calm and
+// actionable and never carry a raw Postgres/Supabase string.
+const Copy = {
+  unreachable:
+    "We couldn't reach your encryption profile. Check your connection and try again.",
+  setupFailed:
+    "We couldn't finish setting up your encryption. Check your connection and try again — nothing was lost.",
+  alreadySetUp:
+    "This account already has encryption set up, and this password doesn't match it. " +
+    "Sign in with the password you first chose, or restore with your recovery key.",
+  wrongPassword: "Incorrect password",
+  rewrapFailed:
+    "We couldn't save your new password to your encryption profile. Your previous password still unlocks your data.",
+} as const;
+
+// Narrow select — the keyring row is read in exactly one shape.
+const PROFILE_COLUMNS =
+  "id, wrapped_master_key, wrapped_master_key_nonce, kdf_salt, kdf_params, wrapped_master_recovery, wrapped_master_recovery_nonce, recovery_key_display, recovery_key_display_nonce, recovery_key_hint";
 
 function zeroize(arr: Uint8Array | null): void {
   if (arr) arr.fill(0);
+}
+
+/** Constant-time-ish equality for key material (length + full scan). */
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0;
 }
 
 class Keyring {
@@ -82,28 +124,33 @@ class Keyring {
 
   /**
    * Signup: generate master key + recovery key, wrap both, persist blobs.
-   * Refuses to overwrite an existing keyring (use unlock or unlockWithRecoveryKey).
+   *
+   * IDEMPOTENT (the profile row is the user's only copy of the wrapped master
+   * key — overwriting it would orphan every ciphertext they already wrote).
+   * A second run after an interrupted signup or email verification therefore
+   * never inserts over an existing row: it re-derives the KEK from the same
+   * password, unlocks the keyring that is already there, and resumes. A
+   * password that doesn't match the existing wrap is refused, never used to
+   * replace it.
+   *
    * Returns the recovery key (formatted for display) — caller MUST show it.
+   * `recoveryKey` is null only when we resumed a keyring whose display copy is
+   * missing, in which case the user views it in Settings → Security instead.
    */
   async setupNewUser(
     userId: string,
     password: string,
-  ): Promise<{ recoveryKey: string }> {
-    // Idempotency guard: refuse to overwrite an existing wrapped key
-    const { data: existing } = await supabase
-      .from("profiles")
-      .select("id")
-      .eq("id", userId)
-      .maybeSingle();
-    if (existing) {
-      throw new Error(
-        "An encryption profile already exists for this account. " +
-          "Sign in with your password (or use your recovery key) instead.",
-      );
-    }
+  ): Promise<KeyringSetupResult> {
+    // Cheap pre-check for the common resume case. The real guard is the
+    // primary key on profiles.id, handled on the insert below — this select
+    // just saves a wasted key generation + scrypt.
+    const existing = await this.fetchProfileOrNull(userId);
+    if (existing) return this.resumeSetup(userId, password, existing);
 
     const masterKey = generateMasterKey();
     const recoveryKeyBytes = randomBytes(RECOVERY_KEY_BYTES);
+    // Until the row lands and we adopt the key, it's ours to zeroize.
+    let adopted = false;
 
     try {
       // Wrap master key with password-derived KEK
@@ -151,14 +198,23 @@ class Keyring {
         });
 
         if (error) {
-          throw new Error(`Failed to create keyring profile: ${error.message}`);
+          // Lost the race with an earlier attempt (or a second device): the
+          // row that won is authoritative, so drop the key we just made and
+          // resume from theirs.
+          if (error.code === PG_UNIQUE_VIOLATION) {
+            const row = await this.fetchProfileOrNull(userId);
+            if (row) return await this.resumeSetup(userId, password, row);
+          }
+          if (__DEV__) {
+            console.warn("[keyring] profile insert failed:", error.message);
+          }
+          throw new Error(Copy.setupFailed);
         }
 
-        this.masterKey = masterKey;
-        this.userId = userId;
-        await cacheMasterKey(userId, masterKey);
+        adopted = true;
+        await this.adopt(userId, masterKey);
 
-        return { recoveryKey: recoveryFormatted };
+        return { recoveryKey: recoveryFormatted, resumed: false };
       } finally {
         // Zeroize the KEK regardless of success
         zeroize(kek);
@@ -167,7 +223,40 @@ class Keyring {
       // Zeroize the recovery key bytes — only the formatted string returned
       // to the caller persists, and only briefly while the user records it.
       zeroize(recoveryKeyBytes);
+      // A master key that never made it into a row is unreachable now; don't
+      // leave it sitting in memory.
+      if (!adopted) zeroize(masterKey);
     }
+  }
+
+  /**
+   * Resume an interrupted setup: the profile row already exists, so unlock it
+   * with the password we were given instead of writing anything. Refuses (and
+   * changes nothing) when the password doesn't open the existing wrap.
+   */
+  private async resumeSetup(
+    userId: string,
+    password: string,
+    profile: ProfileBlob,
+  ): Promise<KeyringSetupResult> {
+    try {
+      await this.unlockWithProfile(userId, password, profile);
+    } catch {
+      throw new Error(Copy.alreadySetUp);
+    }
+
+    // Best effort: show the recovery key that was minted the first time round
+    // rather than a new one — regenerating would silently invalidate a key the
+    // user may already have saved.
+    let recoveryKey: string | null = null;
+    if (profile.recovery_key_display && profile.recovery_key_display_nonce) {
+      try {
+        recoveryKey = this.decryptRecoveryDisplay(userId, profile);
+      } catch {
+        recoveryKey = null;
+      }
+    }
+    return { recoveryKey, resumed: true };
   }
 
   /**
@@ -175,27 +264,55 @@ class Keyring {
    */
   async unlock(userId: string, password: string): Promise<void> {
     const profile = await this.fetchProfile(userId);
+    await this.unlockWithProfile(userId, password, profile);
+  }
+
+  /**
+   * Shared unwrap path for `unlock` and `resumeSetup` — derives the KEK from
+   * the profile's own salt/params and adopts the master key on success. Throws
+   * `Incorrect password` (and touches nothing) when the wrap doesn't open.
+   */
+  private async unlockWithProfile(
+    userId: string,
+    password: string,
+    profile: ProfileBlob,
+  ): Promise<void> {
     const salt = base64ToBytes(profile.kdf_salt);
     const params = profile.kdf_params || DEFAULT_KDF_PARAMS;
     const kek = await deriveKekAsync(password, salt, params);
 
+    let masterKey: Uint8Array;
     try {
-      const masterKey = aesDecrypt(
+      masterKey = aesDecrypt(
         kek,
         base64ToBytes(profile.wrapped_master_key),
         base64ToBytes(profile.wrapped_master_key_nonce),
         encode(AAD.wrapMaster(userId)),
       );
-
-      // Successful unlock — replace any existing key
-      this.lockInternal();
-      this.masterKey = masterKey;
-      this.userId = userId;
-      await cacheMasterKey(userId, masterKey);
     } catch {
-      throw new Error("Incorrect password");
+      // Only the unwrap lives in this try — a failing SecureStore write must
+      // not be reported to the user as a wrong password.
+      throw new Error(Copy.wrongPassword);
     } finally {
       zeroize(kek);
+    }
+
+    await this.adopt(userId, masterKey);
+  }
+
+  /**
+   * Take ownership of a freshly unwrapped master key: replace whatever was
+   * held before, then cache it. A failed cache is non-fatal — the keyring is
+   * live for this session, the user just signs in again after a restart.
+   */
+  private async adopt(userId: string, masterKey: Uint8Array): Promise<void> {
+    this.lockInternal();
+    this.masterKey = masterKey;
+    this.userId = userId;
+    try {
+      await cacheMasterKey(userId, masterKey);
+    } catch (e) {
+      if (__DEV__) console.warn("[keyring] master key cache write failed:", e);
     }
   }
 
@@ -240,27 +357,32 @@ class Keyring {
       );
     }
 
+    let masterKey: Uint8Array;
     try {
-      const masterKey = aesDecrypt(
+      masterKey = aesDecrypt(
         recoveryBytes,
         base64ToBytes(profile.wrapped_master_recovery),
         base64ToBytes(profile.wrapped_master_recovery_nonce),
         encode(AAD.wrapRecovery(userId)),
       );
-      this.lockInternal();
-      this.masterKey = masterKey;
-      this.userId = userId;
-      await cacheMasterKey(userId, masterKey);
     } catch {
       throw new Error("Incorrect recovery key");
     } finally {
       zeroize(recoveryBytes);
     }
+
+    await this.adopt(userId, masterKey);
   }
 
   /**
    * After recovery (or while logged in): set a new password.
-   * Re-derives KEK with fresh salt and re-wraps master key.
+   * Re-derives KEK with a fresh salt and re-wraps the master key.
+   *
+   * Only the password columns move — `wrapped_master_recovery` is untouched,
+   * so the recovery key keeps working after a password change. The new wrap is
+   * verified locally before it is written, so we never replace a working wrap
+   * with one that can't be opened, and the write itself is a single row update
+   * (all four columns land together or none do).
    */
   async setPassword(userId: string, newPassword: string): Promise<void> {
     if (!this.masterKey || this.userId !== userId) {
@@ -270,11 +392,23 @@ class Keyring {
     const params = DEFAULT_KDF_PARAMS;
     const kek = await deriveKekAsync(newPassword, salt, params);
     try {
+      const aad = encode(AAD.wrapMaster(userId));
       const { ciphertext: wrapped, nonce } = aesEncrypt(
         kek,
         this.masterKey,
-        encode(AAD.wrapMaster(userId)),
+        aad,
       );
+
+      // Prove the new wrap opens back to the same master key BEFORE it
+      // replaces the working one.
+      const check = aesDecrypt(kek, wrapped, nonce, aad);
+      try {
+        if (!bytesEqual(check, this.masterKey)) {
+          throw new Error(Copy.rewrapFailed);
+        }
+      } finally {
+        zeroize(check);
+      }
 
       const { error } = await supabase
         .from("profiles")
@@ -287,7 +421,10 @@ class Keyring {
         .eq("id", userId);
 
       if (error) {
-        throw new Error(`Failed to update password wrap: ${error.message}`);
+        if (__DEV__) {
+          console.warn("[keyring] password re-wrap failed:", error.message);
+        }
+        throw new Error(Copy.rewrapFailed);
       }
     } finally {
       zeroize(kek);
@@ -305,6 +442,21 @@ class Keyring {
     }
     const profile = await this.fetchProfile(userId);
     if (!profile.recovery_key_display || !profile.recovery_key_display_nonce) {
+      throw new Error("No recovery key on file. Generate one first.");
+    }
+    return this.decryptRecoveryDisplay(userId, profile);
+  }
+
+  /** Unwrap the stored display copy of the recovery key. Keyring must be open. */
+  private decryptRecoveryDisplay(
+    userId: string,
+    profile: ProfileBlob,
+  ): string {
+    if (
+      !this.masterKey ||
+      !profile.recovery_key_display ||
+      !profile.recovery_key_display_nonce
+    ) {
       throw new Error("No recovery key on file. Generate one first.");
     }
     const recoveryBytes = aesDecrypt(
@@ -378,20 +530,36 @@ class Keyring {
   }
 
   private async fetchProfile(userId: string): Promise<ProfileBlob> {
-    const { data, error } = await supabase
-      .from("profiles")
-      .select(
-        "id, wrapped_master_key, wrapped_master_key_nonce, kdf_salt, kdf_params, wrapped_master_recovery, wrapped_master_recovery_nonce, recovery_key_display, recovery_key_display_nonce, recovery_key_hint",
-      )
-      .eq("id", userId)
-      .single();
-
-    if (error || !data) {
+    const profile = await this.fetchProfileOrNull(userId);
+    if (!profile) {
       throw new Error(
-        `Could not fetch your encryption profile: ${error?.message ?? "not found"}`,
+        "We couldn't find the encryption profile for this account. Sign in again to finish setting it up.",
       );
     }
-    return data as ProfileBlob;
+    return profile;
+  }
+
+  /**
+   * Read the keyring row, or null when the user simply doesn't have one yet.
+   * A transport error throws instead of returning null — "we couldn't ask" and
+   * "there is no keyring" must never be confused on the setup path.
+   */
+  private async fetchProfileOrNull(
+    userId: string,
+  ): Promise<ProfileBlob | null> {
+    const { data, error } = await supabase
+      .from("profiles")
+      .select(PROFILE_COLUMNS)
+      .eq("id", userId)
+      .maybeSingle();
+
+    if (error) {
+      if (__DEV__) {
+        console.warn("[keyring] profile fetch failed:", error.message);
+      }
+      throw new Error(Copy.unreachable);
+    }
+    return (data as ProfileBlob | null) ?? null;
   }
 }
 

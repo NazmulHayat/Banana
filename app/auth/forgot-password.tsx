@@ -36,13 +36,20 @@ export default function ForgotPasswordScreen() {
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(clean);
       if (error) {
-        Alert.alert("Error", error.message);
+        if (__DEV__) console.warn("[forgot] reset email failed:", error.message);
+        Alert.alert(
+          "Couldn't send the email",
+          "We couldn't send your reset link just now. Check your connection and try again.",
+        );
         setLoading(false);
         return;
       }
       setSent(true);
     } catch {
-      Alert.alert("Error", "Could not send reset email.");
+      Alert.alert(
+        "Couldn't send the email",
+        "We couldn't send your reset link just now. Check your connection and try again.",
+      );
     } finally {
       setLoading(false);
     }

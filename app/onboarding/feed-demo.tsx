@@ -1,350 +1,190 @@
+// Onboarding step 3 of 3 — the first highlight. (Route name kept as
+// `feed-demo` so existing links and the generated route types stay valid; it
+// is no longer a demo.)
+//
+// The old version auto-advanced through the composer on a 600ms setTimeout and
+// sat on an Animated.delay(1000) before showing the feed, none of it cleared on
+// unmount. Now the composer is live immediately, the entry is optional, and
+// success is a still card — no timers at all.
+//
+// Deliberately does NOT ask for photo permission: the first thing we do is not
+// going to be a permission prompt. Photos are offered later, in the composer.
+
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
 import { PaperCard } from "@/components/ui/paper-card";
+import { PressableScale } from "@/components/ui/pressable-scale";
+import { Motion } from "@/constants/motion";
 import { Colors, Fonts } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { useDataStore } from "@/lib/data-store";
 import { todayKey } from "@/lib/dates";
 import type { DailyEntry } from "@/lib/db";
 import { useOnboarding } from "@/lib/onboarding-context";
+import {
+  clearOnboardingDraft,
+  loadOnboardingDraft,
+  saveOnboardingDraft,
+} from "@/lib/onboarding-draft";
+import * as Haptics from "expo-haptics";
 import { Href, router } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import {
-    Animated,
-    KeyboardAvoidingView,
-    Platform,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  Animated,
+  AppState,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-const DEFAULT_ENTRY_TEXT =
-  "Started a new journey of tracking my habits! Here we go";
+const MAX_HIGHLIGHT_LENGTH = 500;
 
-type Stage = "intro" | "input" | "saving" | "feed";
+type Stage = "compose" | "saved";
 
-export default function FeedDemoScreen() {
+export default function FirstHighlightScreen() {
   const insets = useSafeAreaInsets();
   const { completeOnboarding } = useOnboarding();
   const { session } = useAuth();
   const dataStore = useDataStore();
-  const [stage, setStage] = useState<Stage>("intro");
-  const [journalText, setJournalText] = useState(DEFAULT_ENTRY_TEXT);
-  // User-safe reason from the last failed save — keeps the text on screen.
+
+  const [stage, setStage] = useState<Stage>("compose");
+  const [text, setText] = useState("");
+  const [saving, setSaving] = useState(false);
+  // User-safe reason from the last failed save — the words stay on screen.
   const [saveError, setSaveError] = useState<string | null>(null);
   // True when the entry is durably queued rather than on the server yet.
   const [queued, setQueued] = useState(false);
+  // A second tap while the write is in flight must not create a second entry.
+  const submittingRef = useRef(false);
 
-  // Animations
-  const fadeAnim = useRef(new Animated.Value(0)).current;
-  const slideAnim = useRef(new Animated.Value(30)).current;
-  const inputFade = useRef(new Animated.Value(0)).current;
-  const inputSlide = useRef(new Animated.Value(20)).current;
-  const savingScale = useRef(new Animated.Value(0)).current;
-  const feedTransition = useRef(new Animated.Value(0)).current;
-  const cardEntrance = useRef(new Animated.Value(0)).current;
-  const buttonFade = useRef(new Animated.Value(0)).current;
+  const fade = useRef(new Animated.Value(0)).current;
+  const rise = useRef(new Animated.Value(16)).current;
 
   useEffect(() => {
-    // Initial fade in
-    Animated.parallel([
-      Animated.timing(fadeAnim, {
+    const entrance = Animated.parallel([
+      Animated.timing(fade, {
         toValue: 1,
-        duration: 500,
+        duration: Motion.base,
         useNativeDriver: true,
       }),
-      Animated.timing(slideAnim, {
+      Animated.timing(rise, {
         toValue: 0,
-        duration: 500,
+        duration: Motion.base,
         useNativeDriver: true,
       }),
-    ]).start(() => {
-      // Show input area after intro
-      setTimeout(() => {
-        setStage("input");
-        Animated.parallel([
-          Animated.timing(inputFade, {
-            toValue: 1,
-            duration: 400,
-            useNativeDriver: true,
-          }),
-          Animated.timing(inputSlide, {
-            toValue: 0,
-            duration: 400,
-            useNativeDriver: true,
-          }),
-        ]).start();
-      }, 600);
+    ]);
+    entrance.start();
+    return () => entrance.stop();
+    // Animated.Value refs are stable across renders (useRef).
+  }, [fade, rise]);
+
+  // Restore a draft written before a background/relaunch.
+  useEffect(() => {
+    let cancelled = false;
+    void loadOnboardingDraft().then((draft) => {
+      if (cancelled || !draft.highlight) return;
+      setText(draft.highlight);
     });
-    // Animated.Value refs are stable across renders (useRef); listing them
-    // here satisfies exhaustive-deps without changing when this runs.
-  }, [fadeAnim, inputFade, inputSlide, slideAnim]);
-
-  const handleSave = async () => {
-    if (!journalText.trim()) return;
-
-    setStage("saving");
-    setSaveError(null);
-    if (!session) {
-      setSaveError("You're signed out. Sign in to save your first entry.");
-      setStage("input");
-      return;
-    }
-
-    // Save the entry with today's date
-    const entry: DailyEntry = {
-      id: "onboarding-" + Date.now().toString(),
-      date: todayKey(),
-      text: journalText.trim(),
-      mediaPaths: [],
-      createdAt: new Date().toISOString(),
+    return () => {
+      cancelled = true;
     };
-    // The store never throws. A `queued` write is durable and replays on
-    // reconnect, so onboarding carries on; only `failed` sends the user back to
-    // the composer with their words intact.
-    const outcome = await dataStore.saveEntry(entry);
-    if (outcome.status === "failed") {
-      setSaveError(outcome.reason);
-      setStage("input");
-      return;
-    }
-    setQueued(outcome.status === "queued");
+  }, []);
 
-    // Saving animation
-    Animated.sequence([
-      Animated.spring(savingScale, {
-        toValue: 1,
-        friction: 4,
-        useNativeDriver: true,
-      }),
-      Animated.delay(1000),
-    ]).start(() => {
-      // Transition to feed view
-      setStage("feed");
-      Animated.parallel([
-        Animated.timing(feedTransition, {
-          toValue: 1,
-          duration: 600,
-          useNativeDriver: true,
-        }),
-        Animated.spring(cardEntrance, {
-          toValue: 1,
-          friction: 6,
-          delay: 300,
-          useNativeDriver: true,
-        }),
-      ]).start(() => {
-        // Show finish button
-        Animated.timing(buttonFade, {
-          toValue: 1,
-          duration: 400,
-          useNativeDriver: true,
-        }).start();
-      });
+  // Persist on the way to the background rather than on every keystroke.
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state !== "active") saveOnboardingDraft({ highlight: text });
     });
-  };
+    return () => sub.remove();
+  }, [text]);
 
-  const handleFinish = async () => {
-    // Mark onboarding as complete
+  async function handleSave() {
+    const trimmed = text.trim();
+    if (!trimmed || submittingRef.current) return;
+    submittingRef.current = true;
+    setSaving(true);
+    setSaveError(null);
+
+    try {
+      if (!session) {
+        setSaveError("You're signed out. Sign in to save your first entry.");
+        return;
+      }
+
+      // Keep the words safe before the write, so a failure (or a background
+      // kill mid-write) can't take them.
+      saveOnboardingDraft({ highlight: trimmed });
+
+      const entry: DailyEntry = {
+        id: `onboarding-${Date.now()}`,
+        date: todayKey(),
+        text: trimmed,
+        mediaPaths: [],
+        createdAt: new Date().toISOString(),
+      };
+
+      // The store never throws. A `queued` write is durable and replays on
+      // reconnect, so onboarding carries on; only `failed` sends the user back
+      // to the composer with their words intact.
+      const outcome = await dataStore.saveEntry(entry);
+      if (outcome.status === "failed") {
+        setSaveError(outcome.reason);
+        return;
+      }
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setQueued(outcome.status === "queued");
+      setStage("saved");
+    } finally {
+      submittingRef.current = false;
+      setSaving(false);
+    }
+  }
+
+  async function finish(destination: Href) {
+    await clearOnboardingDraft();
     await completeOnboarding();
+    router.replace(destination);
+  }
 
-    // Navigate to feed to show their saved entry
-    router.replace("/(tabs)/feed" as Href);
-  };
-
-  const handleSkip = async () => {
-    await completeOnboarding();
-    router.replace("/(tabs)" as Href);
-  };
-
-  return (
-    <PaperBackground>
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-      >
-        <View style={[styles.container, { paddingTop: insets.top + 20 }]}>
-          {/* Intro/Input Stage */}
-          {(stage === "intro" || stage === "input") && (
-            <View style={styles.introContainer}>
-              <Animated.View
-                style={[
-                  styles.header,
-                  {
-                    opacity: fadeAnim,
-                    transform: [{ translateY: slideAnim }],
-                  },
-                ]}
-              >
-                <Text style={styles.title}>One more thing...</Text>
-                <Text style={styles.subtitle}>
-                  Each day, capture a highlight or thought. These entries become
-                  your personal Feed - a timeline of your journey.
-                </Text>
-              </Animated.View>
-
-              {/* Input area */}
-              <Animated.View
-                style={[
-                  styles.inputContainer,
-                  {
-                    opacity: inputFade,
-                    transform: [{ translateY: inputSlide }],
-                  },
-                ]}
-              >
-                <Text style={styles.inputLabel}>Here&apos;s your first entry:</Text>
-                <View style={styles.inputBox}>
-                  <TextInput
-                    style={styles.textInput}
-                    value={journalText}
-                    onChangeText={setJournalText}
-                    placeholder="What's on your mind today?"
-                    placeholderTextColor={Colors.textSecondary}
-                    multiline
-                    textAlignVertical="top"
-                  />
-                </View>
-
-                {saveError ? (
-                  <Text style={styles.saveError}>
-                    {saveError} Tap save to try again.
-                  </Text>
-                ) : null}
-
-                <TouchableOpacity
-                  style={[
-                    styles.saveButton,
-                    !journalText.trim() && styles.saveButtonDisabled,
-                  ]}
-                  onPress={handleSave}
-                  disabled={!journalText.trim()}
-                  activeOpacity={0.7}
-                >
-                  <IconSymbol
-                    name="arrow.right"
-                    size={20}
-                    color={Colors.paper}
-                  />
-                  <Text style={styles.saveButtonText}>Save to Feed</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.skipButton}
-                  onPress={handleSkip}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.skipButtonText}>Skip for now</Text>
-                </TouchableOpacity>
-              </Animated.View>
+  if (stage === "saved") {
+    return (
+      <PaperBackground>
+        <View
+          style={[
+            styles.container,
+            { paddingTop: insets.top + 20, paddingBottom: insets.bottom + 20 },
+          ]}
+        >
+          <View style={styles.savedBody}>
+            <View style={styles.savedMark}>
+              <IconSymbol name="checkmark" size={36} color={Colors.paper} />
             </View>
-          )}
+            <Text style={styles.savedTitle}>That&apos;s your first entry.</Text>
+            <Text style={styles.savedSub}>
+              {queued
+                ? "Saved on this device — it'll sync as soon as you're back online."
+                : "It's encrypted and saved. Your Feed builds from here."}
+            </Text>
 
-          {/* Saving animation */}
-          {stage === "saving" && (
-            <View style={styles.savingContainer}>
-              <Animated.View
-                style={[
-                  styles.savingCircle,
-                  {
-                    transform: [{ scale: savingScale }],
-                  },
-                ]}
-              >
-                <IconSymbol name="checkmark" size={40} color={Colors.paper} />
-              </Animated.View>
-              <Text style={styles.savingText}>Saved!</Text>
-              <Text style={styles.savingSubtext}>
-                {queued
-                  ? "Saved on your device — it'll sync when you're back online."
-                  : "See how it looks in your Feed..."}
-              </Text>
-            </View>
-          )}
+            <PaperCard style={styles.savedCard}>
+              <Text style={styles.savedCardText}>{text.trim()}</Text>
+            </PaperCard>
+          </View>
 
-          {/* Feed demo view */}
-          {stage === "feed" && (
-            <Animated.View
-              style={[
-                styles.feedContainer,
-                {
-                  opacity: feedTransition,
-                },
-              ]}
+          <View>
+            <PressableScale
+              style={styles.primaryButton}
+              onPress={() => finish("/(tabs)/feed" as Href)}
             >
-              <View style={styles.feedHeader}>
-                <Text style={styles.feedTitle}>Feed</Text>
-                <View style={styles.feedTitleUnderline} />
-              </View>
+              <Text style={styles.primaryButtonText}>Start tracking</Text>
+            </PressableScale>
 
-              <Text style={styles.feedDate}>
-                {new Date().toLocaleDateString("en-US", {
-                  month: "long",
-                  day: "numeric",
-                })}
-              </Text>
-
-              <Animated.View
-                style={[
-                  styles.feedCardContainer,
-                  {
-                    opacity: cardEntrance,
-                    transform: [
-                      {
-                        translateY: cardEntrance.interpolate({
-                          inputRange: [0, 1],
-                          outputRange: [50, 0],
-                        }),
-                      },
-                      {
-                        scale: cardEntrance.interpolate({
-                          inputRange: [0, 1],
-                          outputRange: [0.9, 1],
-                        }),
-                      },
-                    ],
-                  },
-                ]}
-              >
-                <PaperCard style={styles.feedCard}>
-                  <Text style={styles.feedCardText}>{journalText}</Text>
-                </PaperCard>
-              </Animated.View>
-
-              <Animated.View
-                style={[styles.feedExplanation, { opacity: buttonFade }]}
-              >
-                <Text style={styles.feedExplanationText}>
-                  Your entries will appear here, creating a timeline of your
-                  journey.
-                </Text>
-              </Animated.View>
-            </Animated.View>
-          )}
-
-          {/* Bottom section */}
-          <View
-            style={[
-              styles.bottomContainer,
-              { paddingBottom: insets.bottom + 20 },
-            ]}
-          >
-            {stage === "feed" && (
-              <Animated.View style={{ opacity: buttonFade }}>
-                <TouchableOpacity
-                  style={styles.finishButton}
-                  onPress={handleFinish}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.finishButtonText}>Start tracking</Text>
-                </TouchableOpacity>
-              </Animated.View>
-            )}
-
-            {/* Progress indicator */}
             <View style={styles.progressContainer}>
               <View style={styles.progressDot} />
               <View style={styles.progressDot} />
@@ -352,46 +192,130 @@ export default function FeedDemoScreen() {
             </View>
           </View>
         </View>
+      </PaperBackground>
+    );
+  }
+
+  return (
+    <PaperBackground>
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <ScrollView
+          style={styles.flex}
+          contentContainerStyle={[
+            styles.container,
+            { paddingTop: insets.top + 16, paddingBottom: 32 },
+          ]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <TouchableOpacity
+            style={styles.backButton}
+            onPress={() => router.back()}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Back"
+          >
+            <IconSymbol name="chevron.left" size={22} color={Colors.ink} />
+            <Text style={styles.backText}>Back</Text>
+          </TouchableOpacity>
+
+          <Animated.View
+            style={{ opacity: fade, transform: [{ translateY: rise }] }}
+          >
+            <Text style={styles.title}>One line about today</Text>
+            <Text style={styles.subtitle}>
+              A highlight, a thought, anything. It&apos;s encrypted before it
+              leaves your phone — and it&apos;s optional.
+            </Text>
+
+            <View style={styles.inputBox}>
+              <TextInput
+                style={styles.textInput}
+                value={text}
+                onChangeText={(value) => {
+                  setText(value);
+                  setSaveError(null);
+                }}
+                placeholder="What's on your mind today?"
+                placeholderTextColor={Colors.textSecondary}
+                maxLength={MAX_HIGHLIGHT_LENGTH}
+                multiline
+                textAlignVertical="top"
+              />
+            </View>
+
+            {saveError ? (
+              <Text style={styles.saveError}>
+                {saveError} Tap save to try again.
+              </Text>
+            ) : null}
+
+            <PressableScale
+              style={[
+                styles.primaryButton,
+                (!text.trim() || saving) && styles.disabled,
+              ]}
+              disabled={!text.trim() || saving}
+              onPress={handleSave}
+            >
+              <Text style={styles.primaryButtonText}>
+                {saving ? "Saving…" : "Save my first entry"}
+              </Text>
+            </PressableScale>
+
+            <TouchableOpacity
+              style={styles.skipButton}
+              onPress={() => finish("/(tabs)" as Href)}
+              disabled={saving}
+              activeOpacity={0.85}
+            >
+              <Text style={[styles.skipText, saving && styles.disabled]}>
+                Skip for now
+              </Text>
+            </TouchableOpacity>
+
+            <View style={styles.progressContainer}>
+              <View style={styles.progressDot} />
+              <View style={styles.progressDot} />
+              <View style={[styles.progressDot, styles.progressDotActive]} />
+            </View>
+          </Animated.View>
+        </ScrollView>
       </KeyboardAvoidingView>
     </PaperBackground>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    paddingHorizontal: 24,
+  flex: { flex: 1 },
+  container: { flexGrow: 1, paddingHorizontal: 24 },
+  backButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 16,
+    alignSelf: "flex-start",
   },
-  introContainer: {
-    flex: 1,
-  },
-  header: {
-    marginBottom: 32,
+  backText: {
+    fontSize: 16,
+    color: Colors.ink,
+    fontFamily: Fonts.handwriting,
+    marginLeft: 4,
   },
   title: {
     fontSize: 28,
-    fontWeight: "600",
     color: Colors.ink,
-    fontFamily: Fonts.handwriting,
-    marginBottom: 12,
+    fontFamily: Fonts.handwritingSemiBold,
+    marginBottom: 8,
   },
   subtitle: {
     fontSize: 16,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
     lineHeight: 24,
-  },
-  inputContainer: {
-    flex: 1,
-  },
-  inputLabel: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
-    marginBottom: 12,
-    textTransform: "uppercase",
-    letterSpacing: 1,
+    marginBottom: 24,
   },
   inputBox: {
     backgroundColor: Colors.card,
@@ -417,130 +341,61 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginBottom: 12,
   },
-  saveButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
+  primaryButton: {
     backgroundColor: Colors.ink,
-    paddingVertical: 18,
+    paddingVertical: 16,
     borderRadius: 30,
-    gap: 10,
-    marginBottom: 16,
-  },
-  saveButtonDisabled: {
-    opacity: 0.4,
-  },
-  saveButtonText: {
-    fontSize: 18,
-    fontWeight: "600",
-    color: Colors.paper,
-    fontFamily: Fonts.handwriting,
-  },
-  skipButton: {
     alignItems: "center",
-    paddingVertical: 12,
   },
-  skipButtonText: {
-    fontSize: 16,
+  primaryButtonText: {
+    fontSize: 18,
+    color: Colors.paper,
+    fontFamily: Fonts.handwritingSemiBold,
+  },
+  disabled: { opacity: 0.4 },
+  skipButton: { alignItems: "center", paddingVertical: 12 },
+  skipText: {
+    fontSize: 15,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
   },
-  savingContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  savingCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
+  savedBody: { flex: 1, alignItems: "center", paddingTop: 24 },
+  savedMark: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
     backgroundColor: Colors.ink,
     justifyContent: "center",
     alignItems: "center",
-    marginBottom: 16,
+    marginBottom: 20,
   },
-  savingText: {
-    fontSize: 24,
-    fontWeight: "600",
+  savedTitle: {
+    fontSize: 26,
     color: Colors.ink,
-    fontFamily: Fonts.handwriting,
+    fontFamily: Fonts.handwritingSemiBold,
+    textAlign: "center",
     marginBottom: 8,
   },
-  savingSubtext: {
-    fontSize: 16,
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
-  },
-  feedContainer: {
-    flex: 1,
-  },
-  feedHeader: {
-    marginBottom: 24,
-  },
-  feedTitle: {
-    fontSize: 32,
-    fontWeight: "700",
-    color: Colors.ink,
-    fontFamily: Fonts.handwriting,
-  },
-  feedTitleUnderline: {
-    position: "absolute",
-    bottom: -4,
-    left: 0,
-    width: 60,
-    height: 3,
-    backgroundColor: Colors.accent,
-    borderRadius: 2,
-  },
-  feedDate: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
-    marginBottom: 12,
-  },
-  feedCardContainer: {
-    marginBottom: 24,
-  },
-  feedCard: {
-    marginHorizontal: 0,
-  },
-  feedCardText: {
-    fontSize: 18,
-    color: Colors.ink,
-    fontFamily: Fonts.handwriting,
-    lineHeight: 28,
-  },
-  feedExplanation: {
-    alignItems: "center",
-  },
-  feedExplanationText: {
+  savedSub: {
     fontSize: 15,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
     textAlign: "center",
     lineHeight: 22,
+    marginBottom: 24,
   },
-  bottomContainer: {
-    paddingTop: 16,
-  },
-  finishButton: {
-    backgroundColor: Colors.ink,
-    paddingVertical: 18,
-    borderRadius: 30,
-    alignItems: "center",
-    marginBottom: 16,
-  },
-  finishButtonText: {
+  savedCard: { width: "100%" },
+  savedCardText: {
     fontSize: 18,
-    fontWeight: "600",
-    color: Colors.paper,
+    color: Colors.ink,
     fontFamily: Fonts.handwriting,
+    lineHeight: 28,
   },
   progressContainer: {
     flexDirection: "row",
     justifyContent: "center",
     gap: 8,
+    paddingTop: 12,
   },
   progressDot: {
     width: 8,
@@ -548,8 +403,5 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     backgroundColor: Colors.shadow,
   },
-  progressDotActive: {
-    backgroundColor: Colors.ink,
-    width: 24,
-  },
+  progressDotActive: { backgroundColor: Colors.ink, width: 24 },
 });

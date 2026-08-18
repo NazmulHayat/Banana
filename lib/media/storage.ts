@@ -92,7 +92,8 @@ export async function getImageUrl(objectPath: string): Promise<string | null> {
     .createSignedUrl(objectPath, 60 * 60); // 1 hour
 
   if (error || !data) {
-    console.warn("[media] Signed URL failed for", objectPath, error?.message);
+    // Never log the path — it carries the user + entry ids.
+    if (__DEV__) console.warn("[media] signed URL failed:", error?.message);
     return null;
   }
 

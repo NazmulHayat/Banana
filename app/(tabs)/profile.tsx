@@ -7,6 +7,7 @@ import { PressableScale } from "@/components/ui/pressable-scale";
 import { SectionTitle, SettingsRow } from "@/components/ui/settings-row";
 import { Colors, Fonts } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
+import { purgeLocalUserData } from "@/lib/auth/local-purge";
 import { useDataStore } from "@/lib/data-store";
 import { clearUserMedia } from "@/lib/media";
 import { useOnboarding } from "@/lib/onboarding-context";
@@ -113,14 +114,26 @@ export default function ProfileScreen() {
 
       const { error } = await supabase.rpc("delete_my_account");
       if (error) {
-        Alert.alert("Delete failed", error.message);
+        if (__DEV__) console.warn("[profile] delete_my_account:", error.message);
+        Alert.alert(
+          "Couldn't delete your account",
+          "Something went wrong on our side, so your account is still here and untouched. Check your connection and try again.",
+        );
         return;
       }
+
+      // D10: only now — the backend row is confirmed gone. Wipe every local
+      // trace (decrypted month caches, the durable write queue, the master key
+      // in SecureStore) before ending the session.
+      await purgeLocalUserData(user.id);
       await signOut();
       setShowDeleteConfirm(false);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      Alert.alert("Error", msg);
+      if (__DEV__) console.warn("[profile] delete account threw:", e);
+      Alert.alert(
+        "Couldn't delete your account",
+        "Something went wrong, so we stopped. Your account is still here. Check your connection and try again.",
+      );
     } finally {
       setDeletingAccount(false);
     }

@@ -1,6 +1,15 @@
 // Runs immediately after signup (or post-verify). Creates the accounts row,
 // sets up the encryption keyring, shows the user their recovery key once,
 // and requires explicit confirmation that they saved it.
+//
+// Setup is resumable. It used to `consume()` the signup password before doing
+// any network work, so a dropped connection burned the only copy of it and
+// left the account with no keyring and no way to make one. Now the password is
+// only peeked at, every step is idempotent (the accounts upsert, and
+// `keyring.setupNewUser`, which resumes an existing keyring rather than
+// replacing it), the password is cleared only after success, and a failure
+// offers a real retry. If the password is gone we ask for it again instead of
+// guessing.
 
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
@@ -11,98 +20,179 @@ import { keyring } from "@/lib/crypto";
 import { supabase } from "@/lib/supabase";
 import * as Clipboard from "expo-clipboard";
 import { Href, router } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-type Phase = "setting-up" | "reveal" | "error";
+type Phase = "setting-up" | "reveal" | "need-password" | "error";
+
+/** How long the "Copied!" confirmation stays up. */
+const COPIED_FEEDBACK_MS = 1800;
+
+const GENERIC_FAILURE =
+  "We couldn't finish setting up your encryption. Check your connection and try again — nothing was lost.";
+
+type SetupOutcome =
+  | { status: "done"; recoveryKey: string | null; resumed: boolean }
+  /** The signup password is gone (timed out or app relaunched) — ask again. */
+  | { status: "need-password" }
+  | { status: "error"; message: string };
+
+/**
+ * The whole setup, outside the component so the mount effect has no function
+ * deps and the retry buttons can call exactly the same path.
+ *
+ * `typedPassword` is supplied only on the re-prompt path; otherwise the
+ * in-memory signup password is used (peeked, never consumed until we succeed).
+ */
+async function runAccountSetup(typedPassword?: string): Promise<SetupOutcome> {
+  const pending = signupTransient.peek();
+  const password = typedPassword ?? pending?.password;
+  if (!password) return { status: "need-password" };
+
+  let session;
+  try {
+    const result = await supabase.auth.getSession();
+    session = result.data.session;
+  } catch {
+    return { status: "error", message: GENERIC_FAILURE };
+  }
+  if (!session) {
+    return {
+      status: "error",
+      message: "You're signed out. Sign in again to finish setting up.",
+    };
+  }
+  const userId = session.user.id;
+
+  // Username: from the signup form if we still have it, else the copy Supabase
+  // kept in user metadata when the account was created.
+  const metaUsername = session.user.user_metadata?.username;
+  const username =
+    pending?.username ??
+    (typeof metaUsername === "string" ? metaUsername : null);
+  if (!username) {
+    return {
+      status: "error",
+      message: "Sign in again so we can finish setting up your account.",
+    };
+  }
+
+  // Idempotent by design — a retry re-upserts the same row.
+  const { error: accountErr } = await supabase
+    .from("accounts")
+    .upsert({ id: userId, username }, { onConflict: "id" });
+  if (accountErr) {
+    if (accountErr.code === "23505") {
+      return {
+        status: "error",
+        message:
+          "Someone took this username while you were signing up. Sign in again and pick another.",
+      };
+    }
+    if (__DEV__) console.warn("[setup] accounts upsert failed:", accountErr.message);
+    return { status: "error", message: GENERIC_FAILURE };
+  }
+
+  try {
+    const { recoveryKey, resumed } = await keyring.setupNewUser(
+      userId,
+      password,
+    );
+    // Only now is the password safe to drop.
+    signupTransient.clear();
+    return { status: "done", recoveryKey, resumed };
+  } catch (e) {
+    // keyring messages are already user-safe copy.
+    return {
+      status: "error",
+      message: e instanceof Error ? e.message : GENERIC_FAILURE,
+    };
+  }
+}
 
 export default function RecoverySetupScreen() {
   const insets = useSafeAreaInsets();
   const { markKeyringReady } = useAuth();
   const [phase, setPhase] = useState<Phase>("setting-up");
-  const [recoveryKey, setRecoveryKey] = useState<string>("");
+  const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [confirmed, setConfirmed] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [typedPassword, setTypedPassword] = useState("");
+  // Blocks a second run while one is in flight (double-tapped retry).
+  const runningRef = useRef(false);
+  const mountedRef = useRef(true);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Applies an outcome. `alive` is the caller's unmount guard.
+  function apply(outcome: SetupOutcome, alive: () => boolean) {
+    if (!alive() || !mountedRef.current) return;
+    if (outcome.status === "done") {
+      markKeyringReady(true);
+      setRecoveryKey(outcome.recoveryKey);
+      setPhase("reveal");
+      return;
+    }
+    if (outcome.status === "need-password") {
+      setPhase("need-password");
+      return;
+    }
+    setErrorMsg(outcome.message);
+    setPhase("error");
+  }
 
   useEffect(() => {
-    // Defined inline (rather than as a component-level function) so the
-    // effect has no external deps to track — it should only run once on
-    // mount.
-    async function runSetup() {
-      try {
-        const pending = signupTransient.consume();
-        if (!pending) {
-          setErrorMsg(
-            "Your signup session timed out. Please sign in to continue.",
-          );
-          setPhase("error");
-          return;
-        }
+    let mounted = true;
+    runningRef.current = true;
+    void runAccountSetup()
+      .then((outcome) => apply(outcome, () => mounted))
+      .finally(() => {
+        runningRef.current = false;
+      });
+    return () => {
+      mounted = false;
+    };
+    // Runs once on mount; `apply` only touches state setters, which are stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-        // Make sure we have a session (we should — signup created one or
-        // verify-OTP did)
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
-        if (!session) {
-          setErrorMsg("No active session. Please sign in.");
-          setPhase("error");
-          return;
-        }
-        const userId = session.user.id;
+  // Any pending "Copied!" reset dies with the screen.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    };
+  }, []);
 
-        // Create the accounts row (username, owner = self)
-        const { error: accountErr } = await supabase.from("accounts").upsert(
-          {
-            id: userId,
-            username: pending.username,
-          },
-          { onConflict: "id" },
-        );
-        if (accountErr) {
-          if (accountErr.code === "23505") {
-            setErrorMsg(
-              "Someone took this username while you were signing up. Please pick another.",
-            );
-          } else {
-            setErrorMsg(`Could not create profile: ${accountErr.message}`);
-          }
-          setPhase("error");
-          return;
-        }
-
-        // Build the keyring (master key, wrap with password, wrap with recovery)
-        const { recoveryKey } = await keyring.setupNewUser(
-          userId,
-          pending.password,
-        );
-        markKeyringReady(true);
-        setRecoveryKey(recoveryKey);
-        setPhase("reveal");
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        setErrorMsg(msg);
-        setPhase("error");
-      }
+  async function retrySetup(password?: string) {
+    if (runningRef.current) return;
+    runningRef.current = true;
+    setPhase("setting-up");
+    try {
+      const outcome = await runAccountSetup(password);
+      apply(outcome, () => true);
+    } finally {
+      runningRef.current = false;
     }
-
-    void runSetup();
-  }, [markKeyringReady]);
+  }
 
   async function handleCopy() {
+    if (!recoveryKey) return;
     await Clipboard.setStringAsync(recoveryKey);
     setCopied(true);
-    setTimeout(() => setCopied(false), 1800);
+    if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => setCopied(false), COPIED_FEEDBACK_MS);
   }
 
   function handleContinue() {
@@ -130,6 +220,65 @@ export default function RecoverySetupScreen() {
     );
   }
 
+  // The password never reached us (or timed out). Ask for it rather than
+  // making one up — it is the only thing that can wrap the master key.
+  if (phase === "need-password") {
+    return (
+      <PaperBackground>
+        <ScrollView
+          contentContainerStyle={[
+            styles.content,
+            { paddingTop: insets.top + 32, paddingBottom: insets.bottom + 24 },
+          ]}
+          keyboardShouldPersistTaps="handled"
+        >
+          <View style={styles.iconCircle}>
+            <IconSymbol name="lock.fill" size={32} color={Colors.paper} />
+          </View>
+          <Text style={styles.title}>One more step</Text>
+          <Text style={styles.subtitle}>
+            Enter the password you just chose so we can finish encrypting your
+            journal. It never leaves this device.
+          </Text>
+
+          <TextInput
+            style={styles.passwordInput}
+            value={typedPassword}
+            onChangeText={setTypedPassword}
+            placeholder="Your password"
+            placeholderTextColor={Colors.textSecondary}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+
+          <TouchableOpacity
+            style={[
+              styles.primaryButton,
+              !typedPassword && styles.buttonDisabled,
+            ]}
+            onPress={() => retrySetup(typedPassword)}
+            disabled={!typedPassword}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.primaryButtonText}>Finish setup</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.secondaryButton}
+            onPress={async () => {
+              await supabase.auth.signOut();
+              router.replace("/auth/login");
+            }}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.secondaryButtonText}>Back to sign in</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      </PaperBackground>
+    );
+  }
+
   if (phase === "error") {
     return (
       <PaperBackground>
@@ -141,15 +290,52 @@ export default function RecoverySetupScreen() {
           />
           <Text style={styles.errorTitle}>Setup couldn&apos;t complete</Text>
           <Text style={styles.errorMsg}>{errorMsg}</Text>
+          {/* Retry is safe: every step above is idempotent and your password
+              is still here. */}
           <TouchableOpacity
             style={styles.primaryButton}
+            onPress={() => retrySetup()}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.primaryButtonText}>Try again</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.secondaryButton}
             onPress={async () => {
               await supabase.auth.signOut();
               router.replace("/auth/login");
             }}
             activeOpacity={0.7}
           >
-            <Text style={styles.primaryButtonText}>Back to Sign In</Text>
+            <Text style={styles.secondaryButtonText}>Back to sign in</Text>
+          </TouchableOpacity>
+        </View>
+      </PaperBackground>
+    );
+  }
+
+  // Resumed a keyring whose one-time display copy can't be read back. Don't
+  // mint a new recovery key here — that would silently void the one they may
+  // already have saved.
+  if (recoveryKey === null) {
+    return (
+      <PaperBackground>
+        <View style={[styles.errorContainer, { paddingTop: insets.top + 32 }]}>
+          <View style={styles.iconCircle}>
+            <IconSymbol name="key.fill" size={32} color={Colors.paper} />
+          </View>
+          <Text style={styles.errorTitle}>You&apos;re already encrypted</Text>
+          <Text style={styles.errorMsg}>
+            This account already had its encryption set up, so we didn&apos;t
+            make a new recovery key. You can view yours any time in Profile →
+            Security &amp; recovery.
+          </Text>
+          <TouchableOpacity
+            style={styles.primaryButton}
+            onPress={() => router.replace("/onboarding/welcome" as Href)}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.primaryButtonText}>Continue</Text>
           </TouchableOpacity>
         </View>
       </PaperBackground>
@@ -395,5 +581,30 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: Colors.paper,
     fontFamily: Fonts.handwriting,
+  },
+  secondaryButton: {
+    width: "100%",
+    height: 48,
+    justifyContent: "center",
+    alignItems: "center",
+    marginTop: 8,
+  },
+  secondaryButtonText: {
+    fontSize: 15,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+  },
+  passwordInput: {
+    width: "100%",
+    height: 52,
+    borderWidth: 1.5,
+    borderColor: Colors.ink,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    fontSize: 16,
+    fontFamily: Fonts.handwriting,
+    color: Colors.ink,
+    backgroundColor: Colors.card,
+    marginBottom: 16,
   },
 });
