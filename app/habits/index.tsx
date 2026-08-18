@@ -7,7 +7,7 @@ import { PressableScale } from "@/components/ui/pressable-scale";
 import { ScreenHeader } from "@/components/ui/screen-header";
 import { Colors, Fonts } from "@/constants/theme";
 import { useDataStore } from "@/lib/data-store";
-import { type Habit, saveHabits } from "@/lib/db";
+import type { Habit } from "@/lib/db";
 import { useState } from "react";
 import {
   Alert,
@@ -68,11 +68,11 @@ export default function HabitsScreen() {
     setShowHabitModal(false);
     setEditingHabit(null);
     setHabitName("");
-    try {
-      await saveHabits(updated);
-    } catch (e) {
-      console.error("[habits] save habit failed:", e);
-      Alert.alert("Save failed", "Could not save habit. Please try again.");
+    // The store never throws — `queued` is durable and replays on reconnect,
+    // so only `failed` puts the old list back.
+    const outcome = await dataStore.saveHabits(updated);
+    if (outcome.status === "failed") {
+      Alert.alert("Save failed", outcome.reason);
       await dataStore.refreshHabits();
     }
   };
@@ -93,11 +93,11 @@ export default function HabitsScreen() {
     const updated = habits.filter((h) => h.id !== habit.id);
     dataStore.updateHabits(updated);
     try {
-      await saveHabits(updated);
-    } catch (e) {
-      console.error("[habits] delete habit failed:", e);
-      Alert.alert("Delete failed", "Could not delete habit.");
-      await dataStore.refreshHabits();
+      const outcome = await dataStore.saveHabits(updated);
+      if (outcome.status === "failed") {
+        Alert.alert("Delete failed", outcome.reason);
+        await dataStore.refreshHabits();
+      }
     } finally {
       setDeleting(false);
       setPendingDelete(null);

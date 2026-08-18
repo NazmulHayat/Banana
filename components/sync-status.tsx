@@ -1,22 +1,6 @@
 import { Colors, Fonts } from "@/constants/theme";
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
-// ---------------------------------------------------------------------------
-// Shared write contract.
-//
-// Every data-store write action resolves to one of these instead of throwing:
-// `queued` means the write is in the durable pending-writes queue and WILL be
-// replayed, so it is safe to treat as saved; only `failed` loses work.
-//
-// Lead: the data-store slice owns this type. It is declared here only so this
-// slice compiles standalone — once the store exports it, delete this block and
-// re-point the two importers (`highlight-input.tsx`, `app/(tabs)/index.tsx`).
-// ---------------------------------------------------------------------------
-export type WriteOutcome =
-  | { status: "synced" }
-  | { status: "queued" }
-  | { status: "failed"; reason: string };
-
 interface SyncStatusProps {
   /**
    * Writes sitting in the durable retry queue — the store's

@@ -5,14 +5,14 @@ import {
     HabitGrid,
 } from "@/components/habit-grid";
 import { HighlightInput } from "@/components/highlight-input";
-import { SyncStatus, type WriteOutcome } from "@/components/sync-status";
+import { SyncStatus } from "@/components/sync-status";
 import { IconButton } from "@/components/ui/icon-button";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
 import { Colors, Fonts } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { useDataStore } from "@/lib/data-store";
-import type { DailyEntry, Habit, HabitLog } from "@/lib/db";
+import type { DailyEntry, Habit, HabitLog, WriteOutcome } from "@/lib/db";
 import {
     isFutureDay,
     monthKeyOfParts,
@@ -43,65 +43,15 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 // them side-by-side with the store, so the two disagreed after any failure.
 // Everything now goes Screen → data-store → lib/db, like `feed.tsx` already did.
 //
-// The store's write actions resolve to a `WriteOutcome` rather than throwing.
-// The shims below let this screen behave correctly against both the current
-// store (throws, returns void) and the new one, so the two slices can merge in
-// either order. Lead: after the store slice lands, `toOutcome` collapses to a
-// direct call and `PendingStoreWrites` disappears.
+// The store's write actions never throw: they resolve to a `WriteOutcome`.
+// `queued` is durable (it replays on reconnect), so only `failed` rolls the
+// optimistic UI back or keeps the composer's text.
 // ---------------------------------------------------------------------------
-type StoreWrite = Promise<void | WriteOutcome>;
-
-/**
- * Write actions the data-store slice is adding. Optional so this file compiles
- * before that slice merges; the runtime guard degrades to a `failed` outcome,
- * which the composer treats as "keep the user's work and offer a retry".
- */
-interface PendingStoreWrites {
-  saveHabits?: (habits: Habit[]) => StoreWrite;
-  toggleHabitLog?: (
-    habitId: string,
-    date: string,
-    currentCompleted?: boolean,
-  ) => StoreWrite;
-  /** Replays the durable pending-writes queue (powers "tap to retry"). */
-  flushQueue?: () => Promise<void>;
-}
-
-const GENERIC_FAILURE =
-  "Couldn't save right now. Check your connection and try again.";
-
-/** Normalise a store write into a `WriteOutcome`, whichever shape it has. */
-async function toOutcome(run: () => StoreWrite): Promise<WriteOutcome> {
-  try {
-    const result = await run();
-    // Pre-contract store resolves void — reaching here means it persisted.
-    return result ?? { status: "synced" };
-  } catch (err) {
-    if (__DEV__) console.warn("[TrackerScreen] write failed:", err);
-    return { status: "failed", reason: GENERIC_FAILURE };
-  }
-}
-
-/**
- * The store slice hasn't landed this action yet. Fail loudly in dev, calmly in
- * production — the composer keeps the user's work either way.
- */
-function missingStoreAction(name: string): WriteOutcome {
-  if (__DEV__) {
-    console.warn(
-      `[TrackerScreen] data-store is missing "${name}" — the store slice must expose it.`,
-    );
-  }
-  return { status: "failed", reason: GENERIC_FAILURE };
-}
 
 export default function TrackerScreen() {
   const insets = useSafeAreaInsets();
   const { session } = useAuth();
   const dataStore = useDataStore();
-  // Widened with the write actions the store slice is adding (see the shims at
-  // the top of this file). Optional props only, so this is a safe narrowing.
-  const storeWrites = dataStore as typeof dataStore & PendingStoreWrites;
   const [currentDate, setCurrentDate] = useState(new Date());
   const scrollY = useRef(new Animated.Value(0)).current;
   const scrollViewRef = useRef<ScrollView>(null);
@@ -284,11 +234,11 @@ export default function TrackerScreen() {
     });
 
     // Persist through the store (D15).
-    const persist = storeWrites.toggleHabitLog;
-    const outcome =
-      typeof persist === "function"
-        ? await toOutcome(() => persist(habitId, date, currentCompleted))
-        : missingStoreAction("toggleHabitLog");
+    const outcome = await dataStore.toggleHabitLog(
+      habitId,
+      date,
+      currentCompleted,
+    );
 
     // `queued` is durable — it replays on reconnect, so the optimistic tick
     // stays. Only a hard failure rolls the UI back.
@@ -341,7 +291,7 @@ export default function TrackerScreen() {
       // The store does the optimistic update AND the persist, so the cache and
       // React state can't drift apart the way they did when this screen wrote
       // to both by hand.
-      const outcome = await toOutcome(() => dataStore.saveEntry(newEntry));
+      const outcome = await dataStore.saveEntry(newEntry);
 
       if (outcome.status === "failed") {
         // The entry never landed, so its photos have nothing pointing at them.
@@ -362,16 +312,10 @@ export default function TrackerScreen() {
     }
   };
 
-  // "Tap to retry" on the sync line: replay the durable queue if the store
-  // exposes a flush, otherwise re-pull so the screen reflects the server truth.
+  // "Tap to retry" on the sync line: replay the durable queue now.
   const handleRetrySync = async () => {
     setWriteFailed(false);
-    const flush = storeWrites.flushQueue;
-    if (typeof flush === "function") {
-      await flush();
-      return;
-    }
-    await dataStore.refreshHabitLogs(currentYear, currentMonth, { force: true });
+    await dataStore.flushPendingWrites();
   };
 
   const showSnackbar = (message: string) => {
@@ -417,11 +361,7 @@ export default function TrackerScreen() {
     // Optimistic UI update via DataStore
     dataStore.updateHabits(newOrder);
 
-    const persist = storeWrites.saveHabits;
-    const outcome =
-      typeof persist === "function"
-        ? await toOutcome(() => persist(newOrder))
-        : missingStoreAction("saveHabits");
+    const outcome = await dataStore.saveHabits(newOrder);
 
     if (outcome.status === "failed") {
       // Put the old order back rather than leaving a reorder that never landed.

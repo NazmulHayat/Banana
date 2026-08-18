@@ -3,7 +3,8 @@ import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
 import { Colors, Fonts } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
-import { getHabits, Habit, saveHabits } from "@/lib/db";
+import { useDataStore } from "@/lib/data-store";
+import type { Habit } from "@/lib/db";
 import { LinearGradient } from "expo-linear-gradient";
 import { Href, router } from "expo-router";
 import { useEffect, useRef, useState } from "react";
@@ -82,7 +83,11 @@ type Stage = "demo" | "transition" | "select";
 export default function HabitsScreen() {
   const insets = useSafeAreaInsets();
   const { session } = useAuth();
+  const dataStore = useDataStore();
   const [stage, setStage] = useState<Stage>("demo");
+  const [saving, setSaving] = useState(false);
+  // User-safe reason from the last failed save; keeps the user on this step.
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [selectedHabits, setSelectedHabits] = useState<string[]>([]);
   const [customHabit, setCustomHabit] = useState("");
   const [showPreview, setShowPreview] = useState(false);
@@ -271,16 +276,19 @@ export default function HabitsScreen() {
   };
 
   const handleContinue = async () => {
-    if (selectedHabits.length === 0) return;
+    if (selectedHabits.length === 0 || saving) return;
 
     if (!session) {
-      console.error("[Onboarding] No session, cannot save habits");
+      setSaveError("You're signed out. Sign in to save your habits.");
       return;
     }
 
-    // Get existing habits first to merge with new ones
-    const existingHabits = await getHabits();
-    console.log("[Onboarding] Found", existingHabits.length, "existing habits");
+    setSaving(true);
+    setSaveError(null);
+
+    // Existing habits come from the store (memory → storage → network), so an
+    // offline retry merges against what we already have instead of nothing.
+    const existingHabits = await dataStore.refreshHabits();
 
     // Create new habits only for names that don't exist
     const existingNames = new Set(
@@ -296,19 +304,16 @@ export default function HabitsScreen() {
 
     // Merge existing and new habits
     const allHabits = [...existingHabits, ...newHabits];
-    console.log(
-      "[Onboarding] Saving",
-      allHabits.length,
-      "habits (",
-      newHabits.length,
-      "new)",
-    );
 
-    await saveHabits(allHabits);
-
-    // Verify save worked
-    const savedHabits = await getHabits();
-    console.log("[Onboarding] Verified", savedHabits.length, "habits saved");
+    // The store never throws. `queued` means the write is in the durable queue
+    // and will replay, so onboarding carries on — only `failed` holds the user
+    // here, with the retry on the same button.
+    const outcome = await dataStore.saveHabits(allHabits);
+    setSaving(false);
+    if (outcome.status === "failed") {
+      setSaveError(outcome.reason);
+      return;
+    }
 
     router.push("/onboarding/feed-demo" as Href);
   };
@@ -605,16 +610,25 @@ export default function HabitsScreen() {
             </Text>
           </View>
 
+          {saveError ? (
+            <Text style={styles.saveError}>
+              {saveError} Tap continue to try again.
+            </Text>
+          ) : null}
+
           <TouchableOpacity
             style={[
               styles.continueButton,
-              selectedHabits.length === 0 && styles.continueButtonDisabled,
+              (selectedHabits.length === 0 || saving) &&
+                styles.continueButtonDisabled,
             ]}
             onPress={handleContinue}
-            disabled={selectedHabits.length === 0}
+            disabled={selectedHabits.length === 0 || saving}
             activeOpacity={0.7}
           >
-            <Text style={styles.continueButtonText}>Continue</Text>
+            <Text style={styles.continueButtonText}>
+              {saving ? "Saving…" : "Continue"}
+            </Text>
           </TouchableOpacity>
 
           {/* Progress indicator */}
@@ -892,6 +906,14 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
+  },
+  saveError: {
+    fontSize: 14,
+    lineHeight: 20,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    textAlign: "center",
+    marginBottom: 12,
   },
   continueButton: {
     backgroundColor: Colors.ink,

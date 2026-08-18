@@ -3,8 +3,9 @@ import { PaperBackground } from "@/components/ui/paper-background";
 import { PaperCard } from "@/components/ui/paper-card";
 import { Colors, Fonts } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
+import { useDataStore } from "@/lib/data-store";
 import { todayKey } from "@/lib/dates";
-import { DailyEntry, saveEntry } from "@/lib/db";
+import type { DailyEntry } from "@/lib/db";
 import { useOnboarding } from "@/lib/onboarding-context";
 import { Href, router } from "expo-router";
 import { useEffect, useRef, useState } from "react";
@@ -29,8 +30,13 @@ export default function FeedDemoScreen() {
   const insets = useSafeAreaInsets();
   const { completeOnboarding } = useOnboarding();
   const { session } = useAuth();
+  const dataStore = useDataStore();
   const [stage, setStage] = useState<Stage>("intro");
   const [journalText, setJournalText] = useState(DEFAULT_ENTRY_TEXT);
+  // User-safe reason from the last failed save — keeps the text on screen.
+  const [saveError, setSaveError] = useState<string | null>(null);
+  // True when the entry is durably queued rather than on the server yet.
+  const [queued, setQueued] = useState(false);
 
   // Animations
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -81,8 +87,9 @@ export default function FeedDemoScreen() {
     if (!journalText.trim()) return;
 
     setStage("saving");
+    setSaveError(null);
     if (!session) {
-      console.error("[FeedDemo] No session, cannot save entry");
+      setSaveError("You're signed out. Sign in to save your first entry.");
       setStage("input");
       return;
     }
@@ -95,9 +102,16 @@ export default function FeedDemoScreen() {
       mediaPaths: [],
       createdAt: new Date().toISOString(),
     };
-    console.log("[FeedDemo] Saving entry...");
-    await saveEntry(entry);
-    console.log("[FeedDemo] Entry saved");
+    // The store never throws. A `queued` write is durable and replays on
+    // reconnect, so onboarding carries on; only `failed` sends the user back to
+    // the composer with their words intact.
+    const outcome = await dataStore.saveEntry(entry);
+    if (outcome.status === "failed") {
+      setSaveError(outcome.reason);
+      setStage("input");
+      return;
+    }
+    setQueued(outcome.status === "queued");
 
     // Saving animation
     Animated.sequence([
@@ -195,6 +209,12 @@ export default function FeedDemoScreen() {
                   />
                 </View>
 
+                {saveError ? (
+                  <Text style={styles.saveError}>
+                    {saveError} Tap save to try again.
+                  </Text>
+                ) : null}
+
                 <TouchableOpacity
                   style={[
                     styles.saveButton,
@@ -238,7 +258,9 @@ export default function FeedDemoScreen() {
               </Animated.View>
               <Text style={styles.savingText}>Saved!</Text>
               <Text style={styles.savingSubtext}>
-                See how it looks in your Feed...
+                {queued
+                  ? "Saved on your device — it'll sync when you're back online."
+                  : "See how it looks in your Feed..."}
               </Text>
             </View>
           )}
@@ -386,6 +408,14 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwriting,
     lineHeight: 28,
     flex: 1,
+  },
+  saveError: {
+    fontSize: 14,
+    lineHeight: 20,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    textAlign: "center",
+    marginBottom: 12,
   },
   saveButton: {
     flexDirection: "row",

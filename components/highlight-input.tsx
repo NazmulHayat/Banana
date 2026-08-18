@@ -1,5 +1,6 @@
 import { Motion } from "@/constants/motion";
 import { Colors, Fonts } from "@/constants/theme";
+import type { WriteOutcome } from "@/lib/db";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import { useEffect, useRef, useState } from "react";
@@ -23,7 +24,6 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 import Svg, { Path } from "react-native-svg";
-import type { WriteOutcome } from "./sync-status";
 import { IconSymbol } from "./ui/icon-symbol";
 import { PaperCard } from "./ui/paper-card";
 import { PressableScale } from "./ui/pressable-scale";
