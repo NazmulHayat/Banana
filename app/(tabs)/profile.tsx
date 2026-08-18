@@ -90,9 +90,27 @@ export default function ProfileScreen() {
       // Supabase blocks direct DELETE from storage.objects in SECURITY
       // DEFINER, so clean up media client-side BEFORE the RPC that drops the
       // auth.users row.
-      if (user?.id) {
-        await clearUserMedia(user.id);
+      if (!user?.id) {
+        Alert.alert(
+          "Not signed in",
+          "We couldn't confirm who you are, so nothing was deleted. Sign in again and retry.",
+        );
+        return;
       }
+
+      // D9: the sweep now pages through the whole bucket and reports how far it
+      // got. Anything short of a complete sweep aborts here — once the RPC drops
+      // the auth.users row we lose the credentials to reach those objects, and a
+      // deleted user's photos left in storage is a privacy failure, not clutter.
+      const cleanup = await clearUserMedia(user.id);
+      if (cleanup.status !== "complete") {
+        Alert.alert(
+          "Couldn't remove your photos",
+          "Some of your photos couldn't be deleted, so we stopped before touching anything else. Your account is untouched. Check your connection and try again.",
+        );
+        return;
+      }
+
       const { error } = await supabase.rpc("delete_my_account");
       if (error) {
         Alert.alert("Delete failed", error.message);

@@ -5,30 +5,28 @@ import {
     HabitGrid,
 } from "@/components/habit-grid";
 import { HighlightInput } from "@/components/highlight-input";
+import { SyncStatus, type WriteOutcome } from "@/components/sync-status";
 import { IconButton } from "@/components/ui/icon-button";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
 import { Colors, Fonts } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { useDataStore } from "@/lib/data-store";
+import type { DailyEntry, Habit, HabitLog } from "@/lib/db";
 import {
-    // Types
-    DailyEntry,
-    getEntriesForDate,
-    Habit,
-    HabitLog,
-    // Operations
-    saveEntry,
-    saveHabits,
-    toggleHabitLog,
-    upsertEntryInCache,
-} from "@/lib/db";
-import { isFutureDay, monthKeyOfParts, todayKey } from "@/lib/dates";
-import { uploadImage } from "@/lib/media";
+    isFutureDay,
+    monthKeyOfParts,
+    parseDayKey,
+    todayKey,
+} from "@/lib/dates";
+// Photo upload has no store action yet, so this is the one data call the screen
+// still makes directly. It's a single atomic primitive (upload-all-or-nothing)
+// rather than the old inline loop. Lead: ideal end-state is the store owning it,
+// e.g. `saveEntry(entry, localUris)`.
+import { discardEntryImages, uploadEntryImages } from "@/lib/media";
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-    Alert,
     Animated,
     RefreshControl,
     ScrollView,
@@ -39,12 +37,72 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+// ---------------------------------------------------------------------------
+// D15: this screen used to import `saveEntry` / `saveHabits` / `toggleHabitLog`
+// / `upsertEntryInCache` / `getEntriesForDate` straight from `@/lib/db` and run
+// them side-by-side with the store, so the two disagreed after any failure.
+// Everything now goes Screen → data-store → lib/db, like `feed.tsx` already did.
+//
+// The store's write actions resolve to a `WriteOutcome` rather than throwing.
+// The shims below let this screen behave correctly against both the current
+// store (throws, returns void) and the new one, so the two slices can merge in
+// either order. Lead: after the store slice lands, `toOutcome` collapses to a
+// direct call and `PendingStoreWrites` disappears.
+// ---------------------------------------------------------------------------
+type StoreWrite = Promise<void | WriteOutcome>;
+
+/**
+ * Write actions the data-store slice is adding. Optional so this file compiles
+ * before that slice merges; the runtime guard degrades to a `failed` outcome,
+ * which the composer treats as "keep the user's work and offer a retry".
+ */
+interface PendingStoreWrites {
+  saveHabits?: (habits: Habit[]) => StoreWrite;
+  toggleHabitLog?: (
+    habitId: string,
+    date: string,
+    currentCompleted?: boolean,
+  ) => StoreWrite;
+  /** Replays the durable pending-writes queue (powers "tap to retry"). */
+  flushQueue?: () => Promise<void>;
+}
+
+const GENERIC_FAILURE =
+  "Couldn't save right now. Check your connection and try again.";
+
+/** Normalise a store write into a `WriteOutcome`, whichever shape it has. */
+async function toOutcome(run: () => StoreWrite): Promise<WriteOutcome> {
+  try {
+    const result = await run();
+    // Pre-contract store resolves void — reaching here means it persisted.
+    return result ?? { status: "synced" };
+  } catch (err) {
+    if (__DEV__) console.warn("[TrackerScreen] write failed:", err);
+    return { status: "failed", reason: GENERIC_FAILURE };
+  }
+}
+
+/**
+ * The store slice hasn't landed this action yet. Fail loudly in dev, calmly in
+ * production — the composer keeps the user's work either way.
+ */
+function missingStoreAction(name: string): WriteOutcome {
+  if (__DEV__) {
+    console.warn(
+      `[TrackerScreen] data-store is missing "${name}" — the store slice must expose it.`,
+    );
+  }
+  return { status: "failed", reason: GENERIC_FAILURE };
+}
+
 export default function TrackerScreen() {
   const insets = useSafeAreaInsets();
   const { session } = useAuth();
   const dataStore = useDataStore();
+  // Widened with the write actions the store slice is adding (see the shims at
+  // the top of this file). Optional props only, so this is a safe narrowing.
+  const storeWrites = dataStore as typeof dataStore & PendingStoreWrites;
   const [currentDate, setCurrentDate] = useState(new Date());
-  const [todayEntryCount, setTodayEntryCount] = useState(0);
   const scrollY = useRef(new Animated.Value(0)).current;
   const scrollViewRef = useRef<ScrollView>(null);
   const habitGridHeaderRef = useRef<View>(null);
@@ -59,6 +117,8 @@ export default function TrackerScreen() {
 
   // Entry save state (upload + persist)
   const [savingEntry, setSavingEntry] = useState(false);
+  // Latched when a write comes back `failed` — drives the sync line's retry.
+  const [writeFailed, setWriteFailed] = useState(false);
   // Pull-to-refresh state
   const [refreshing, setRefreshing] = useState(false);
 
@@ -69,6 +129,17 @@ export default function TrackerScreen() {
     year: "numeric",
   });
   const monthKey = monthKeyOfParts(currentYear, currentMonth);
+
+  // Today's highlight count, derived from the store instead of a direct
+  // `getEntriesForDate` call (D15). "Today" is always in the real current
+  // month, which is not necessarily the month being browsed.
+  const todayDayKey = todayKey();
+  const todayParts = parseDayKey(todayDayKey);
+  const todayEntryCount = todayParts
+    ? dataStore
+        .getEntriesForMonth(todayParts.year, todayParts.month)
+        .filter((entry) => entry.date === todayDayKey).length
+    : 0;
 
   // Get logs for current month with progressive rendering
   const logsForMonth = dataStore.getLogsForMonth(currentYear, currentMonth);
@@ -143,11 +214,12 @@ export default function TrackerScreen() {
       await dataStore.refreshHabitLogs(currentYear, currentMonth);
     }
 
-    // Get count of entries for today (background)
-    const today = todayKey();
-    void getEntriesForDate(today).then((todayEntries) => {
-      setTodayEntryCount(todayEntries.length);
-    });
+    // Today's highlight count is derived from store state, so it just needs the
+    // month that contains today to be loaded.
+    const parts = parseDayKey(todayKey());
+    if (parts) {
+      void dataStore.refreshEntries(parts.year, parts.month);
+    }
   }, [currentMonth, currentYear, session, dataStore]);
 
   // Reload data when screen comes into focus or month changes
@@ -177,14 +249,16 @@ export default function TrackerScreen() {
   const onRefresh = async () => {
     setRefreshing(true);
     try {
+      const parts = parseDayKey(todayKey());
       await Promise.all([
         dataStore.refreshHabits({ force: true }),
         dataStore.refreshHabitLogs(currentYear, currentMonth, { force: true }),
         dataStore.refreshEntries(currentYear, currentMonth, { force: true }),
+        // Browsing a past month must still refresh today's highlight count.
+        parts && parts.month !== currentMonth
+          ? dataStore.refreshEntries(parts.year, parts.month, { force: true })
+          : Promise.resolve(),
       ]);
-      const todayStr = todayKey();
-      const todayEntries = await getEntriesForDate(todayStr);
-      setTodayEntryCount(todayEntries.length);
     } finally {
       setRefreshing(false);
     }
@@ -209,77 +283,95 @@ export default function TrackerScreen() {
       completed: newCompleted,
     });
 
-    // Fire-and-correct network call
-    try {
-      await toggleHabitLog(habitId, date, currentCompleted);
-    } catch (error) {
-      console.error("[TrackerScreen] Failed to toggle habit log:", error);
-      // On failure, revert and resync from server
+    // Persist through the store (D15).
+    const persist = storeWrites.toggleHabitLog;
+    const outcome =
+      typeof persist === "function"
+        ? await toOutcome(() => persist(habitId, date, currentCompleted))
+        : missingStoreAction("toggleHabitLog");
+
+    // `queued` is durable — it replays on reconnect, so the optimistic tick
+    // stays. Only a hard failure rolls the UI back.
+    if (outcome.status === "failed") {
       dataStore.updateHabitLog({
         habitId,
         date,
         completed: currentCompleted,
       });
+      setWriteFailed(true);
       await dataStore.refreshHabitLogs(currentYear, currentMonth);
     }
   };
 
-  const handleSaveEntry = async (text: string, localUris: string[]) => {
-    if (!session) return;
+  const handleSaveEntry = async (
+    text: string,
+    localUris: string[],
+  ): Promise<WriteOutcome> => {
+    if (!session) {
+      return { status: "failed", reason: "You're signed out. Sign in to save." };
+    }
     const userId = session.user.id;
-    const today = todayKey();
     const entryId =
       typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     setSavingEntry(true);
-
-    // Upload any picked images first — collect resulting object paths
-    const mediaPaths: string[] = [];
-    if (localUris.length > 0) {
-      try {
-        for (const uri of localUris) {
-          const path = await uploadImage(uri, entryId, userId);
-          mediaPaths.push(path);
-        }
-      } catch (err) {
-        console.error("[TrackerScreen] Image upload failed:", err);
-        const msg = err instanceof Error ? err.message : String(err);
-        Alert.alert(
-          "Upload failed",
-          msg + ". Your highlight wasn't saved — please try again.",
-        );
-        setSavingEntry(false);
-        return;
-      }
-    }
-
-    const newEntry: DailyEntry = {
-      id: entryId,
-      date: today,
-      text,
-      mediaPaths,
-      createdAt: new Date().toISOString(),
-    };
-
-    // Optimistic UI update — push into both the disk cache (for restore)
-    // and the React data store (so the Feed tab re-renders immediately).
-    setTodayEntryCount((count) => count + 1);
-    upsertEntryInCache(newEntry, userId);
-    dataStore.updateEntry(newEntry);
-
+    setWriteFailed(false);
     try {
-      await saveEntry(newEntry);
-      showSnackbar("Highlight saved");
-    } catch (error) {
-      console.error("[TrackerScreen] Failed to save entry:", error);
-      Alert.alert("Save failed", "Could not save entry. Please try again.");
-      const updatedEntries = await getEntriesForDate(today);
-      setTodayEntryCount(updatedEntries.length);
+      // Photos first, all-or-nothing (D8). uploadEntryImages rolls back every
+      // object it already stored if a later one fails, so a half-finished
+      // upload can no longer orphan images in the bucket.
+      const upload = await uploadEntryImages(localUris, entryId, userId);
+      if (upload.status === "failed") {
+        setWriteFailed(true);
+        return { status: "failed", reason: upload.reason };
+      }
+
+      const newEntry: DailyEntry = {
+        id: entryId,
+        // Read fresh, not from render scope — the app can be left open past
+        // midnight and the entry must land on the day it was written.
+        date: todayKey(),
+        text,
+        mediaPaths: upload.paths,
+        createdAt: new Date().toISOString(),
+      };
+
+      // The store does the optimistic update AND the persist, so the cache and
+      // React state can't drift apart the way they did when this screen wrote
+      // to both by hand.
+      const outcome = await toOutcome(() => dataStore.saveEntry(newEntry));
+
+      if (outcome.status === "failed") {
+        // The entry never landed, so its photos have nothing pointing at them.
+        // (A `queued` write still replays, so those photos must stay.)
+        await discardEntryImages(upload.paths);
+        setWriteFailed(true);
+        return outcome;
+      }
+
+      showSnackbar(
+        outcome.status === "queued"
+          ? "Saved — will sync when you're back online"
+          : "Highlight saved",
+      );
+      return outcome;
     } finally {
       setSavingEntry(false);
     }
+  };
+
+  // "Tap to retry" on the sync line: replay the durable queue if the store
+  // exposes a flush, otherwise re-pull so the screen reflects the server truth.
+  const handleRetrySync = async () => {
+    setWriteFailed(false);
+    const flush = storeWrites.flushQueue;
+    if (typeof flush === "function") {
+      await flush();
+      return;
+    }
+    await dataStore.refreshHabitLogs(currentYear, currentMonth, { force: true });
   };
 
   const showSnackbar = (message: string) => {
@@ -321,15 +413,20 @@ export default function TrackerScreen() {
   // order, so the reordered array IS the new persisted order — same
   // optimistic-then-persist pattern as create/edit/delete above.
   const handleReorderHabits = async (newOrder: Habit[]) => {
+    const previousOrder = dataStore.habits;
     // Optimistic UI update via DataStore
     dataStore.updateHabits(newOrder);
 
-    try {
-      await saveHabits(newOrder);
-    } catch (error) {
-      console.error("[TrackerScreen] Failed to reorder habits:", error);
-      Alert.alert("Save failed", "Could not reorder habits. Please try again.");
-      // Re-sync state from server on failure
+    const persist = storeWrites.saveHabits;
+    const outcome =
+      typeof persist === "function"
+        ? await toOutcome(() => persist(newOrder))
+        : missingStoreAction("saveHabits");
+
+    if (outcome.status === "failed") {
+      // Put the old order back rather than leaving a reorder that never landed.
+      dataStore.updateHabits(previousOrder);
+      setWriteFailed(true);
       await dataStore.refreshHabits();
     }
   };
@@ -427,6 +524,15 @@ export default function TrackerScreen() {
               </IconButton>
             </View>
           </View>
+
+          {/* One quiet line above the composer, right-aligned. Fixed height,
+              so switching states never nudges the card below it. */}
+          <SyncStatus
+            pendingCount={dataStore.pendingWriteCount}
+            syncing={savingEntry}
+            failed={writeFailed}
+            onRetry={() => void handleRetrySync()}
+          />
 
           <HighlightInput
             todayEntryCount={todayEntryCount}

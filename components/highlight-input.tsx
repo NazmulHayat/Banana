@@ -23,6 +23,7 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 import Svg, { Path } from "react-native-svg";
+import type { WriteOutcome } from "./sync-status";
 import { IconSymbol } from "./ui/icon-symbol";
 import { PaperCard } from "./ui/paper-card";
 import { PressableScale } from "./ui/pressable-scale";
@@ -66,8 +67,12 @@ function DrawnCheckmark({ size = 20 }: { size?: number }) {
 
 interface HighlightInputProps {
   todayEntryCount: number;
-  /** Called with text + locally-picked image URIs. Parent uploads + persists. */
-  onSave: (text: string, localUris: string[]) => Promise<void> | void;
+  /**
+   * Called with text + locally-picked image URIs. Parent uploads + persists and
+   * reports the outcome — it must not throw, so the composer can decide whether
+   * it is safe to clear.
+   */
+  onSave: (text: string, localUris: string[]) => Promise<WriteOutcome>;
   /** True while parent is uploading + saving — disables the buttons. */
   saving?: boolean;
 }
@@ -83,6 +88,8 @@ export function HighlightInput({
   const [pickedUris, setPickedUris] = useState<string[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
+  // User-safe reason from the last failed save. Non-null keeps the retry row up.
+  const [saveError, setSaveError] = useState<string | null>(null);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(
@@ -172,7 +179,22 @@ export function HighlightInput({
     if (saving || justSaved) return;
     const trimmed = text.trim();
     if (!trimmed && pickedUris.length === 0) return;
-    await onSave(trimmed, pickedUris);
+    setSaveError(null);
+
+    const outcome = await onSave(trimmed, pickedUris);
+
+    // The composer used to clear unconditionally, so a failed save silently ate
+    // whatever the user had just written and every photo they'd picked. Now it
+    // only clears once the write is durable: `synced` is on the server and
+    // `queued` is in the pending-writes queue, which survives a restart and
+    // replays on reconnect. On `failed` nothing is touched — text and photos
+    // stay exactly where they were, with a retry right below.
+    if (outcome.status === "failed") {
+      setSaveError(outcome.reason);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      return;
+    }
+
     setText("");
     setPickedUris([]);
     // Success beat: drawn checkmark + haptic, then back to "Add"
@@ -180,6 +202,9 @@ export function HighlightInput({
     setJustSaved(true);
     savedTimer.current = setTimeout(() => setJustSaved(false), 1200);
   };
+
+  const nothingToSave = !text.trim() && pickedUris.length === 0;
+  const saveDisabled = (nothingToSave || !!saving) && !justSaved;
 
   return (
     <PaperCard style={styles.container}>
@@ -212,6 +237,8 @@ export function HighlightInput({
                   style={styles.removeButton}
                   onPress={() => handleRemovePhoto(index)}
                   activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Remove photo ${index + 1} of ${pickedUris.length}`}
                 >
                   <IconSymbol
                     name="xmark.circle.fill"
@@ -313,39 +340,62 @@ export function HighlightInput({
             </PressableScale>
           </View>
         </View>
-        <PressableScale
-          style={[
-            styles.saveButton,
-            ((!text.trim() && pickedUris.length === 0) || saving) && !justSaved
-              ? styles.saveButtonDisabled
-              : null,
-          ]}
-          onPress={handleSave}
-          disabled={
-            ((!text.trim() && pickedUris.length === 0) || saving) && !justSaved
+        {/* The a11y label sits on a grouping View because PressableScale
+            doesn't forward accessibility props yet. */}
+        <View
+          accessible
+          accessibilityRole="button"
+          accessibilityLabel={
+            justSaved
+              ? "Highlight saved"
+              : saving
+                ? "Saving highlight"
+                : saveError
+                  ? "Save highlight, previous attempt failed"
+                  : "Save highlight"
           }
+          accessibilityState={{ disabled: saveDisabled, busy: !!saving }}
         >
-          <View style={styles.saveButtonContent}>
-            {justSaved ? (
-              <>
-                <Text style={styles.saveButtonText}>Saved</Text>
-                <DrawnCheckmark />
-              </>
-            ) : (
-              <>
-                <Text style={styles.saveButtonText}>
-                  {saving ? "Saving..." : "Add"}
-                </Text>
-                <IconSymbol
-                  name="checkmark.circle.fill"
-                  size={20}
-                  color={Colors.paper}
-                />
-              </>
-            )}
-          </View>
-        </PressableScale>
+          <PressableScale
+            style={[
+              styles.saveButton,
+              saveDisabled ? styles.saveButtonDisabled : null,
+            ]}
+            onPress={handleSave}
+            disabled={saveDisabled}
+          >
+            <View style={styles.saveButtonContent}>
+              {justSaved ? (
+                <>
+                  <Text style={styles.saveButtonText}>Saved</Text>
+                  <DrawnCheckmark />
+                </>
+              ) : (
+                <>
+                  <Text style={styles.saveButtonText}>
+                    {saving ? "Saving..." : saveError ? "Try again" : "Add"}
+                  </Text>
+                  <IconSymbol
+                    name="checkmark.circle.fill"
+                    size={20}
+                    color={Colors.paper}
+                  />
+                </>
+              )}
+            </View>
+          </PressableScale>
+        </View>
       </View>
+
+      {/* Nothing was lost — say so plainly, in the same secondary ink as the
+          privacy note. The primary button doubles as the retry. */}
+      {saveError && !saving && (
+        <View style={styles.errorRow} accessibilityLiveRegion="polite">
+          <Text style={styles.errorText}>
+            {saveError} Your words and photos are still here.
+          </Text>
+        </View>
+      )}
       {/* Photos are NOT end-to-end encrypted in v1 (private Storage bucket
           only) — disclosed plainly, right where photos get attached. */}
       <Text style={styles.privacyNote}>
@@ -390,6 +440,15 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwriting,
     lineHeight: 16,
     marginTop: 12,
+  },
+  errorRow: {
+    marginTop: 10,
+  },
+  errorText: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    lineHeight: 16,
   },
   mediaPreviewContainer: {
     flexDirection: "row",
