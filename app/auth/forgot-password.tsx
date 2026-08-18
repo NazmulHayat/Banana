@@ -1,8 +1,16 @@
+// Two ways back into an account, and both of them now end somewhere.
+//
+// The reset email used to be sent with no `redirectTo`, so the link opened a
+// web page and the flow died there. It now points at `aightbet://auth/reset-
+// password` — the screen that turns the link into a session and hands over to
+// the recovery-key screen.
+
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
 import { Colors, Fonts } from "@/constants/theme";
 import { supabase } from "@/lib/supabase";
-import { router } from "expo-router";
+import * as Linking from "expo-linking";
+import { Href, router } from "expo-router";
 import { useState } from "react";
 import {
   Alert,
@@ -34,7 +42,10 @@ export default function ForgotPasswordScreen() {
     }
     setLoading(true);
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(clean);
+      // Bring the link back into the app rather than dead-ending on the web.
+      const { error } = await supabase.auth.resetPasswordForEmail(clean, {
+        redirectTo: Linking.createURL("/auth/reset-password"),
+      });
       if (error) {
         if (__DEV__) console.warn("[forgot] reset email failed:", error.message);
         Alert.alert(
@@ -70,8 +81,15 @@ export default function ForgotPasswordScreen() {
         >
           <TouchableOpacity
             style={styles.backButton}
-            onPress={() => router.back()}
-            activeOpacity={0.7}
+            onPress={() => {
+              // Reachable from a fresh stack (deep link, recovery screens), so
+              // "Back" always needs a real destination.
+              if (router.canGoBack()) router.back();
+              else router.replace("/auth/signin");
+            }}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Back"
           >
             <IconSymbol name="chevron.left" size={24} color={Colors.ink} />
             <Text style={styles.backText}>Back</Text>
@@ -91,9 +109,10 @@ export default function ForgotPasswordScreen() {
               <Text style={styles.optionTitle}>Reset by email</Text>
             </View>
             <Text style={styles.optionDesc}>
-              We&apos;ll email you a link to set a new password. After signing in
-              with your new password, you&apos;ll be asked for your recovery key to
-              unlock your encrypted data.
+              We&apos;ll email you a link. Open it on this phone and it comes
+              back into the app, where you set a new password. Have your
+              recovery key to hand: your journal is encrypted with the old
+              password, so a new one alone can&apos;t open it.
             </Text>
 
             {!sent ? (
@@ -113,7 +132,10 @@ export default function ForgotPasswordScreen() {
                   style={[styles.button, loading && styles.buttonDisabled]}
                   onPress={handleSendReset}
                   disabled={loading}
-                  activeOpacity={0.7}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel="Send reset link"
+                  accessibilityState={{ disabled: loading }}
                 >
                   <Text style={styles.buttonText}>
                     {loading ? "Sending..." : "Send Reset Link"}
@@ -131,9 +153,28 @@ export default function ForgotPasswordScreen() {
                   Check your email for a reset link.
                 </Text>
                 <Text style={styles.sentHint}>
-                  After resetting, sign in with your new password. You&apos;ll be
-                  prompted for your recovery key.
+                  Open it on this phone — it opens Aight Bet, where you&apos;ll
+                  enter your recovery key and pick a new password.
                 </Text>
+                <TouchableOpacity
+                  style={styles.secondaryButton}
+                  onPress={() =>
+                    // Cast: `reset-password` is new, so the generated route
+                    // types don't know it until they're regenerated.
+                    router.push(
+                      `/auth/reset-password?email=${encodeURIComponent(
+                        email.trim().toLowerCase(),
+                      )}` as Href,
+                    )
+                  }
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel="The email showed a code instead"
+                >
+                  <Text style={styles.secondaryButtonText}>
+                    My email showed a code
+                  </Text>
+                </TouchableOpacity>
               </View>
             )}
           </View>
@@ -147,13 +188,16 @@ export default function ForgotPasswordScreen() {
               <Text style={styles.optionTitle}>I have my recovery key</Text>
             </View>
             <Text style={styles.optionDesc}>
-              If you already reset your Supabase password and just need to
-              decrypt your data, use this option.
+              Already set a new sign-in password and just need to unlock your
+              encrypted journal? Use this. You&apos;ll need to be signed in —
+              the reset email above is how you get there.
             </Text>
             <TouchableOpacity
               style={styles.secondaryButton}
               onPress={() => router.push("/auth/recover-with-key")}
-              activeOpacity={0.7}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel="Use recovery key"
             >
               <Text style={styles.secondaryButtonText}>Use Recovery Key</Text>
             </TouchableOpacity>
