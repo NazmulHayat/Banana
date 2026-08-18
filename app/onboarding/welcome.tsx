@@ -7,9 +7,12 @@
 //
 // There is no back button here on purpose — this screen is a `replace` target
 // from account setup, so "back" would mean the signup form of an account that
-// already exists. Skip is here, though: steps 2 and 3 both have one, and a
-// flow you can't leave is not a welcome.
+// already exists. Skip is here, though, and it matters more than it used to:
+// step 2 now requires two habits and has no skip of its own, so this is the
+// one door out of the flow (step 3's entry stays optional). A flow you can't
+// leave is not a welcome.
 
+import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
 import { PressableScale } from "@/components/ui/pressable-scale";
 import { Motion } from "@/constants/motion";
@@ -76,8 +79,12 @@ export default function WelcomeScreen() {
         <Animated.View
           style={[styles.markWrapper, { transform: [{ scale: markScale }] }]}
         >
+          {/* Drawn glyph, not a character: the typed check was a bare
+              codepoint the handwriting font doesn't carry, so it fell back to
+              a system face (or a tofu box) — and step 3's saved mark already
+              uses this icon. One mark, both ends of the flow. */}
           <View style={styles.mark}>
-            <Text style={styles.markText}>✓</Text>
+            <IconSymbol name="checkmark" size={38} color={Colors.paper} />
           </View>
         </Animated.View>
 
@@ -87,7 +94,9 @@ export default function WelcomeScreen() {
             { opacity: fade, transform: [{ translateY: rise }] },
           ]}
         >
-          <Text style={styles.headline}>A private place</Text>
+          <Text style={styles.headline} accessibilityRole="header">
+            A private place
+          </Text>
           <Text style={styles.headline}>for your days.</Text>
 
           <View style={styles.rule} />
@@ -129,26 +138,24 @@ export default function WelcomeScreen() {
 }
 
 const styles = StyleSheet.create({
+  // 24pt gutters, like steps 2 and 3 — the three screens share one page
+  // rhythm so nothing shifts sideways as the flow advances.
   container: {
     flex: 1,
-    paddingHorizontal: 32,
+    paddingHorizontal: 24,
   },
   markWrapper: {
     alignItems: "center",
     marginBottom: 40,
   },
+  // Same 72pt disc as the saved mark on step 3.
   mark: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
+    width: 72,
+    height: 72,
+    borderRadius: 36,
     backgroundColor: Colors.ink,
     justifyContent: "center",
     alignItems: "center",
-  },
-  markText: {
-    fontSize: 40,
-    color: Colors.paper,
-    fontFamily: Fonts.handwriting,
   },
   copy: {
     alignItems: "center",
@@ -160,9 +167,11 @@ const styles = StyleSheet.create({
     textAlign: "center",
     lineHeight: 42,
   },
+  // The accent rule under a title — the one orange mark, repeated on all
+  // three steps at the same 48x2.
   rule: {
     height: 2,
-    width: 120,
+    width: 48,
     backgroundColor: Colors.accent,
     borderRadius: 1,
     marginVertical: 24,
@@ -178,13 +187,13 @@ const styles = StyleSheet.create({
   footer: {
     marginTop: "auto",
   },
+  // Full-width pill, 16pt tall, radius 30 — the same primary button steps 2
+  // and 3 end on, so the eye doesn't have to re-find it each step.
   button: {
     backgroundColor: Colors.ink,
-    paddingVertical: 18,
-    paddingHorizontal: 48,
+    paddingVertical: 16,
     borderRadius: 30,
     alignItems: "center",
-    alignSelf: "center",
   },
   buttonText: {
     fontSize: 18,

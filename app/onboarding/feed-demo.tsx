@@ -17,10 +17,10 @@ import { PaperBackground } from "@/components/ui/paper-background";
 import { PaperCard } from "@/components/ui/paper-card";
 import { PressableScale } from "@/components/ui/pressable-scale";
 import { Motion } from "@/constants/motion";
-import { Colors, Fonts } from "@/constants/theme";
+import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { useDataStore } from "@/lib/data-store";
-import { todayKey } from "@/lib/dates";
+import { fromDayKey, todayKey } from "@/lib/dates";
 import type { DailyEntry } from "@/lib/db";
 import { useOnboarding } from "@/lib/onboarding-context";
 import {
@@ -65,6 +65,14 @@ export default function FirstHighlightScreen() {
   const [queued, setQueued] = useState(false);
   // A second tap while the write is in flight must not create a second entry.
   const submittingRef = useRef(false);
+
+  // "Mon, Mar 4" — the day this entry files under, formatted from the same
+  // local day key the write uses so the label can't disagree with the entry.
+  const todayLabel = fromDayKey(todayKey()).toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
 
   const fade = useRef(new Animated.Value(0)).current;
   const rise = useRef(new Animated.Value(16)).current;
@@ -168,7 +176,12 @@ export default function FirstHighlightScreen() {
             <View style={styles.savedMark}>
               <IconSymbol name="checkmark" size={36} color={Colors.paper} />
             </View>
-            <Text style={styles.savedTitle}>That&apos;s your first entry.</Text>
+            <Text style={styles.savedTitle} accessibilityRole="header">
+              That&apos;s your first entry.
+            </Text>
+            {/* Mark, title, accent rule — the same stack step 1 opens with,
+                so the flow closes the way it started. */}
+            <View style={styles.savedRule} />
             <Text style={styles.savedSub}>
               {queued
                 ? "Saved on this device — it'll sync as soon as you're back online."
@@ -229,11 +242,24 @@ export default function FirstHighlightScreen() {
           <Animated.View
             style={{ opacity: fade, transform: [{ translateY: rise }] }}
           >
-            <Text style={styles.title}>One line about today</Text>
+            <Text style={styles.title} accessibilityRole="header">
+              One line about today
+            </Text>
+            {/* Same accent rule as steps 1 and 2 — one mark, three screens. */}
+            <View style={styles.titleRule} />
             <Text style={styles.subtitle}>
               A highlight, a thought, anything. It&apos;s encrypted before it
               leaves your phone — and it&apos;s optional.
             </Text>
+
+            {/* Section label + rule, matching step 2's headings. The date is
+                real: this entry is filed under today, and saying so beats a
+                composer that just appears. */}
+            <View style={styles.sectionHead}>
+              <Text style={styles.sectionLabel}>Today</Text>
+              <View style={styles.sectionRule} />
+              <Text style={styles.sectionMeta}>{todayLabel}</Text>
+            </View>
 
             <View style={styles.inputBox}>
               <TextInput
@@ -314,7 +340,15 @@ const styles = StyleSheet.create({
     fontSize: 28,
     color: Colors.ink,
     fontFamily: Fonts.handwritingSemiBold,
-    marginBottom: 8,
+    lineHeight: 36,
+  },
+  titleRule: {
+    height: 2,
+    width: 48,
+    backgroundColor: Colors.accent,
+    borderRadius: 1,
+    marginTop: 10,
+    marginBottom: 12,
   },
   subtitle: {
     fontSize: 16,
@@ -322,6 +356,29 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwriting,
     lineHeight: 24,
     marginBottom: 24,
+  },
+  sectionHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 14,
+  },
+  sectionLabel: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwritingMedium,
+    textTransform: "uppercase",
+    letterSpacing: 1,
+  },
+  sectionRule: {
+    flex: 1,
+    height: 1,
+    backgroundColor: Hairline.base,
+    marginHorizontal: 12,
+  },
+  sectionMeta: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
   },
   inputBox: {
     backgroundColor: Colors.card,
@@ -380,7 +437,14 @@ const styles = StyleSheet.create({
     color: Colors.ink,
     fontFamily: Fonts.handwritingSemiBold,
     textAlign: "center",
-    marginBottom: 8,
+  },
+  savedRule: {
+    height: 2,
+    width: 48,
+    backgroundColor: Colors.accent,
+    borderRadius: 1,
+    marginTop: 12,
+    marginBottom: 16,
   },
   savedSub: {
     fontSize: 15,
