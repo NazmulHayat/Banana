@@ -44,7 +44,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 // ---------------------------------------------------------------------------
 // D15: this screen used to import `saveEntry` / `saveHabits` / `toggleHabitLog`
-// / `upsertEntryInCache` / `getEntriesForDate` straight from `@/lib/db` and run
+// / `upsertEntryInCache` / `the store's month cache` straight from `@/lib/db` and run
 // them side-by-side with the store, so the two disagreed after any failure.
 // Everything now goes Screen → data-store → lib/db, like `feed.tsx` already did.
 //
@@ -102,7 +102,7 @@ export default function TrackerScreen() {
   const monthKey = monthKeyOfParts(currentYear, currentMonth);
 
   // Today's highlight count, derived from the store instead of a direct
-  // `getEntriesForDate` call (D15). "Today" is always in the real current
+  // `the store's month cache` call (D15). "Today" is always in the real current
   // month, which is not necessarily the month being browsed.
   const todayDayKey = todayKey();
   const todayParts = parseDayKey(todayDayKey);

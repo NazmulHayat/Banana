@@ -14,6 +14,7 @@
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
 import { Colors, Fonts } from "@/constants/theme";
+import { takeRecoveryLink } from "@/lib/recovery-link";
 import { supabase } from "@/lib/supabase";
 import * as Linking from "expo-linking";
 import { router, useLocalSearchParams } from "expo-router";
@@ -159,6 +160,12 @@ export default function ResetPasswordScreen() {
       if (session) {
         handOver();
         return;
+      }
+      // Warm start: the root layout parks the URL here before routing.
+      const stashed = takeRecoveryLink();
+      if (stashed) {
+        await consume(stashed);
+        if (cancelled || !mountedRef.current) return;
       }
       await consume(await Linking.getInitialURL());
       if (cancelled || !mountedRef.current) return;

@@ -9,6 +9,7 @@ import {
   ThemeProvider,
 } from "@react-navigation/native";
 import { useFonts } from "expo-font";
+import * as Linking from "expo-linking";
 import { Href, Stack, router, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
@@ -22,6 +23,10 @@ import { useColorScheme } from "@/hooks/use-color-scheme";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { DataProvider } from "@/lib/data-store";
 import { OnboardingProvider, useOnboarding } from "@/lib/onboarding-context";
+import {
+  isRecoveryLink,
+  stashRecoveryLink,
+} from "@/lib/recovery-link";
 import { configureReminders } from "@/lib/reminder";
 
 SplashScreen.preventAutoHideAsync();
@@ -36,6 +41,7 @@ configureReminders();
 const POST_SESSION_AUTH_SCREENS = new Set([
   "recovery-setup",
   "recover-with-key",
+  "reset-password",
   "verify",
 ]);
 
@@ -53,6 +59,20 @@ function RootLayoutNav() {
   const forcedIntro = useRef(false);
 
   const loading = authLoading || onboardingLoading;
+
+  // Warm-start password-recovery links. The reset screen catches cold starts
+  // itself via getInitialURL(), and its own listener catches links that land
+  // while it is open — but neither fires when the link arrives with the app
+  // already running on some other screen. Park the URL and route there; the
+  // screen drains it on mount. Never logged: these are live credentials.
+  useEffect(() => {
+    const sub = Linking.addEventListener("url", ({ url }) => {
+      if (!isRecoveryLink(url)) return;
+      stashRecoveryLink(url);
+      router.replace("/auth/reset-password" as Href);
+    });
+    return () => sub.remove();
+  }, []);
 
   useEffect(() => {
     if (loading) return;
