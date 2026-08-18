@@ -6,20 +6,21 @@ import { PaperBackground } from "@/components/ui/paper-background";
 import { PaperCard } from "@/components/ui/paper-card";
 import { PressableScale } from "@/components/ui/pressable-scale";
 import { SectionTitle, SettingsRow } from "@/components/ui/settings-row";
-import { Colors, Fonts, Hairline } from "@/constants/theme";
+import { Colors, Fonts, Hairline, Scrim } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { purgeLocalUserData } from "@/lib/auth/local-purge";
 import { useDataStore } from "@/lib/data-store";
-import { clearUserMedia } from "@/lib/media";
+import { clearUserMedia, getImageUrl } from "@/lib/media";
 import { useOnboarding } from "@/lib/onboarding-context";
 import { formatReminderTime, loadReminder, syncReminder } from "@/lib/reminder";
 import { supabase } from "@/lib/supabase";
 import * as Clipboard from "expo-clipboard";
 import Constants from "expo-constants";
 import { Href, router, useFocusEffect } from "expo-router";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Image,
   Linking,
   RefreshControl,
   ScrollView,
@@ -39,6 +40,86 @@ const BUILD_NUMBER =
     ? String(Constants.expoConfig.android.versionCode)
     : null);
 const SUPPORT_EMAIL = "nazmulhayat588@gmail.com";
+
+/**
+ * The uploaded avatar's storage path, read defensively off the account DTO.
+ *
+ * Editing (and therefore `avatarPath`) lands in a separate slice, so this
+ * screen must compile and behave correctly both before and after that field
+ * exists on the store's profile — hence the shape check rather than a cast.
+ */
+function readAvatarPath(profile: unknown): string | null {
+  if (!profile || typeof profile !== "object") return null;
+  const value = (profile as { avatarPath?: unknown }).avatarPath;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+interface ProfileAvatarProps {
+  /** Storage object path of the uploaded photo, or null for none. */
+  path: string | null;
+  /** Letter drawn when there's no photo — or when one fails to load. */
+  initial: string;
+  /** True while the account itself is still loading, so `path` isn't known yet. */
+  pending?: boolean;
+}
+
+/**
+ * The identity circle: a photo when there is one, the letter otherwise. The
+ * signed URL is fetched per path, so there's a beat with neither — that shows
+ * a spinner rather than a letter that would flip to a photo a moment later.
+ */
+function ProfileAvatar({ path, initial, pending }: ProfileAvatarProps) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [resolving, setResolving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!path) {
+      setUrl(null);
+      setResolving(false);
+      return;
+    }
+    setResolving(true);
+    void (async () => {
+      const signed = await getImageUrl(path);
+      if (cancelled) return;
+      setUrl(signed);
+      setResolving(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [path]);
+
+  // Spinner while we don't yet know the answer — showing the letter first
+  // would flip to a photo a beat later.
+  if (pending || (path && resolving)) {
+    return (
+      <View style={styles.avatar}>
+        <ActivityIndicator size="small" color={Colors.textSecondary} />
+      </View>
+    );
+  }
+
+  if (url) {
+    return (
+      <Image
+        source={{ uri: url }}
+        style={styles.avatarImage}
+        // A URL that has gone stale falls back to the letter rather than
+        // leaving an empty hole where a face was.
+        onError={() => setUrl(null)}
+        accessibilityIgnoresInvertColors
+      />
+    );
+  }
+
+  return (
+    <View style={styles.avatar}>
+      <Text style={styles.avatarInitial}>{initial}</Text>
+    </View>
+  );
+}
 
 /**
  * Profile hub. Identity + a free stats peek (taps into the analysis), plus
@@ -93,6 +174,10 @@ export default function ProfileScreen() {
   );
 
   const avatarInitial = (username ?? user?.email ?? "·").charAt(0).toUpperCase();
+  const avatarPath = readAvatarPath(dataStore.profile);
+  // Typed routes haven't regenerated for app/profile/edit yet — same `as Href`
+  // cast every other push on this screen uses.
+  const goToEdit = () => router.push("/profile/edit" as Href);
   const joinedLabel = useMemo(() => {
     const createdAt = dataStore.profile?.created_at;
     if (!createdAt) return null;
@@ -226,11 +311,33 @@ export default function ProfileScreen() {
           onRetry={() => void dataStore.flushPendingWrites()}
         />
 
-        {/* Identity (display only) */}
+        {/* Identity — the way into editing your username and photo. */}
         <PaperCard style={styles.userCard}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarInitial}>{avatarInitial}</Text>
+          {/* The slot is what's absolutely placed: PressableScale styles its
+              inner animated view, so positioning must sit on a wrapper. */}
+          <View style={styles.editSlot}>
+            <PressableScale
+              style={styles.editPill}
+              hitSlop={10}
+              onPress={goToEdit}
+              accessibilityLabel="Edit profile"
+              accessibilityHint="Opens your username and photo"
+            >
+              <Text style={styles.editPillText}>Edit</Text>
+            </PressableScale>
           </View>
+          <PressableScale
+            scaleTo={0.96}
+            onPress={goToEdit}
+            accessibilityLabel="Profile photo"
+            accessibilityHint="Opens your username and photo"
+          >
+            <ProfileAvatar
+              path={avatarPath}
+              initial={avatarInitial}
+              pending={loading}
+            />
+          </PressableScale>
           {loading ? (
             <View style={styles.userLoading}>
               <ActivityIndicator size="small" color={Colors.ink} />
@@ -255,16 +362,9 @@ export default function ProfileScreen() {
         <View style={styles.section}>
           <SectionTitle>Manage</SectionTitle>
           <PaperCard style={styles.rowGroup}>
-            {/* A second, stable way into the analysis. The peek card above is
-                the invitation; this is the door that's always in the same
-                place. */}
-            <SettingsRow
-              icon="chart.bar.fill"
-              title="Stats & analysis"
-              subtitle="Streaks, records, patterns"
-              onPress={() => router.push("/analysis" as Href)}
-            />
-            <View style={styles.rowDivider} />
+            {/* No "Stats & analysis" row here on purpose: the momentum card
+                above carries the only entrance, as a button. Two doors one
+                scroll apart read as two different destinations. */}
             <SettingsRow
               icon="checklist"
               title="Habits"
@@ -402,6 +502,24 @@ const styles = StyleSheet.create({
   header: { paddingHorizontal: 16, paddingBottom: 8 },
   title: { fontSize: 32, fontWeight: "700", color: Colors.ink, fontFamily: Fonts.handwriting },
   userCard: { marginHorizontal: 16, marginVertical: 12, alignItems: "center", paddingVertical: 24 },
+  editSlot: { position: "absolute", top: 12, right: 12 },
+  editPill: {
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: Hairline.outline,
+    backgroundColor: Scrim.accent,
+  },
+  editPillText: { fontSize: 13, color: Colors.ink, fontFamily: Fonts.handwritingSemiBold },
+  avatarImage: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: Hairline.outline,
+  },
   avatar: {
     width: 64,
     height: 64,

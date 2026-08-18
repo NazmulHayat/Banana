@@ -13,7 +13,7 @@ import Svg, { Path } from "react-native-svg";
 
 import { Colors } from "@/constants/theme";
 
-export type InkIconName = "flame" | "seal";
+export type InkIconName = "flame" | "seal" | "chart";
 
 interface InkIconProps {
   /** Which glyph to draw. */
@@ -46,7 +46,42 @@ export function InkIcon({
       accessibilityElementsHidden
       importantForAccessibility="no"
     >
-      {name === "flame" ? (
+      {name === "chart" ? (
+        <>
+          {/* Bar chart — the doorway into the analysis. One pen stroke for the
+              axis, three bars sitting on it, the tallest one inked in. */}
+          <Path
+            d="M4.4 3.4 L4 19.4 L20.6 19"
+            stroke={color}
+            strokeWidth={1.5}
+            strokeLinejoin="round"
+            strokeLinecap="round"
+          />
+          <Path
+            d="M6.9 19.2 L7.1 14.5 L10.3 14.2 L10.2 19.1"
+            stroke={color}
+            strokeWidth={1.5}
+            strokeLinejoin="round"
+            strokeLinecap="round"
+          />
+          {/* Tallest bar, filled with the one accent colour. */}
+          <Path
+            d="M12.2 19.1 L12.4 9.9 L15.6 9.6 L15.5 19"
+            fill={accent}
+            stroke={color}
+            strokeWidth={1.5}
+            strokeLinejoin="round"
+            strokeLinecap="round"
+          />
+          <Path
+            d="M17.5 19 L17.7 12.4 L20.7 12.1 L20.6 18.9"
+            stroke={color}
+            strokeWidth={1.5}
+            strokeLinejoin="round"
+            strokeLinecap="round"
+          />
+        </>
+      ) : name === "flame" ? (
         <>
           {/* Outer flame — deliberately asymmetric so it looks drawn. */}
           <Path

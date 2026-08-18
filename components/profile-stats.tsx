@@ -1,8 +1,8 @@
-import { PaperCard } from "@/components/ui/paper-card";
 import { InkIcon } from "@/components/ui/ink-icon";
+import { PaperCard } from "@/components/ui/paper-card";
 import { PressableScale } from "@/components/ui/pressable-scale";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Colors, Fonts, Hairline } from "@/constants/theme";
+import { Colors, Fonts, Hairline, Scrim } from "@/constants/theme";
 import { todayKey } from "@/lib/dates";
 import { type Habit } from "@/lib/db";
 import {
@@ -22,16 +22,69 @@ interface ProfileStatsProps {
   refreshToken?: number;
 }
 
+interface MetricProps {
+  /** The number itself — the thing the eye lands on. */
+  value: number;
+  /** What it counts, already singular/plural-correct. */
+  label: string;
+}
+
+/**
+ * One supporting number in the momentum card's right-hand column. Value first,
+ * then its unit — these used to be a run-on sentence ("2 done · 1 active
+ * days"), which read as prose and hid the figures.
+ */
+function Metric({ value, label }: MetricProps) {
+  return (
+    <View style={styles.metric}>
+      <Text style={styles.metricValue}>{value}</Text>
+      <Text style={styles.metricLabel}>{label}</Text>
+    </View>
+  );
+}
+
+interface CardActionProps {
+  /** Button text. */
+  label: string;
+  /** Draw the bar-chart glyph before the label (the analysis entrance). */
+  chart?: boolean;
+  onPress: () => void;
+  accessibilityHint: string;
+}
+
+/**
+ * The card's footer action. A real button — filled with the accent wash, with
+ * its own press target — not the underlined-looking text link it used to be.
+ *
+ * It nests inside the card-wide PressableScale on purpose: React Native's
+ * responder system hands the touch to the innermost pressable, so a tap on the
+ * button runs only this onPress (and scales only this button), while a tap
+ * anywhere else on the card still runs the card's.
+ */
+function CardAction({ label, chart, onPress, accessibilityHint }: CardActionProps) {
+  return (
+    <PressableScale
+      style={styles.action}
+      onPress={onPress}
+      accessibilityLabel={label}
+      accessibilityHint={accessibilityHint}
+    >
+      {chart ? <InkIcon name="chart" size={18} /> : null}
+      <Text style={styles.actionLabel}>{label}</Text>
+      <Text style={styles.arrow}>→</Text>
+    </PressableScale>
+  );
+}
+
 /**
  * The stats peek on the profile hub: a headline streak, a couple of supporting
  * numbers, and one line about where you stand against your own record — the
  * doorway into the full analysis (which is free, and always has been).
  *
- * Every state is tappable. Loading and no-habits used to render a bare card
- * OUTSIDE the pressable, which left the only entrance to the whole analysis
- * surface dead exactly when a new user first arrives. Loading still opens the
- * analysis (that screen has its own skeleton); with no habits the card leads
- * where it should — to adding one.
+ * Since the duplicate "Stats & analysis" row was cut from Manage, this card's
+ * button is the single entrance to the analysis surface, so every state keeps
+ * one: loading opens the analysis anyway (that screen has its own skeleton),
+ * and with no habits it leads where it should — to adding one.
  *
  * The rotating "your story" sentence deliberately lives on the analysis screen
  * only. It used to render here AND there, one tap apart.
@@ -54,10 +107,12 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
       >
         <PaperCard style={styles.card}>
           <Skeleton width="40%" height={12} />
-          <View style={{ height: 12 }} />
-          <Skeleton width="55%" height={34} />
           <View style={{ height: 14 }} />
+          <Skeleton width="55%" height={40} />
+          <View style={{ height: 16 }} />
           <Skeleton width="85%" height={13} />
+          <View style={{ height: 16 }} />
+          <Skeleton width="100%" height={44} borderRadius={12} />
         </PaperCard>
       </PressableScale>
     );
@@ -77,10 +132,11 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
             Nothing to measure yet. Add a habit and your streaks, records and
             story start filling in from day one.
           </Text>
-          <View style={styles.ctaRow}>
-            <Text style={styles.cta}>Add your first habit</Text>
-            <Text style={styles.arrow}>→</Text>
-          </View>
+          <CardAction
+            label="Add your first habit"
+            onPress={() => open("/habits")}
+            accessibilityHint="Opens your habits"
+          />
         </PaperCard>
       </PressableScale>
     );
@@ -116,24 +172,42 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
     >
       <PaperCard style={styles.card}>
         <Text style={styles.eyebrow}>your momentum</Text>
-        <View style={styles.heroRow}>
-          <View style={styles.heroLeft}>
+
+        {/* Hero band: the label sits ABOVE its number (same order as the
+            analysis screen's hero), so the big figure isn't chased by a
+            "day best streak" caption competing with the flame beside it. */}
+        <View style={styles.hero}>
+          <View>
+            <Text style={styles.heroLabel}>best streak</Text>
             <View style={styles.heroValueRow}>
-              <InkIcon name="flame" size={22} />
-              <Text style={styles.hero}>{overall.bestCurrentStreak}</Text>
+              <InkIcon name="flame" size={26} />
+              <Text style={styles.heroValue}>{overall.bestCurrentStreak}</Text>
+              <Text style={styles.heroUnit}>
+                {overall.bestCurrentStreak === 1 ? "day" : "days"}
+              </Text>
             </View>
-            <Text style={styles.heroSub}>day best streak</Text>
           </View>
-          <Text style={styles.supporting}>
-            {overall.totalCompletions} done · {overall.activeDays} active days
-            {overall.perfectDays > 0 ? ` · ${overall.perfectDays} perfect` : ""}
-          </Text>
+          <View style={styles.heroRule} />
+          <View style={styles.metrics}>
+            <Metric value={overall.totalCompletions} label="done" />
+            <Metric
+              value={overall.activeDays}
+              label={overall.activeDays === 1 ? "active day" : "active days"}
+            />
+            {overall.perfectDays > 0 ? (
+              <Metric value={overall.perfectDays} label="perfect" />
+            ) : null}
+          </View>
         </View>
+
         <Text style={styles.standing}>{standing}</Text>
-        <View style={styles.ctaRow}>
-          <Text style={styles.cta}>See full analysis</Text>
-          <Text style={styles.arrow}>→</Text>
-        </View>
+
+        <CardAction
+          label="Stats & analysis"
+          chart
+          onPress={() => open("/analysis")}
+          accessibilityHint="Opens your full analysis"
+        />
       </PaperCard>
     </PressableScale>
   );
@@ -154,43 +228,75 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwritingMedium,
     letterSpacing: 0.4,
     textTransform: "uppercase",
-    marginBottom: 6,
+    marginBottom: 10,
   },
-  heroRow: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between" },
-  heroLeft: { flexDirection: "column" },
+  hero: { flexDirection: "row", alignItems: "center" },
+  heroLabel: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwritingMedium,
+    marginBottom: 2,
+  },
   heroValueRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-  hero: {
-    fontSize: 38,
+  heroValue: {
+    fontSize: 44,
     color: Colors.ink,
     fontFamily: Fonts.handwritingSemiBold,
     letterSpacing: -0.5,
+    lineHeight: 50,
   },
-  heroSub: { fontSize: 13, color: Colors.textSecondary, fontFamily: Fonts.handwriting },
-  supporting: {
+  heroUnit: {
     fontSize: 13,
     color: Colors.textSecondary,
-    fontFamily: Fonts.handwritingMedium,
+    fontFamily: Fonts.handwriting,
+    alignSelf: "flex-end",
+    marginBottom: 10,
+  },
+  // A drawn rule between the headline and its supporting data — the two
+  // groups are different kinds of number and shouldn't share a column.
+  heroRule: {
+    width: StyleSheet.hairlineWidth,
+    alignSelf: "stretch",
+    backgroundColor: Hairline.strong,
+    marginHorizontal: 16,
+  },
+  metrics: { flex: 1, gap: 2 },
+  metric: { flexDirection: "row", alignItems: "baseline", gap: 6 },
+  metricValue: {
+    fontSize: 15,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingSemiBold,
+    minWidth: 22,
     textAlign: "right",
+  },
+  metricLabel: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
     flexShrink: 1,
-    marginLeft: 12,
-    marginBottom: 4,
   },
   standing: {
     fontSize: 14.5,
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
-    lineHeight: 21,
-    marginTop: 14,
+    lineHeight: 22,
+    marginTop: 16,
   },
-  ctaRow: {
+  action: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    gap: 10,
+    height: 44,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: Scrim.accent,
     marginTop: 16,
-    paddingTop: 14,
-    borderTopWidth: 1,
-    borderTopColor: Hairline.strong,
   },
-  cta: { fontSize: 15, color: Colors.ink, fontFamily: Fonts.handwritingSemiBold },
+  actionLabel: {
+    flex: 1,
+    fontSize: 15,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingSemiBold,
+  },
   arrow: { fontSize: 17, color: Colors.ink },
 });
