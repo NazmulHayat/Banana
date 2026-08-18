@@ -1,4 +1,5 @@
 import { PaperCard } from "@/components/ui/paper-card";
+import { InkIcon } from "@/components/ui/ink-icon";
 import { PressableScale } from "@/components/ui/pressable-scale";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Colors, Fonts, Hairline } from "@/constants/theme";
@@ -117,7 +118,10 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
         <Text style={styles.eyebrow}>your momentum</Text>
         <View style={styles.heroRow}>
           <View style={styles.heroLeft}>
-            <Text style={styles.hero}>🔥 {overall.bestCurrentStreak}</Text>
+            <View style={styles.heroValueRow}>
+              <InkIcon name="flame" size={22} />
+              <Text style={styles.hero}>{overall.bestCurrentStreak}</Text>
+            </View>
             <Text style={styles.heroSub}>day best streak</Text>
           </View>
           <Text style={styles.supporting}>
@@ -154,6 +158,7 @@ const styles = StyleSheet.create({
   },
   heroRow: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between" },
   heroLeft: { flexDirection: "column" },
+  heroValueRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   hero: {
     fontSize: 38,
     color: Colors.ink,

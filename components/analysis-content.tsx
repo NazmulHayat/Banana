@@ -9,6 +9,7 @@ import { StatSparkline } from "@/components/stat-sparkline";
 import { PressableScale } from "@/components/ui/pressable-scale";
 import { SectionTitle } from "@/components/ui/settings-row";
 import { Skeleton } from "@/components/ui/skeleton";
+import { InkIcon } from "@/components/ui/ink-icon";
 import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { todayKey } from "@/lib/dates";
 import { type DailyEntry, type Habit, type HabitLog } from "@/lib/db";
@@ -313,7 +314,10 @@ export function AnalysisContent({
           }`}
         >
           <Text style={styles.heroLabel}>{habitId ? "current streak" : "best streak"}</Text>
-          <Text style={styles.heroValue}>🔥 {currentStreak}</Text>
+          <View style={styles.heroValueRow}>
+            <InkIcon name="flame" size={22} />
+            <Text style={styles.heroValue}>{currentStreak}</Text>
+          </View>
         </View>
         <View
           style={styles.heroRight}
@@ -457,15 +461,20 @@ export function AnalysisContent({
           <Text style={styles.sectionLabel} accessibilityRole="header">
             Longest run
           </Text>
-          <Text style={styles.recordLine}>
-            <Text style={styles.bold}>{longestStreak}</Text> day
-            {longestStreak === 1 ? "" : "s"}
-            {toRecord > 0
-              ? ` · ${toRecord} more to beat it`
-              : longestStreak > 0
-                ? " · you're at your best ever 🎉"
-                : " · nothing to beat yet"}
-          </Text>
+          <View style={styles.recordRow}>
+            <Text style={styles.recordLine}>
+              <Text style={styles.bold}>{longestStreak}</Text> day
+              {longestStreak === 1 ? "" : "s"}
+              {toRecord > 0
+                ? ` · ${toRecord} more to beat it`
+                : longestStreak > 0
+                  ? " · you're at your best ever"
+                  : " · nothing to beat yet"}
+            </Text>
+            {toRecord === 0 && longestStreak > 0 ? (
+              <InkIcon name="seal" size={18} />
+            ) : null}
+          </View>
           <View
             style={styles.bar}
             accessible
@@ -647,6 +656,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
     textTransform: "uppercase",
   },
+  heroValueRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   heroValue: {
     fontSize: 30,
     color: Colors.ink,
@@ -734,6 +744,7 @@ const styles = StyleSheet.create({
   // progress
   bigDelta: { fontSize: 24, fontFamily: Fonts.handwritingSemiBold },
   // record
+  recordRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   recordLine: { fontSize: 15, color: Colors.ink, fontFamily: Fonts.handwriting, marginBottom: 10 },
   bold: { fontFamily: Fonts.handwritingSemiBold },
   bar: { height: 10, borderRadius: 5, backgroundColor: Hairline.track, overflow: "hidden" },
