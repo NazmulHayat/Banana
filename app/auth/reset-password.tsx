@@ -115,7 +115,7 @@ export default function ResetPasswordScreen() {
         if (!mountedRef.current) return;
         setStage("manual");
         setMessage(
-          "That link has expired or has already been used. Send yourself a new one, or enter the code from the email.",
+          "That link has expired or has already been used. Send yourself a new one.",
         );
         return;
       }
@@ -141,7 +141,7 @@ export default function ResetPasswordScreen() {
         if (!mountedRef.current) return;
         setStage("manual");
         setMessage(
-          "That link didn't work. It may have expired — send yourself a new one, or enter the code from the email.",
+          "That link didn't work. It may have expired — send yourself a new one.",
         );
         return;
       }
@@ -186,7 +186,9 @@ export default function ResetPasswordScreen() {
     const cleanEmail = email.trim().toLowerCase();
     const cleanCode = code.trim();
     if (!cleanEmail || !cleanCode) {
-      setMessage("Enter the email you signed up with and the code you were sent.");
+      setMessage(
+        "Enter the email you signed up with, plus the code from your reset email if it included one.",
+      );
       return;
     }
     setVerifying(true);
