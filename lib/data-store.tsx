@@ -14,6 +14,14 @@ import React, {
 import { AppState } from "react-native";
 import { toDayKey, todayKey } from "./dates";
 import {
+  AccountWriteErrors,
+  checkUsername as dbCheckUsername,
+  getAccount as dbGetAccount,
+  normalizeUsername,
+  setAvatarPath as dbSetAvatarPath,
+  updateUsername as dbUpdateUsername,
+} from "./db/accounts";
+import {
   deleteEntry as dbDeleteEntry,
   getCachedEntriesForMonth,
   getEntriesForMonths,
@@ -47,14 +55,15 @@ import {
 } from "./db/pending-writes";
 import { DateFormats } from "./db/schema";
 import type {
+  Account,
   DailyEntry,
   Habit,
   HabitLog,
   MonthRef,
+  UsernameCheck,
   WriteOutcome,
 } from "./db/types";
 import { UnrecoverableWriteError } from "./db/types";
-import { supabase } from "./supabase";
 
 // ============================================================================
 // Write outcomes (NFR-1)
@@ -73,8 +82,22 @@ const FAILED_REASONS: Record<string, string> = {
   "Encryption is locked": "Your data is locked. Unlock the app and try again.",
   "Not signed in": "You're signed out. Sign in again to save.",
   "Could not read that day's entries": "That entry couldn't be read, so it can't be changed.",
+  [AccountWriteErrors.INVALID_USERNAME]:
+    "That username won't work — 3 to 20 characters, lowercase letters, numbers and underscores.",
+  [AccountWriteErrors.TAKEN_USERNAME]:
+    "That username is already taken. Try another one.",
 };
 const GENERIC_FAILURE = "Couldn't save that. Please try again.";
+
+// Account writes (username, avatar) are NOT queued for later like entries and
+// habit logs are, and that's deliberate: the user is sitting on the edit
+// screen watching, a username is claimed on a first-come unique index (a
+// replay hours later could take a name they've since abandoned, or fail
+// against a name someone else now holds), and an avatar upload has already
+// touched Storage. So a server/network failure is reported straight back —
+// nothing was changed, try again — instead of pretending it's parked.
+const ACCOUNT_OFFLINE_FAILURE =
+  "We couldn't reach the server, so nothing changed. Check your connection and try again.";
 
 // How far back a habit-log purge sweeps when we know neither the habit's
 // creation date nor the account's (a queued purge from an older build). Days
@@ -84,6 +107,24 @@ const FALLBACK_PURGE_DAYS = 366 * 5;
 function failed(error: unknown): WriteOutcome {
   const message = error instanceof Error ? error.message : "";
   return { status: "failed", reason: FAILED_REASONS[message] ?? GENERIC_FAILURE };
+}
+
+/**
+ * Outcome for an account write. An `UnrecoverableWriteError` carries one of
+ * our authored messages (taken/invalid username) and maps to its user-safe
+ * copy; anything else is a server/network error whose message we must never
+ * show, so it becomes the generic offline line.
+ */
+function accountFailure(error: unknown): WriteOutcome {
+  if (error instanceof UnrecoverableWriteError) return failed(error);
+  // Log the message only in dev, and never the value that failed.
+  if (__DEV__) {
+    console.warn(
+      "[DataStore] account write failed:",
+      error instanceof Error ? error.message : error,
+    );
+  }
+  return { status: "failed", reason: ACCOUNT_OFFLINE_FAILURE };
 }
 
 /** `failed` beats `queued` beats `synced` when one action does several writes. */
@@ -221,12 +262,13 @@ function singleFlight<T>(
   return started;
 }
 
-// Profile data from accounts table (not the encrypted ProfileRow)
-interface ProfileData {
-  id: string;
-  username: string | null;
-  created_at: string;
-}
+/**
+ * Profile data from the `accounts` table (not the encrypted `profiles` row).
+ * The DTO itself lives in lib/db/types as `Account`; this alias keeps the name
+ * the store has exposed since v1 — `profile.username` / `profile.created_at`
+ * are unchanged, `profile.avatarPath` is the new field.
+ */
+export type ProfileData = Account;
 
 /** What a windowed read reports back: the rows, and how many months failed. */
 interface WindowResult<T> {
@@ -332,6 +374,31 @@ interface DataActions {
     date: string,
     currentCompleted?: boolean,
   ) => Promise<WriteOutcome>;
+
+  // Account edits (profile screen). Like every other write they never throw;
+  // unlike the others they are never queued — see ACCOUNT_OFFLINE_FAILURE.
+  /**
+   * Is this username free? Debounced by the caller. `invalid` carries the rule
+   * that failed, `unknown` means we couldn't ask (offline) — which the UI must
+   * show as "couldn't check", not as "taken".
+   */
+  checkUsername: (candidate: string) => Promise<UsernameCheck>;
+  /**
+   * Claim a new username. Validated against `UsernameRules`, checked against
+   * `username_available`, and still guarded against the unique-index race if
+   * somebody claims it in between.
+   */
+  changeUsername: (candidate: string) => Promise<WriteOutcome>;
+  /**
+   * Point the account at an uploaded avatar object, or `null` to clear it.
+   *
+   * Storage is the CALLER's half, exactly as it is for entry photos (D8, see
+   * app/(tabs)/index.tsx): upload with `uploadAvatar` first, call this, then
+   * `discardAvatar` the object that is now unreferenced — the new one if this
+   * failed, the old one if it succeeded. The store owns the row, not the
+   * bucket, so lib/media never has to be loaded to save a habit.
+   */
+  setAvatarPath: (path: string | null) => Promise<WriteOutcome>;
   /** Retry the queued writes now (also runs on init and on app-foreground). */
   flushPendingWrites: () => Promise<void>;
 
@@ -780,28 +847,19 @@ export function DataProvider({ children, session }: DataProviderProps) {
 
     setProfileLoading(true);
     try {
-      const { data, error } = await supabase
-        .from("accounts")
-        .select("id, username, created_at")
-        .eq("id", userId)
-        .single();
+      // lib/db owns the query + the row → DTO mapping (the store used to
+      // select from `accounts` itself, the one place it reached past the data
+      // layer). A failed read returns null and we keep what we already hold.
+      const account = await dbGetAccount(userId);
+      // Null means the read failed (or the row isn't there yet): keep whatever
+      // we already hold and stay un-ready, exactly as before.
+      if (!account) return;
 
-      if (error) {
-        if (__DEV__) console.warn("[DataStore] Profile fetch error:", error.message);
-        return;
-      }
-
-      if (data) {
-        setProfile({
-          id: data.id,
-          username: data.username,
-          created_at: data.created_at,
-        });
-        // The account's first day floors every habit-log purge sweep.
-        const created = new Date(data.created_at as string);
-        if (!Number.isNaN(created.getTime())) {
-          accountCreatedRef.current = toDayKey(created);
-        }
+      setProfile(account);
+      // The account's first day floors every habit-log purge sweep.
+      const created = new Date(account.created_at);
+      if (!Number.isNaN(created.getTime())) {
+        accountCreatedRef.current = toDayKey(created);
       }
       setProfileReady(true);
     } finally {
@@ -1092,6 +1150,55 @@ export function DataProvider({ children, session }: DataProviderProps) {
   );
 
   // ============================================================================
+  // Account edits — username + avatar (profile edit screen)
+  // ============================================================================
+  // These are NOT optimistic: the server can refuse a username (someone else
+  // holds it) and an avatar has to exist in Storage before the row can point
+  // at it. Each one applies the row the server actually returned, so state can
+  // never claim a change the account didn't get.
+  const checkUsernameAvailable = useCallback(
+    async (candidate: string): Promise<UsernameCheck> => {
+      const next = normalizeUsername(candidate);
+      // Their own name reads as "taken" against the RPC — it is, by them.
+      // Report it as fine so typing back to the current name isn't an error.
+      if (profile && profile.username === next) return { status: "available" };
+      return dbCheckUsername(next);
+    },
+    [profile],
+  );
+
+  const changeUsername = useCallback(
+    async (candidate: string): Promise<WriteOutcome> => {
+      if (!session) return failed(new UnrecoverableWriteError("Not signed in"));
+      const next = normalizeUsername(candidate);
+      if (profile && profile.username === next) return SYNCED; // nothing to do
+
+      try {
+        setProfile(await dbUpdateUsername(next, session.user.id));
+        return SYNCED;
+      } catch (e) {
+        return accountFailure(e);
+      }
+    },
+    [session, profile],
+  );
+
+  const setAvatarPath = useCallback(
+    async (path: string | null): Promise<WriteOutcome> => {
+      if (!session) return failed(new UnrecoverableWriteError("Not signed in"));
+      if (!profile && path === null) return SYNCED; // nothing to clear
+
+      try {
+        setProfile(await dbSetAvatarPath(path, session.user.id));
+        return SYNCED;
+      } catch (e) {
+        return accountFailure(e);
+      }
+    },
+    [session, profile],
+  );
+
+  // ============================================================================
   // Pending-writes flush (NFR-1: no silent data loss)
   // ============================================================================
   // Replays each queued write through its matching lib/db call. Every one is
@@ -1277,6 +1384,9 @@ export function DataProvider({ children, session }: DataProviderProps) {
       deleteEntry,
       saveHabits,
       toggleHabitLog,
+      checkUsername: checkUsernameAvailable,
+      changeUsername,
+      setAvatarPath,
       flushPendingWrites: flushQueue,
       clearAll,
     }),
@@ -1311,6 +1421,9 @@ export function DataProvider({ children, session }: DataProviderProps) {
       deleteEntry,
       saveHabits,
       toggleHabitLog,
+      checkUsernameAvailable,
+      changeUsername,
+      setAvatarPath,
       flushQueue,
       clearAll,
     ],

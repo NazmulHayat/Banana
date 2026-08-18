@@ -44,19 +44,8 @@ function guessExt(uri: string): string {
   return "jpg";
 }
 
-/**
- * Upload a local image (file:// URI from ImagePicker) to the user's private bucket.
- * Returns the object path that should be stored in the encrypted entry payload.
- */
-export async function uploadImage(
-  localUri: string,
-  entryId: string,
-  userId: string,
-): Promise<string> {
-  const ext = guessExt(localUri);
-  const mediaId = generateMediaId();
-  const objectPath = `${userId}/${entryId}/${mediaId}.${ext}`;
-
+/** Put one local file at an exact object path. Throws on refusal. */
+async function putObject(localUri: string, objectPath: string): Promise<void> {
   // Read the local file as raw bytes (Expo SDK 54+ File API)
   const bytes = await new File(localUri).bytes();
 
@@ -70,6 +59,22 @@ export async function uploadImage(
   if (error) {
     throw new Error(`Image upload failed: ${error.message}`);
   }
+}
+
+/**
+ * Upload a local image (file:// URI from ImagePicker) to the user's private bucket.
+ * Returns the object path that should be stored in the encrypted entry payload.
+ */
+export async function uploadImage(
+  localUri: string,
+  entryId: string,
+  userId: string,
+): Promise<string> {
+  const ext = guessExt(localUri);
+  const mediaId = generateMediaId();
+  const objectPath = `${userId}/${entryId}/${mediaId}.${ext}`;
+
+  await putObject(localUri, objectPath);
 
   return objectPath;
 }
@@ -210,6 +215,67 @@ export async function uploadEntryImages(
           : "Your photos couldn't be uploaded. Check your connection and try again.",
     };
   }
+}
+
+// ----------------------------------------------------------------------------
+// Avatars
+// ----------------------------------------------------------------------------
+// A profile photo is one object at "<userId>/avatar/<media_id>.<ext>" — under
+// the same user prefix as entry photos, so the storage RLS policies
+// (`name like auth.uid()::text || '/%'`) already cover it, `getImageUrl` signs
+// it with the same cache, and `clearUserMedia` sweeps it on account deletion
+// (its root listing sees the "avatar" folder like any entry folder and pages
+// through it). Nothing avatar-specific is needed in any of those paths.
+//
+// The path is recorded in `accounts.avatar_path` by lib/db/accounts.ts — this
+// module never touches the database, so replacing an avatar is a two-step
+// dance the caller (the data store) sequences: upload → record → delete the
+// object it replaced.
+const AVATAR_FOLDER = "avatar";
+
+/** Result of uploading a new avatar. Mirrors `UploadEntryImagesResult`. */
+export type UploadAvatarResult =
+  | { status: "ok"; path: string }
+  | { status: "failed"; reason: string };
+
+/**
+ * Upload a new avatar object. Never throws — returns a user-safe `reason`, so
+ * the edit screen can keep the picked photo on screen and offer a retry.
+ *
+ * A fresh media id every time (rather than a fixed "avatar.jpg") keeps the
+ * write non-destructive: the old object is still there if recording the new
+ * path fails, and signed URLs of the old one don't suddenly serve new bytes.
+ */
+export async function uploadAvatar(
+  localUri: string,
+  userId: string,
+): Promise<UploadAvatarResult> {
+  const objectPath = `${userId}/${AVATAR_FOLDER}/${generateMediaId()}.${guessExt(localUri)}`;
+  try {
+    await putObject(localUri, objectPath);
+    return { status: "ok", path: objectPath };
+  } catch (err) {
+    // Never log the path — it carries the user id.
+    if (__DEV__) console.warn("[media] avatar upload failed:", err);
+    return {
+      status: "failed",
+      reason:
+        "Your photo couldn't be uploaded. Check your connection and try again.",
+    };
+  }
+}
+
+/**
+ * Best-effort removal of one avatar object — the previous photo once the new
+ * one is recorded, or the new one when recording it failed (rollback). Same
+ * swallow-everything contract as `discardEntryImages`, which it delegates to:
+ * the caller must surface the ORIGINAL outcome, not a cleanup error.
+ */
+export async function discardAvatar(
+  objectPath: string | null | undefined,
+): Promise<void> {
+  if (!objectPath) return;
+  await discardEntryImages([objectPath]);
 }
 
 export function clearMediaCache(): void {
