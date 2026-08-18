@@ -63,7 +63,7 @@ export async function loadHabitsFromStorage(
  * against whatever the server currently has, so it is idempotent.
  *
  * `userId` comes from the caller's session — this layer no longer re-reads the
- * session on every call (D19).
+ * session on every call.
  */
 export async function saveHabits(
   habits: Habit[],
@@ -119,7 +119,7 @@ export async function saveHabits(
  * Fetch habits from the network. The cache tiers are the caller's short-circuit
  * (`getCachedHabits` / `loadHabitsFromStorage`); this is the network tier only.
  *
- * Returns a `ReadResult` (D16): `ok: false` means the read never produced data
+ * Returns a `ReadResult`: `ok: false` means the read never produced data
  * (offline, server error, locked keyring) and the caller must keep whatever it
  * already had. Degrading to `[]` here is what let one failed pull-to-refresh
  * overwrite the cached habit list with nothing. An empty list under `ok: true`

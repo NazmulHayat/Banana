@@ -1,5 +1,5 @@
-// Tests for the lib/db write + read contract (D5/D6/D11/D12/D16/D17/D20/D21)
-// and for the pending-writes replay wiring in lib/data-store (D24/D25).
+// Tests for the lib/db write + read contract (D5/D6/D11/D12)
+// and for the pending-writes replay wiring in lib/data-store.
 //
 // What's covered, all headless:
 //   - writes THROW on a server error instead of queueing their own retry (D5) —
@@ -10,14 +10,14 @@
 //     back to created_at order for rows saved before positions existed (D11);
 //   - deleting a habit purges that habit's logs, and only that habit's (D12),
 //     by FORWARD-COMPUTING day buckets instead of downloading and decrypting
-//     the user's whole log history (D17), and sweeps the on-disk months too so
-//     a cold start can't resurrect them (D21);
+//     the user's whole log history, and sweeps the on-disk months too so
+//     a cold start can't resurrect them;
 //   - a failed READ reports failure and leaves every cache tier untouched
-//     (D16) — it used to degrade to `[]`, which the store then wrote over the
+//     — it used to degrade to `[]`, which the store then wrote over the
 //     user's month;
-//   - a window of months is ONE query, regrouped by decrypted date (D20);
-//   - a replayed queued write is applied back to store state (D24) and the
-//     queue survives sign-out (D25).
+//   - a window of months is ONE query, regrouped by decrypted date;
+//   - a replayed queued write is applied back to store state and the
+//     queue survives sign-out.
 //
 // Module handling: lib/db/* statically imports ../supabase (pulls in
 // react-native) and ../crypto (native random). Neither loads headless, so both
@@ -478,9 +478,9 @@ test("deleting an entry the server never had is a clean no-op", async () => {
   );
 });
 
-// ---- habit deletion purges its logs (D12), forward-computed (D17) ----------
+// ---- habit deletion purges its logs (D12), forward-computed ----------
 
-suite("habit deletion purges its logs (D12/D17)");
+suite("habit deletion purges its logs (D12)");
 
 test("the sweep deletes forward-computed buckets and reads nothing", async () => {
   reset();
@@ -555,9 +555,9 @@ test("enumeratePurgeDays is inclusive and clamps an absurd range", () => {
   );
 });
 
-// ---- the purge sweeps the disk too (D21) -----------------------------------
+// ---- the purge sweeps the disk too -----------------------------------
 
-suite("habit deletion clears cached logs on disk (D21)");
+suite("habit deletion clears cached logs on disk");
 
 test("a month that only exists in AsyncStorage loses the habit's logs", async () => {
   reset();
@@ -614,9 +614,9 @@ test("another user's cached months are never touched", async () => {
   );
 });
 
-// ---- a failed read must not destroy the cache (D16) ------------------------
+// ---- a failed read must not destroy the cache ------------------------
 
-suite("a failed read reports failure and keeps the cache (D16)");
+suite("a failed read reports failure and keeps the cache");
 
 test("habits: the cached list survives a server error", async () => {
   reset();
@@ -726,9 +726,9 @@ test("one undecryptable row is skipped, the read still succeeds", async () => {
   );
 });
 
-// ---- a window of months is one query (D20) ---------------------------------
+// ---- a window of months is one query ---------------------------------
 
-suite("a window of months is ONE query (D20)");
+suite("a window of months is ONE query");
 
 test("twelve months of logs cost one round trip, grouped by decrypted date", async () => {
   reset();
@@ -787,9 +787,9 @@ test("the window filters on month buckets the client computed", async () => {
   );
 });
 
-// ---- replayed writes reach store state (D24) -------------------------------
+// ---- replayed writes reach store state -------------------------------
 
-suite("a replayed write is applied back to state (D24)");
+suite("a replayed write is applied back to state");
 
 /** Records what the store would have applied, without mounting React. */
 function recordingHandlers() {
@@ -922,9 +922,9 @@ test("a purge queued without a range replays on the fallback range", async () =>
   );
 });
 
-// ---- the queue outlives a sign-out (D25) -----------------------------------
+// ---- the queue outlives a sign-out -----------------------------------
 
-suite("queued writes survive logout (D25)");
+suite("queued writes survive logout");
 
 test("clearing the in-memory caches (sign-out) leaves the queue intact", async () => {
   reset();

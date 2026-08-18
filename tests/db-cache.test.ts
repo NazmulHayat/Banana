@@ -241,12 +241,12 @@ test("corrupt storage degrades to null, never throws", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// The optimistic-write helpers the data store calls (D23). They used to run
+// The optimistic-write helpers the data store calls. They used to run
 // INSIDE a setState updater, which StrictMode double-fires — and when the month
 // wasn't loaded they replaced the whole cached month with a one-item array,
 // hiding everything else in it. They are pure cache mutators now, and a month
 // that isn't cached is left alone.
-suite("optimistic cache writes never invent a month (D23)");
+suite("optimistic cache writes never invent a month");
 
 const logB = { habitId: "h2", date: "2026-06-17", completed: true };
 const entryB = {

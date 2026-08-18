@@ -87,7 +87,7 @@ export type WriteOutcome =
   | { status: "failed"; reason: string };
 
 /**
- * The result of a `lib/db` READ (D16). Reads used to degrade to `[]` on a
+ * The result of a `lib/db` READ. Reads used to degrade to `[]` on a
  * server error, which the store then wrote into the in-memory Map AND
  * AsyncStorage — so one failed pull-to-refresh while offline wiped the month
  * off the device and blanked the UI. A read now says which of the two it is:
@@ -127,7 +127,7 @@ export interface EntryRef {
 
 /**
  * Identifies the habit whose logs a queued purge must remove (D12), plus the
- * day range to sweep (D17). `day_bucket` is HMAC(masterKey, habitlog:<id>:<date>)
+ * day range to sweep. `day_bucket` is HMAC(masterKey, habitlog:<id>:<date>)
  * and therefore forward-computable, so the purge enumerates days instead of
  * downloading and decrypting the user's entire log history to find them.
  * `from`/`to` are local day keys ("YYYY-MM-DD"); both are optional so a purge

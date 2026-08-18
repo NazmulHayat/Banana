@@ -23,7 +23,7 @@ import { UnrecoverableWriteError } from "./types";
 // ----------------------------------------------------------------------------
 // Caches
 // ----------------------------------------------------------------------------
-// This module owns BOTH cache tiers for entries (D18): every write through here
+// This module owns BOTH cache tiers for entries: every write through here
 // updates the in-memory Map and AsyncStorage together, and the data store never
 // writes them a second time. One owner, one JSON.stringify per change.
 const entriesMonthCache = new Map<string, DailyEntry[]>(); // userId:YYYY-MM
@@ -170,7 +170,7 @@ function entriesToPayload(date: string, entries: DailyEntry[]): EntryPayload {
  * Multiple entries per day are merged into one encrypted row.
  *
  * `userId` comes from the caller's session (the data store already holds it) —
- * this layer no longer re-reads the session on every call (D19).
+ * this layer no longer re-reads the session on every call.
  *
  * Throws on failure — an `UnrecoverableWriteError` when the write can never
  * land as-is (locked, signed out), a plain `Error` when the server/network is
@@ -335,7 +335,7 @@ interface EntryRow {
 
 /**
  * Every row for the given month buckets, paged so a server-side row cap can
- * never silently truncate the window (D20). Ordered by `day_bucket` — an
+ * never silently truncate the window. Ordered by `day_bucket` — an
  * opaque HMAC, but a stable one, which is all `.range()` paging needs.
  */
 async function fetchByMonthBuckets(
@@ -360,13 +360,13 @@ async function fetchByMonthBuckets(
 }
 
 /**
- * Read a whole window of months in ONE round trip (D20). The client computes
+ * Read a whole window of months in ONE round trip. The client computes
  * the month buckets, so the server still learns nothing it didn't already
  * store; rows are regrouped locally by their decrypted date.
  *
  * Every requested month is present in the result — a month with no rows maps
  * to `[]`, which is a real "this month is empty" answer and is cached as such.
- * A transport failure returns `ok: false` and caches NOTHING (D16).
+ * A transport failure returns `ok: false` and caches NOTHING.
  */
 export async function getEntriesForMonths(
   months: MonthRef[],

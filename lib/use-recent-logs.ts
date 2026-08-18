@@ -3,7 +3,7 @@
 // through the store (screens never touch lib/db), both degrade to whatever
 // months resolved, and both are cache-first unless forced.
 //
-// One window = ONE round trip (D20). These used to call the store once per
+// One window = ONE round trip. These used to call the store once per
 // month — twelve queries and twelve session reads for a single screen mount —
 // and their `failed` counter could never leave 0, because a failed read
 // resolved with `[]` instead of rejecting. The store now reports the months it

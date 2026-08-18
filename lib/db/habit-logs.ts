@@ -23,7 +23,7 @@ import { UnrecoverableWriteError } from "./types";
 
 // Storage key is a protocol constant, not branding — renaming orphans caches.
 const LOGS_STORAGE_KEY = "banana_habit_logs_v2";
-// This module owns both cache tiers for habit logs (D18) — the store never
+// This module owns both cache tiers for habit logs — the store never
 // writes them a second time.
 const logsMonthCache = new Map<string, HabitLog[]>(); // userId:YYYY-MM
 
@@ -97,7 +97,7 @@ export function upsertHabitLogInCache(userId: string, log: HabitLog): void {
 }
 
 /**
- * Drop every cached log belonging to one habit, across BOTH tiers (D12/D21).
+ * Drop every cached log belonging to one habit, across BOTH tiers (D12).
  *
  * The in-memory pass alone used to leave AsyncStorage-only months untouched —
  * months this session never loaded kept the deleted habit's logs on disk and
@@ -173,7 +173,7 @@ export async function loadHabitLogsFromStorage(
  * Write an exact habit-log state (idempotent upsert — sets `completed` to the
  * given value, never toggles). Used for the normal write and by the data-store
  * flush executor when replaying a queued `habitLog`. `userId` comes from the
- * caller's session (D19). Throws on failure; the caller queues the retry
+ * caller's session. Throws on failure; the caller queues the retry
  * (never this layer — D5).
  */
 export async function upsertHabitLog(
@@ -253,7 +253,7 @@ export function enumeratePurgeDays(from: string, to: string): string[] {
  *
  * `day_bucket` is HMAC(masterKey, "habitlog:<habitId>:<date>"), so the server
  * cannot filter by habit for us — but the bucket is FORWARD-computable, and
- * that is the whole trick (D17). This used to select every log row the user
+ * that is the whole trick. This used to select every log row the user
  * had (unbounded, no `.range()` — so a server row cap could truncate it and
  * orphan logs with no error), decrypt all of them to find the matching ones,
  * and do that once per deleted habit. Now we enumerate the candidate days
@@ -303,7 +303,7 @@ interface HabitLogRow {
 
 /**
  * Every row for the given month buckets, paged so a server-side row cap can
- * never silently truncate the window (D20).
+ * never silently truncate the window.
  */
 async function fetchByMonthBuckets(
   userId: string,
@@ -327,13 +327,13 @@ async function fetchByMonthBuckets(
 }
 
 /**
- * Read a whole window of months in ONE round trip (D20) — the analysis screens
+ * Read a whole window of months in ONE round trip — the analysis screens
  * asked for twelve months as twelve queries. The client computes the month
  * buckets, so the server learns nothing new; rows are regrouped locally by
  * their decrypted date.
  *
  * Every requested month is present in the result (`[]` when genuinely empty).
- * A transport failure returns `ok: false` and caches NOTHING (D16).
+ * A transport failure returns `ok: false` and caches NOTHING.
  */
 export async function getHabitLogsForMonths(
   months: MonthRef[],

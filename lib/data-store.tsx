@@ -97,7 +97,7 @@ function worstOutcome(outcomes: WriteOutcome[]): WriteOutcome {
 // Value equality — the guard that stops a no-op read from re-rendering the app
 // ============================================================================
 // A read that returns exactly what we already hold must NOT produce a new state
-// identity (D22). Screens derive effect dependencies from store values, so an
+// identity. Screens derive effect dependencies from store values, so an
 // identity change on every refresh is what turned "load this month" into an
 // endless load → render → load loop.
 function sameList<T>(a: T[], b: T[], eq: (x: T, y: T) => boolean): boolean {
@@ -134,7 +134,7 @@ function groupByDay(logs: HabitLog[]): Map<string, HabitLog[]> {
 }
 
 // ============================================================================
-// Pending-writes replay executor (NFR-1 / D24)
+// Pending-writes replay executor (NFR-1)
 // ============================================================================
 /**
  * What a replayed write has to do to LOCAL state once the server has taken it.
@@ -150,7 +150,7 @@ export interface FlushHandlers {
   onHabitsSaved: (habits: Habit[]) => void;
   onHabitLogSaved: (log: HabitLog) => void;
   onHabitLogsPurged: (habitId: string) => void;
-  /** Range for a purge queued before ranges were recorded (D17 back-compat). */
+  /** Range for a purge queued before ranges were recorded (back-compat). */
   fallbackPurgeRange: () => HabitLogPurgeRange;
 }
 
@@ -232,7 +232,7 @@ interface ProfileData {
 interface WindowResult<T> {
   data: T[];
   /**
-   * Months whose network read failed outright (D16). Anything already on the
+   * Months whose network read failed outright. Anything already on the
    * device is still in `data` — a screen uses this to say "showing what's saved
    * on this device", not to blank itself.
    */
@@ -289,7 +289,7 @@ interface DataActions {
     opts?: { force?: boolean },
   ) => Promise<DailyEntry[]>;
   /**
-   * Load a whole window of months in ONE round trip (D20) — the analysis
+   * Load a whole window of months in ONE round trip — the analysis
    * screens want twelve. Months already cached short-circuit; the rest are
    * fetched together. Reports how many months failed so the caller can say so.
    */
@@ -421,7 +421,7 @@ export function DataProvider({ children, session }: DataProviderProps) {
   // (which would change every refresh callback's identity on every update).
   const habitLogsRef = useRef<Map<string, HabitLog[]>>(new Map());
   const entriesRef = useRef<Map<string, DailyEntry[]>>(new Map());
-  // The account's creation day — the floor for a habit-log purge sweep (D17).
+  // The account's creation day — the floor for a habit-log purge sweep.
   const accountCreatedRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -494,7 +494,7 @@ export function DataProvider({ children, session }: DataProviderProps) {
   // Fetch Habit Logs (one month or a whole window — same path)
   // ============================================================================
   // Applies a batch of months in ONE state update, and only for the months that
-  // actually changed (D22).
+  // actually changed.
   const applyLogMonths = useCallback(
     (userId: string, byMonth: Map<string, HabitLog[]>) => {
       if (byMonth.size === 0) return;
@@ -589,7 +589,7 @@ export function DataProvider({ children, session }: DataProviderProps) {
             missing.push(m);
           }
 
-          // Tier 3 — network: every remaining month in ONE query (D20).
+          // Tier 3 — network: every remaining month in ONE query.
           if (missing.length > 0) {
             const ids = missing
               .map((m) => getMonthKey(m.year, m.month))
@@ -606,7 +606,7 @@ export function DataProvider({ children, session }: DataProviderProps) {
                 fromNetwork.set(ym, logs);
               });
             } else {
-              // D16: the read never happened. Cache nothing, apply nothing —
+              // The read never happened. Cache nothing, apply nothing —
               // the device keeps whatever it already had.
               failedMonths = missing.length;
             }
@@ -719,7 +719,7 @@ export function DataProvider({ children, session }: DataProviderProps) {
             missing.push(m);
           }
 
-          // Tier 3 — network, one query for the whole window (D20).
+          // Tier 3 — network, one query for the whole window.
           if (missing.length > 0) {
             const ids = missing
               .map((m) => getMonthKey(m.year, m.month))
@@ -797,7 +797,7 @@ export function DataProvider({ children, session }: DataProviderProps) {
           username: data.username,
           created_at: data.created_at,
         });
-        // The account's first day floors every habit-log purge sweep (D17).
+        // The account's first day floors every habit-log purge sweep.
         const created = new Date(data.created_at as string);
         if (!Number.isNaN(created.getTime())) {
           accountCreatedRef.current = toDayKey(created);
@@ -831,7 +831,7 @@ export function DataProvider({ children, session }: DataProviderProps) {
   // ============================================================================
   // Local Updates (Optimistic UI)
   // ============================================================================
-  // The lib/db cache is written HERE, outside the setState updater (D23):
+  // The lib/db cache is written HERE, outside the setState updater:
   // updaters must be pure (StrictMode double-invokes them), and the db helpers
   // only touch a month they already hold, so an optimistic edit can never
   // replace an unloaded month with a one-item array.
@@ -994,7 +994,7 @@ export function DataProvider({ children, session }: DataProviderProps) {
   }, []);
 
   /**
-   * The day range a habit-log purge has to sweep (D17). `day_bucket` is
+   * The day range a habit-log purge has to sweep. `day_bucket` is
    * forward-computable, so the purge enumerates days instead of downloading
    * every log row: start at the habit's creation day, floored by the account's
    * (a habit can be ticked on days before it was created, and the account's
@@ -1101,7 +1101,7 @@ export function DataProvider({ children, session }: DataProviderProps) {
   // enqueue, or the queue gets rewritten with a fresh id/timestamp on every
   // flush instead of retried (D5). The count is refreshed after the flush.
   //
-  // A SUCCESSFUL replay is also re-applied to store state (D24). Init order is
+  // A SUCCESSFUL replay is also re-applied to store state. Init order is
   // reads-then-flush, so the server's answer (which predates the replay) has
   // already overwritten the optimistic value: without this the UI showed a
   // habit un-ticked for the rest of the session while the server, the disk and
@@ -1151,7 +1151,7 @@ export function DataProvider({ children, session }: DataProviderProps) {
   // Clear on Logout
   // ============================================================================
   const clearAll = useCallback(() => {
-    // The pending-writes queue is NOT cleared here (D25). Logging out leaves
+    // The pending-writes queue is NOT cleared here. Logging out leaves
     // the AsyncStorage month caches on the device by design, so dropping the
     // queue would destroy the unsynced write while keeping its optimistic value
     // in the cache — the two would diverge permanently on the next sign-in.
@@ -1206,7 +1206,7 @@ export function DataProvider({ children, session }: DataProviderProps) {
 
       // NFR-1: replay any writes that were queued in a previous session. The
       // executor re-applies each replayed write to state, so a toggle the
-      // server hadn't seen when the reads above ran isn't lost (D24).
+      // server hadn't seen when the reads above ran isn't lost.
       await flushQueue();
     }
 
