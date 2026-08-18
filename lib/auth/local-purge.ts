@@ -15,6 +15,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { keyring } from "../crypto";
 import { clearEntriesCache, clearHabitLogsCache, clearHabitsCache, clearPendingWrites } from "../db";
 import { clearMediaCache } from "../media";
+import { clearReminder } from "../reminder";
 
 // Must match the prefixes in lib/db/*. These are protocol constants — the
 // `banana_*_v2` names key every cached row already on disk and are never
@@ -45,6 +46,14 @@ export async function purgeLocalUserData(userId: string): Promise<void> {
     await clearPendingWrites(userId);
   } catch {
     // clearPendingWrites already swallows storage errors; belt and braces.
+  }
+
+  // The daily reminder is device-local, not user-scoped, so it has to be
+  // unscheduled here — otherwise a deleted account keeps getting nudged.
+  try {
+    await clearReminder();
+  } catch (e) {
+    if (__DEV__) console.warn("[purge] reminder clear failed:", e);
   }
 
   try {
