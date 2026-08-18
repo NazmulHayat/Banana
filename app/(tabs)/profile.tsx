@@ -335,10 +335,23 @@ export default function ProfileScreen() {
             <ProfileAvatar
               path={avatarPath}
               initial={avatarInitial}
-              pending={loading}
+              pending={loading && !dataStore.profileFailed}
             />
           </PressableScale>
-          {loading ? (
+          {loading && dataStore.profileFailed ? (
+            // A failed read used to leave this spinning forever. Say so, and
+            // give them a way out.
+            <PressableScale
+              onPress={() => void dataStore.refreshProfile()}
+              accessibilityRole="button"
+              accessibilityLabel="Retry loading your profile"
+              style={styles.userLoading}
+            >
+              <Text style={styles.loadingText}>
+                Couldn&apos;t load your profile · tap to retry
+              </Text>
+            </PressableScale>
+          ) : loading ? (
             <View style={styles.userLoading}>
               <ActivityIndicator size="small" color={Colors.ink} />
               <Text style={styles.loadingText}>Loading profile...</Text>

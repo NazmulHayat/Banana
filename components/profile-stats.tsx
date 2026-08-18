@@ -2,7 +2,7 @@ import { InkIcon } from "@/components/ui/ink-icon";
 import { PaperCard } from "@/components/ui/paper-card";
 import { PressableScale } from "@/components/ui/pressable-scale";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Colors, Fonts, Hairline, Scrim } from "@/constants/theme";
+import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { todayKey } from "@/lib/dates";
 import { type Habit } from "@/lib/db";
 import {
@@ -263,10 +263,12 @@ const styles = StyleSheet.create({
   metrics: { flex: 1, gap: 2 },
   metric: { flexDirection: "row", alignItems: "baseline", gap: 6 },
   metricValue: {
-    fontSize: 15,
-    color: Colors.ink,
+    // Accent on the figures only — the numbers are what the eye should catch,
+    // the units stay quiet in secondary ink.
+    fontSize: 16,
+    color: Colors.accent,
     fontFamily: Fonts.handwritingSemiBold,
-    minWidth: 22,
+    minWidth: 24,
     textAlign: "right",
   },
   metricLabel: {
@@ -283,13 +285,18 @@ const styles = StyleSheet.create({
     marginTop: 16,
   },
   action: {
+    // Same surface language as the Manage rows — card fill, ink hairline —
+    // so it reads as one of the app's category rows rather than a stray
+    // accent-washed button.
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    height: 44,
+    height: 48,
     paddingHorizontal: 14,
     borderRadius: 12,
-    backgroundColor: Scrim.accent,
+    backgroundColor: Colors.card,
+    borderWidth: 1,
+    borderColor: Hairline.base,
     marginTop: 16,
   },
   actionLabel: {

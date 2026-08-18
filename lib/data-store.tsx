@@ -306,6 +306,9 @@ interface DataState {
   profile: ProfileData | null;
   profileLoading: boolean;
   profileReady: boolean;
+  /** True when the last profile read failed outright — lets the UI offer a
+      retry instead of spinning forever. */
+  profileFailed: boolean;
 
   // Overall state
   initialLoadComplete: boolean;
@@ -452,6 +455,7 @@ export function DataProvider({ children, session }: DataProviderProps) {
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileReady, setProfileReady] = useState(false);
+  const [profileFailed, setProfileFailed] = useState(false);
 
   const [initialLoadComplete, setInitialLoadComplete] = useState(false);
 
@@ -851,10 +855,15 @@ export function DataProvider({ children, session }: DataProviderProps) {
       // select from `accounts` itself, the one place it reached past the data
       // layer). A failed read returns null and we keep what we already hold.
       const account = await dbGetAccount(userId);
-      // Null means the read failed (or the row isn't there yet): keep whatever
-      // we already hold and stay un-ready, exactly as before.
-      if (!account) return;
+      // Null means the read failed (or the row isn't there yet). Keep whatever
+      // we already hold, but flag it so the UI can offer a retry rather than
+      // showing a spinner that never resolves.
+      if (!account) {
+        setProfileFailed(true);
+        return;
+      }
 
+      setProfileFailed(false);
       setProfile(account);
       // The account's first day floors every habit-log purge sweep.
       const created = new Date(account.created_at);
@@ -1365,6 +1374,7 @@ export function DataProvider({ children, session }: DataProviderProps) {
       profile,
       profileLoading,
       profileReady,
+      profileFailed,
       initialLoadComplete,
       pendingWriteCount,
 
@@ -1404,6 +1414,7 @@ export function DataProvider({ children, session }: DataProviderProps) {
       profile,
       profileLoading,
       profileReady,
+      profileFailed,
       initialLoadComplete,
       pendingWriteCount,
       refreshHabits,
