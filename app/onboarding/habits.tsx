@@ -49,17 +49,20 @@ const MAX_STARTER_HABITS = 5;
 const PREVIEW_DAYS = 5;
 const PREVIEW_CELL_SIZE = 28;
 
+// Names only. Emoji were tofu boxes here (simulator runtimes ship without
+// Apple Color Emoji) and glossy multicolour glyphs fight the paper-and-ink
+// aesthetic — the same reason the 🍌 came out of the feed copy.
 const HABIT_SUGGESTIONS = [
-  { name: "Exercise", emoji: "💪" },
-  { name: "Read", emoji: "📚" },
-  { name: "Meditate", emoji: "🧘" },
-  { name: "Journal", emoji: "✍️" },
-  { name: "Hydrate", emoji: "💧" },
-  { name: "Sleep 8hrs", emoji: "😴" },
-  { name: "No phone", emoji: "📵" },
-  { name: "Walk", emoji: "🚶" },
-  { name: "Stretch", emoji: "🤸" },
-  { name: "Vitamins", emoji: "💊" },
+  "Exercise",
+  "Read",
+  "Meditate",
+  "Journal",
+  "Hydrate",
+  "Sleep 8hrs",
+  "No phone",
+  "Walk",
+  "Stretch",
+  "Vitamins",
 ];
 
 export default function OnboardingHabitsScreen() {
@@ -236,30 +239,29 @@ export default function OnboardingHabitsScreen() {
 
             <View style={styles.suggestions}>
               {HABIT_SUGGESTIONS.map((habit) => {
-                const isSelected = selectedHabits.includes(habit.name);
+                const isSelected = selectedHabits.includes(habit);
                 const isBlocked = !isSelected && atLimit;
                 return (
                   <PressableScale
-                    key={habit.name}
+                    key={habit}
                     style={[
                       styles.pill,
                       isSelected && styles.pillSelected,
                       isBlocked && styles.pillBlocked,
                     ]}
                     disabled={isBlocked}
-                    onPress={() => toggleHabit(habit.name)}
+                    onPress={() => toggleHabit(habit)}
                     accessibilityRole="checkbox"
-                    accessibilityLabel={habit.name}
+                    accessibilityLabel={habit}
                     accessibilityState={{ checked: isSelected }}
                   >
-                    <Text style={styles.pillEmoji}>{habit.emoji}</Text>
                     <Text
                       style={[
                         styles.pillText,
                         isSelected && styles.pillTextSelected,
                       ]}
                     >
-                      {habit.name}
+                      {habit}
                     </Text>
                     {isSelected && (
                       <IconSymbol
@@ -411,29 +413,33 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
-    lineHeight: 24,
-    marginBottom: 24,
+    lineHeight: 22,
+    marginBottom: 18,
   },
   suggestions: {
+    // Fixed two-column grid: variable-width pills in a wrap layout produced
+    // ragged rows and dead space at the end of each line.
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
-    marginBottom: 28,
+    justifyContent: "space-between",
+    rowGap: 10,
+    marginBottom: 20,
   },
   pill: {
+    width: "48%",
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
     backgroundColor: Colors.card,
     paddingVertical: 12,
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
     borderRadius: 24,
     borderWidth: 1.5,
     borderColor: Colors.ink,
-    gap: 8,
+    gap: 6,
   },
   pillSelected: { backgroundColor: Colors.ink },
   pillBlocked: { opacity: 0.4 },
-  pillEmoji: { fontSize: 18 },
   pillText: {
     fontSize: 15,
     color: Colors.ink,

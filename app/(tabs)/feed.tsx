@@ -41,6 +41,9 @@ export default function FeedScreen() {
   const insets = useSafeAreaInsets();
   const { session } = useAuth();
   const dataStore = useDataStore();
+  // Pulled out so effects can depend on stable callbacks rather than the
+  // store object, whose identity changes on every write.
+  const { refreshEntries, getEntriesForMonth } = dataStore;
   const [refreshing, setRefreshing] = useState(false);
   const [currentDate, setCurrentDate] = useState(new Date());
   // +1 = moved to next month (content enters from the right), -1 = previous
@@ -72,10 +75,7 @@ export default function FeedScreen() {
   // Sort newest-first: primary key is the day, secondary key is createdAt
   // so multiple highlights on the same day surface the freshest one on top.
   const entries = useMemo(() => {
-    const monthEntries = dataStore.getEntriesForMonth(
-      currentYear,
-      currentMonth,
-    );
+    const monthEntries = getEntriesForMonth(currentYear, currentMonth);
     return [...monthEntries].sort((a, b) => {
       if (a.date !== b.date) {
         return fromDayKey(b.date).getTime() - fromDayKey(a.date).getTime();
@@ -84,7 +84,12 @@ export default function FeedScreen() {
       const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
       return bTime - aTime;
     });
-  }, [dataStore, currentYear, currentMonth]);
+    // `dataStore.entries` (not the store object) so this recomputes when the
+    // month's data changes but not on every unrelated store write. eslint
+    // can't see it: `getEntriesForMonth` reads that map internally, so the
+    // dependency is real even though it isn't referenced by name here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataStore.entries, getEntriesForMonth, currentYear, currentMonth]);
 
   // Bucket entries by day (preserving the sorted order: newest day first,
   // newest entry within a day first).
@@ -111,20 +116,18 @@ export default function FeedScreen() {
     if (!session) return;
 
     // Only fetch if we don't have entries for this month
-    const monthEntries = dataStore.getEntriesForMonth(
-      currentYear,
-      currentMonth,
-    );
+    const monthEntries = getEntriesForMonth(currentYear, currentMonth);
     if (monthEntries.length === 0) {
       try {
-        await dataStore.refreshEntries(currentYear, currentMonth);
+        await refreshEntries(currentYear, currentMonth);
         setLoadFailed(false);
       } catch {
         // Never a raw error string on screen — the panel below says it calmly.
         setLoadFailed(true);
       }
     } else {
-      setLoadFailed(false);
+      // Guarded: an unconditional setState here re-renders every pass.
+      setLoadFailed((prev) => (prev ? false : prev));
     }
 
     // Prefetch adjacent months in background
@@ -136,9 +139,12 @@ export default function FeedScreen() {
     const prev = shiftMonth(currentYear, currentMonth, -1);
     const next = shiftMonth(currentYear, currentMonth, 1);
     // Prefetches are best-effort: a failure here is not the user's problem.
-    void dataStore.refreshEntries(prev.year, prev.month).catch(() => {});
-    void dataStore.refreshEntries(next.year, next.month).catch(() => {});
-  }, [currentMonth, currentYear, session, dataStore]);
+    void refreshEntries(prev.year, prev.month).catch(() => {});
+    void refreshEntries(next.year, next.month).catch(() => {});
+    // Depend on the individual store callbacks, never the store object:
+    // its identity changes on every state write, which re-arms the focus
+    // effect and loops until React throws "Maximum update depth exceeded".
+  }, [currentMonth, currentYear, session, refreshEntries, getEntriesForMonth]);
 
   // Reload entries when screen comes into focus or month changes
   useFocusEffect(
