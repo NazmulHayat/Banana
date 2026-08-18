@@ -31,6 +31,11 @@ export function clearHabitsCache(): void {
   memCache = null;
 }
 
+/**
+ * AsyncStorage tier of the read path (in-memory Map -> AsyncStorage -> network).
+ * Returns `null` when nothing is persisted for this user, `[]` when an empty
+ * list was persisted. A hit is promoted back into the in-memory cache.
+ */
 export async function loadHabitsFromStorage(
   userId: string,
 ): Promise<Habit[] | null> {
@@ -113,13 +118,23 @@ export async function saveHabits(habits: Habit[]): Promise<void> {
   setCachedHabits(userId, habits);
 }
 
-export async function getHabits(): Promise<Habit[]> {
+/**
+ * Fetch habits. Reads short-circuit on the in-memory cache unless `force` is
+ * set (pull-to-refresh), which goes straight to the network.
+ *
+ * Note `getCachedHabits` returns `null` when nothing has been resolved for this
+ * user and `[]` when the user genuinely has no habits — an empty list is a real
+ * result and short-circuits like any other.
+ */
+export async function getHabits(opts?: { force?: boolean }): Promise<Habit[]> {
   if (!keyring.isUnlocked()) return [];
   const userId = await requireUserId();
   const mk = keyring.getMasterKey();
 
-  const cached = getCachedHabits(userId);
-  if (cached) return cached;
+  if (!opts?.force) {
+    const cached = getCachedHabits(userId);
+    if (cached !== null) return cached;
+  }
 
   const { data, error } = await supabase
     .from("habits")

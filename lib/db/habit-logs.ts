@@ -56,6 +56,13 @@ export function clearHabitLogsCache(): void {
   logsMonthCache.clear();
 }
 
+/**
+ * AsyncStorage tier of the read path (in-memory Map -> AsyncStorage -> network).
+ * Returns `null` when nothing is persisted for that month, `[]` when a month
+ * that is genuinely empty was persisted. A hit is promoted back into the
+ * in-memory cache. Callers (data-store) use this on a Map miss, before the
+ * network, so an offline cold start still paints.
+ */
 export async function loadHabitLogsFromStorage(
   year: number,
   month: number,

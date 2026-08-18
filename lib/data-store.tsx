@@ -16,18 +16,21 @@ import {
   deleteEntry as dbDeleteEntry,
   getCachedEntriesForMonth,
   getEntriesForMonth,
+  loadEntriesForMonthFromStorage,
   saveEntry as dbSaveEntry,
   setCachedEntriesForMonth,
 } from "./db/entries";
 import {
   getCachedHabitLogsForMonth,
   getHabitLogsForMonthDirect,
+  loadHabitLogsFromStorage,
   setCachedHabitLogsForMonth,
   upsertHabitLog as dbUpsertHabitLog,
 } from "./db/habit-logs";
 import {
   getCachedHabits,
   getHabits,
+  loadHabitsFromStorage,
   saveHabits as dbSaveHabits,
   setCachedHabits,
 } from "./db/habits";
@@ -40,6 +43,29 @@ import {
 import { DateFormats } from "./db/schema";
 import type { DailyEntry, Habit, HabitLog } from "./db/types";
 import { supabase } from "./supabase";
+
+// ============================================================================
+// Single-flight helper
+// ============================================================================
+// Shares one in-flight promise per key so concurrent callers (two screens
+// mounting the same month, init + an AppState→active flush, …) issue a single
+// request instead of duplicate round-trips. The entry is always removed in
+// `finally`, so a rejection never poisons the key for the next attempt.
+// Module-level (not a hook) so its identity is stable and it stays out of the
+// callback dependency arrays below.
+function singleFlight<T>(
+  inFlight: Map<string, Promise<unknown>>,
+  key: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  const existing = inFlight.get(key) as Promise<T> | undefined;
+  if (existing) return existing;
+  const started = run().finally(() => {
+    if (inFlight.get(key) === started) inFlight.delete(key);
+  });
+  inFlight.set(key, started);
+  return started;
+}
 
 // Profile data from accounts table (not the encrypted ProfileRow)
 interface ProfileData {
@@ -169,6 +195,25 @@ export function DataProvider({ children, session }: DataProviderProps) {
 
   const prefetchedRef = useRef(false);
 
+  // ==========================================================================
+  // Read-path bookkeeping
+  // ==========================================================================
+  // Keys resolved during this session ("habits:<uid>", "entries:<uid>:YYYY-MM",
+  // "logs:<uid>:YYYY-MM"). A key lands here whichever tier answered — memory,
+  // AsyncStorage or the network — and an empty result counts as resolved, so a
+  // genuinely empty month no longer looks like "never loaded" and re-fetches
+  // forever. It also gates the AsyncStorage tier: that tier is for cold start /
+  // offline, so once a key has been resolved here we skip it and go to the
+  // network (a write that invalidates the in-memory month must not be answered
+  // from a stale on-disk copy).
+  const loadedKeysRef = useRef<Set<string>>(new Set());
+  // In-flight reads, keyed the same way (+ the force flag, so a pull-to-refresh
+  // never joins a cache-path request). See `singleFlight` above.
+  const inFlightRef = useRef<Map<string, Promise<unknown>>>(new Map());
+  // Single-flight guard for the pending-writes flush: init and every
+  // AppState→active transition can fire it concurrently.
+  const flushInFlightRef = useRef<Promise<void> | null>(null);
+
   // ============================================================================
   // Helper: Format month key
   // ============================================================================
@@ -183,26 +228,43 @@ export function DataProvider({ children, session }: DataProviderProps) {
       if (!session) return [];
 
       const userId = session.user.id;
+      const force = opts?.force === true;
+      const key = `habits:${userId}`;
 
-      if (!opts?.force) {
-        const cached = getCachedHabits(userId);
-        if (cached && cached.length > 0) {
-          setHabits(cached);
-          setHabitsReady(true);
-          return cached;
-        }
-      }
-
-      setHabitsLoading(true);
-      try {
-        const fresh = await getHabits();
-        setHabits(fresh);
-        setCachedHabits(userId, fresh);
+      const apply = (list: Habit[]): Habit[] => {
+        setHabits(list);
+        loadedKeysRef.current.add(key);
         setHabitsReady(true);
-        return fresh;
-      } finally {
-        setHabitsLoading(false);
+        return list;
+      };
+
+      // Tier 1 — in-memory (sync). `null` means "never resolved"; `[]` means
+      // "resolved, this user has no habits" and short-circuits just the same.
+      if (!force) {
+        const cached = getCachedHabits(userId);
+        if (cached !== null) return apply(cached);
       }
+
+      return singleFlight(
+        inFlightRef.current,
+        `${key}:${force ? "force" : "cache"}`,
+        async () => {
+          setHabitsLoading(true);
+          try {
+            // Tier 2 — AsyncStorage, so an offline cold start still paints.
+            if (!force && !loadedKeysRef.current.has(key)) {
+              const stored = await loadHabitsFromStorage(userId);
+              if (stored !== null) return apply(stored);
+            }
+            // Tier 3 — network.
+            const fresh = await getHabits({ force });
+            setCachedHabits(userId, fresh);
+            return apply(fresh);
+          } finally {
+            setHabitsLoading(false);
+          }
+        },
+      );
     },
     [session],
   );
@@ -220,32 +282,10 @@ export function DataProvider({ children, session }: DataProviderProps) {
 
       const userId = session.user.id;
       const monthKey = getMonthKey(year, month);
+      const force = opts?.force === true;
+      const key = `logs:${userId}:${monthKey}`;
 
-      const cached = opts?.force
-        ? null
-        : getCachedHabitLogsForMonth(year, month, userId);
-      if (cached && cached.length > 0) {
-        setHabitLogs((prev) => new Map(prev).set(monthKey, cached));
-        const byDay = new Map<string, HabitLog[]>();
-        for (const log of cached) {
-          const dayLogs = byDay.get(log.date) || [];
-          dayLogs.push(log);
-          byDay.set(log.date, dayLogs);
-        }
-        setHabitLogsByDay((prev) => {
-          const next = new Map(prev);
-          byDay.forEach((dayLogs, key) => next.set(key, dayLogs));
-          return next;
-        });
-        setHabitLogsReady(true);
-        return cached;
-      }
-
-      // Fetch from network
-      setHabitLogsLoading(true);
-      try {
-        const logs = await getHabitLogsForMonthDirect(year, month);
-
+      const apply = (logs: HabitLog[]): HabitLog[] => {
         setHabitLogs((prev) => new Map(prev).set(monthKey, logs));
         const byDay = new Map<string, HabitLog[]>();
         for (const log of logs) {
@@ -255,16 +295,41 @@ export function DataProvider({ children, session }: DataProviderProps) {
         }
         setHabitLogsByDay((prev) => {
           const next = new Map(prev);
-          byDay.forEach((dayLogs, key) => next.set(key, dayLogs));
+          byDay.forEach((dayLogs, dayKey) => next.set(dayKey, dayLogs));
           return next;
         });
+        loadedKeysRef.current.add(key);
         setHabitLogsReady(true);
-
-        setCachedHabitLogsForMonth(year, month, userId, logs);
         return logs;
-      } finally {
-        setHabitLogsLoading(false);
+      };
+
+      // Tier 1 — in-memory (sync). `[]` is a real, resolved month (no logs yet)
+      // and short-circuits exactly like a non-empty one.
+      if (!force) {
+        const cached = getCachedHabitLogsForMonth(year, month, userId);
+        if (cached !== null) return apply(cached);
       }
+
+      return singleFlight(
+        inFlightRef.current,
+        `${key}:${force ? "force" : "cache"}`,
+        async () => {
+          setHabitLogsLoading(true);
+          try {
+            // Tier 2 — AsyncStorage (offline cold start).
+            if (!force && !loadedKeysRef.current.has(key)) {
+              const stored = await loadHabitLogsFromStorage(year, month, userId);
+              if (stored !== null) return apply(stored);
+            }
+            // Tier 3 — network.
+            const logs = await getHabitLogsForMonthDirect(year, month);
+            setCachedHabitLogsForMonth(year, month, userId, logs);
+            return apply(logs);
+          } finally {
+            setHabitLogsLoading(false);
+          }
+        },
+      );
     },
     [session],
   );
@@ -282,29 +347,49 @@ export function DataProvider({ children, session }: DataProviderProps) {
 
       const userId = session.user.id;
       const monthKey = getMonthKey(year, month);
+      const force = opts?.force === true;
+      const key = `entries:${userId}:${monthKey}`;
+
+      const apply = (list: DailyEntry[]): DailyEntry[] => {
+        setEntries((prev) => new Map(prev).set(monthKey, list));
+        loadedKeysRef.current.add(key);
+        setEntriesReady(true);
+        return list;
+      };
 
       // Cache short-circuit only when NOT forced. Pull-to-refresh forces
       // through to the network so the user can see fresh server state.
-      if (!opts?.force) {
+      // Tier 1 — in-memory (sync). `[]` is a month we loaded and that is
+      // genuinely empty: short-circuit it like any other resolved month.
+      if (!force) {
         const cached = getCachedEntriesForMonth(year, month, userId);
-        if (cached && cached.length > 0) {
-          setEntries((prev) => new Map(prev).set(monthKey, cached));
-          setEntriesReady(true);
-          return cached;
-        }
+        if (cached !== null) return apply(cached);
       }
 
-      // Fetch from network
-      setEntriesLoading(true);
-      try {
-        const fresh = await getEntriesForMonth(year, month);
-        setEntries((prev) => new Map(prev).set(monthKey, fresh));
-        setCachedEntriesForMonth(year, month, userId, fresh);
-        setEntriesReady(true);
-        return fresh;
-      } finally {
-        setEntriesLoading(false);
-      }
+      return singleFlight(
+        inFlightRef.current,
+        `${key}:${force ? "force" : "cache"}`,
+        async () => {
+          setEntriesLoading(true);
+          try {
+            // Tier 2 — AsyncStorage (offline cold start).
+            if (!force && !loadedKeysRef.current.has(key)) {
+              const stored = await loadEntriesForMonthFromStorage(
+                year,
+                month,
+                userId,
+              );
+              if (stored !== null) return apply(stored);
+            }
+            // Tier 3 — network.
+            const fresh = await getEntriesForMonth(year, month);
+            setCachedEntriesForMonth(year, month, userId, fresh);
+            return apply(fresh);
+          } finally {
+            setEntriesLoading(false);
+          }
+        },
+      );
     },
     [session],
   );
@@ -499,9 +584,15 @@ export function DataProvider({ children, session }: DataProviderProps) {
   // server it re-enqueues a fresh copy of the same write (rather than throwing),
   // so the write is never lost (NFR-1) and the queue simply persists until the
   // network recovers. The count is refreshed from storage after the flush.
-  const flushQueue = useCallback(async (): Promise<void> => {
-    if (!session) return;
+  const flushQueue = useCallback((): Promise<void> => {
+    if (!session) return Promise.resolve();
     const userId = session.user.id;
+
+    // Single-flight: the init effect and every AppState→active transition can
+    // call this, and two overlapping flushes would replay the same queued
+    // writes twice. Cleared in `finally` so a failed flush can be retried.
+    const running = flushInFlightRef.current;
+    if (running) return running;
 
     const executor = async (item: PendingWrite): Promise<void> => {
       switch (item.kind) {
@@ -517,8 +608,14 @@ export function DataProvider({ children, session }: DataProviderProps) {
       }
     };
 
-    await flushPendingWrites(userId, executor);
-    setPendingWriteCount(await dbPendingWriteCount(userId));
+    const started = (async () => {
+      await flushPendingWrites(userId, executor);
+      setPendingWriteCount(await dbPendingWriteCount(userId));
+    })().finally(() => {
+      if (flushInFlightRef.current === started) flushInFlightRef.current = null;
+    });
+    flushInFlightRef.current = started;
+    return started;
   }, [session]);
 
   // ============================================================================
@@ -546,6 +643,11 @@ export function DataProvider({ children, session }: DataProviderProps) {
     setProfileReady(false);
     setInitialLoadComplete(false);
     prefetchedRef.current = false;
+    // Drop read-path bookkeeping so the next user starts from a cold cache and
+    // never joins the previous session's in-flight requests.
+    loadedKeysRef.current.clear();
+    inFlightRef.current.clear();
+    flushInFlightRef.current = null;
   }, [session]);
 
   // ============================================================================
