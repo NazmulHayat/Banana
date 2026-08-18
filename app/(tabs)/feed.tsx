@@ -6,7 +6,7 @@ import { PaperBackground } from "@/components/ui/paper-background";
 import { PressableScale } from "@/components/ui/pressable-scale";
 import { SkeletonCard } from "@/components/ui/skeleton";
 import { Motion } from "@/constants/motion";
-import { Colors, Fonts } from "@/constants/theme";
+import { Colors, Fonts, Hairline, Scrim } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { useDataStore } from "@/lib/data-store";
 import { fromDayKey } from "@/lib/dates";
@@ -251,17 +251,27 @@ export default function FeedScreen() {
       >
         <View style={[styles.header, { paddingTop: Math.max(insets.top, 16) }]}>
           <View style={styles.titleContainer}>
-            <Text style={styles.title}>Feed</Text>
+            <Text style={styles.title} accessibilityRole="header">
+              Feed
+            </Text>
             <View style={styles.titleUnderline} />
           </View>
         </View>
 
         <View style={styles.monthHeader}>
-          <IconButton onPress={() => changeMonth(-1)}>
+          <IconButton
+            onPress={() => changeMonth(-1)}
+            accessibilityLabel="Previous month"
+          >
             <IconSymbol name="chevron.left" size={22} color={Colors.ink} />
           </IconButton>
-          <Text style={styles.monthText}>{monthName}</Text>
-          <IconButton onPress={() => changeMonth(1)}>
+          <Text style={styles.monthText} accessibilityRole="header">
+            {monthName}
+          </Text>
+          <IconButton
+            onPress={() => changeMonth(1)}
+            accessibilityLabel="Next month"
+          >
             <IconSymbol name="chevron.right" size={22} color={Colors.ink} />
           </IconButton>
         </View>
@@ -363,11 +373,19 @@ export default function FeedScreen() {
         animationType="fade"
         onRequestClose={closeEditor}
       >
-        <Pressable style={styles.editBackdrop} onPress={closeEditor}>
+        <Pressable
+          style={styles.editBackdrop}
+          onPress={closeEditor}
+          accessibilityViewIsModal
+          accessibilityRole="button"
+          accessibilityLabel="Dismiss editor"
+        >
           {/* Swallow taps so pressing the card doesn't dismiss the editor. */}
           <Pressable style={styles.editCardWrap} onPress={() => {}}>
             <View style={styles.editCard}>
-              <Text style={styles.editTitle}>Edit highlight</Text>
+              <Text style={styles.editTitle} accessibilityRole="header">
+                Edit highlight
+              </Text>
               <TextInput
                 style={styles.editInput}
                 value={editText}
@@ -377,6 +395,7 @@ export default function FeedScreen() {
                 editable={!editSaving}
                 placeholder="Tell me something about today..."
                 placeholderTextColor={Colors.textSecondary}
+                accessibilityLabel="Highlight text"
               />
               {editError ? (
                 <Text style={styles.editErrorText}>{editError}</Text>
@@ -528,7 +547,7 @@ const styles = StyleSheet.create({
     width: 80,
     height: 80,
     borderRadius: 40,
-    backgroundColor: "rgba(26, 26, 26, 0.06)",
+    backgroundColor: Hairline.faint,
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 16,
@@ -563,8 +582,7 @@ const styles = StyleSheet.create({
   },
   editBackdrop: {
     flex: 1,
-    // Established ink-overlay scrim convention (rgba(26,26,26,…)).
-    backgroundColor: "rgba(26,26,26,0.45)",
+    backgroundColor: Scrim.modal,
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 32,

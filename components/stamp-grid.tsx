@@ -1,5 +1,5 @@
 import { Motion } from "@/constants/motion";
-import { Colors, Fonts } from "@/constants/theme";
+import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { todayKey } from "@/lib/dates";
 import type { Stamp } from "@/lib/gamification";
 import * as Haptics from "expo-haptics";
@@ -17,7 +17,6 @@ interface StampGridProps {
 const SIZE = 84;
 const RING = SIZE / 2 - 4;
 const CIRC = 2 * Math.PI * RING;
-const HAIRLINE = "rgba(26,26,26,0.16)";
 
 /** The stamp's headline — derived from its kind, not stored anywhere. */
 function title(stamp: Stamp): string {
@@ -102,7 +101,7 @@ function StampBadge({ stamp, index, showProgress }: StampBadgeProps) {
             r={RING}
             fill={stamp.earned ? `url(#${patternId})` : "transparent"}
             fillOpacity={stamp.earned ? 0.16 : 0}
-            stroke={stamp.earned ? Colors.ink : HAIRLINE}
+            stroke={stamp.earned ? Colors.ink : Hairline.outline}
             strokeWidth={1.5}
             strokeDasharray="2 4"
           />
@@ -112,7 +111,7 @@ function StampBadge({ stamp, index, showProgress }: StampBadgeProps) {
             cy={SIZE / 2}
             r={RING - 6}
             fill="transparent"
-            stroke={stamp.earned ? Colors.accent : HAIRLINE}
+            stroke={stamp.earned ? Colors.accent : Hairline.outline}
             strokeWidth={stamp.earned ? 2.5 : 1}
           />
           {!stamp.earned && arc > 0 && (

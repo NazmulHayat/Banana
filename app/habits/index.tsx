@@ -5,7 +5,7 @@ import { PaperBackground } from "@/components/ui/paper-background";
 import { PaperCard } from "@/components/ui/paper-card";
 import { PressableScale } from "@/components/ui/pressable-scale";
 import { ScreenHeader } from "@/components/ui/screen-header";
-import { Colors, Fonts } from "@/constants/theme";
+import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { useDataStore } from "@/lib/data-store";
 import type { Habit } from "@/lib/db";
 import { useState } from "react";
@@ -133,17 +133,14 @@ export default function HabitsScreen() {
                       <Text style={styles.renameText}>Rename</Text>
                     </View>
                   </TouchableOpacity>
-                  {/* The a11y label sits on a grouping View because IconButton
-                      doesn't forward accessibility props yet. */}
-                  <View
-                    accessible
-                    accessibilityRole="button"
+                  <IconButton
+                    onPress={() => handleDeleteHabit(habit)}
+                    style={styles.trashBtn}
                     accessibilityLabel={`Delete habit ${habit.name}`}
+                    accessibilityHint="Removes the habit and every day you ticked it"
                   >
-                    <IconButton onPress={() => handleDeleteHabit(habit)} style={styles.trashBtn}>
-                      <IconSymbol name="trash" size={20} color={Colors.danger} />
-                    </IconButton>
-                  </View>
+                    <IconSymbol name="trash" size={20} color={Colors.danger} />
+                  </IconButton>
                 </PaperCard>
               ))}
             </View>
@@ -177,13 +174,14 @@ export default function HabitsScreen() {
       >
         <KeyboardAvoidingView
           style={styles.modalContainer}
+          accessibilityViewIsModal
           behavior={Platform.OS === "ios" ? "padding" : "height"}
         >
           <View style={styles.modalHeader}>
             <TouchableOpacity onPress={() => setShowHabitModal(false)} hitSlop={8}>
               <Text style={styles.modalCancel}>Cancel</Text>
             </TouchableOpacity>
-            <Text style={styles.modalTitle}>{editingHabit ? "Edit habit" : "New habit"}</Text>
+            <Text style={styles.modalTitle} accessibilityRole="header">{editingHabit ? "Edit habit" : "New habit"}</Text>
             <View style={{ width: 60 }} />
           </View>
 
@@ -316,7 +314,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingVertical: 18,
     borderBottomWidth: 1,
-    borderBottomColor: "rgba(26,26,26,0.08)",
+    borderBottomColor: Hairline.base,
   },
   modalCancel: { fontSize: 16, color: Colors.textSecondary, fontFamily: Fonts.handwritingMedium, minWidth: 60 },
   modalTitle: { fontSize: 19, color: Colors.ink, fontFamily: Fonts.handwritingSemiBold },

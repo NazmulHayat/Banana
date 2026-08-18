@@ -1,5 +1,5 @@
 import { IconSymbol } from "@/components/ui/icon-symbol";
-import { Colors, Fonts } from "@/constants/theme";
+import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { useDataStore } from "@/lib/data-store";
 import { fromDayKey, parseDayKey, todayKey } from "@/lib/dates";
 import type { DailyEntry, Habit, HabitLog } from "@/lib/db";
@@ -89,10 +89,18 @@ export function DayHighlightSheet({ visible, date, habits, logs, onClose }: DayH
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <View style={styles.container}>
+      <View style={styles.container} accessibilityViewIsModal>
         <View style={styles.header}>
-          <Text style={styles.title}>{date ? pretty(date) : ""}</Text>
-          <TouchableOpacity onPress={onClose} activeOpacity={0.6} hitSlop={8}>
+          <Text style={styles.title} accessibilityRole="header">
+            {date ? pretty(date) : ""}
+          </Text>
+          <TouchableOpacity
+            onPress={onClose}
+            activeOpacity={0.6}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Done, close this day"
+          >
             <Text style={styles.close}>Done</Text>
           </TouchableOpacity>
         </View>
@@ -168,7 +176,7 @@ const styles = StyleSheet.create({
   habitText: { fontSize: 16, color: Colors.ink, fontFamily: Fonts.handwritingMedium },
   entry: {
     borderTopWidth: 1,
-    borderTopColor: "rgba(26,26,26,0.08)",
+    borderTopColor: Hairline.base,
     paddingTop: 12,
     marginTop: 4,
   },

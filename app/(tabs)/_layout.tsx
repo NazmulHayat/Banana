@@ -1,6 +1,6 @@
 import { HapticTab } from "@/components/haptic-tab";
 import { IconSymbol } from "@/components/ui/icon-symbol";
-import { Colors, Fonts } from "@/constants/theme";
+import { Colors, Fonts, Hairline, Scrim } from "@/constants/theme";
 import { BlurView } from "expo-blur";
 import { Tabs } from "expo-router";
 import { StyleSheet, View } from "react-native";
@@ -27,7 +27,7 @@ export default function TabLayout() {
           ),
           tabBarStyle: {
             backgroundColor: "transparent",
-            borderTopColor: "rgba(26, 26, 26, 0.08)",
+            borderTopColor: Hairline.base,
             borderTopWidth: 1,
             elevation: 0,
           },
@@ -81,6 +81,6 @@ export default function TabLayout() {
 const styles = StyleSheet.create({
   glassOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(251, 248, 233, 0.55)",
+    backgroundColor: Scrim.paper,
   },
 });

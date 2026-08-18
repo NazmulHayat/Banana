@@ -1,4 +1,4 @@
-import { Colors } from "@/constants/theme";
+import { Colors, Scrim } from "@/constants/theme";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useState } from "react";
 import {
@@ -172,7 +172,9 @@ export function ImageViewer({ uri, visible, onClose }: ImageViewerProps) {
     >
       <StatusBar style="light" hidden />
       <GestureHandlerRootView style={styles.root}>
-        <View style={styles.backdrop}>
+        {/* The viewer covers everything — hide the page behind it from
+            VoiceOver so swiping can't wander off the photo. */}
+        <View style={styles.backdrop} accessibilityViewIsModal>
           <GestureDetector gesture={composed}>
             <Animated.View style={styles.imageContainer}>
               <AnimatedImage
@@ -182,6 +184,9 @@ export function ImageViewer({ uri, visible, onClose }: ImageViewerProps) {
                   imageStyle,
                 ]}
                 resizeMode="contain"
+                accessibilityRole="image"
+                accessibilityLabel="Attached photo"
+                accessibilityHint="Double tap to zoom, swipe down to close"
               />
             </Animated.View>
           </GestureDetector>
@@ -189,6 +194,8 @@ export function ImageViewer({ uri, visible, onClose }: ImageViewerProps) {
             onPress={onClose}
             style={[styles.closeButton, { top: insets.top + 12 }]}
             hitSlop={12}
+            accessibilityRole="button"
+            accessibilityLabel="Close photo"
           >
             <View style={styles.closeButtonInner}>
               <IconSymbol name="xmark" size={20} color={Colors.paper} />
@@ -204,7 +211,7 @@ const styles = StyleSheet.create({
   root: { flex: 1 },
   backdrop: {
     flex: 1,
-    backgroundColor: "#000",
+    backgroundColor: Colors.blackout,
     justifyContent: "center",
     alignItems: "center",
   },
@@ -222,9 +229,9 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: "rgba(0,0,0,0.5)",
+    backgroundColor: Scrim.photo,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.3)",
+    borderColor: Scrim.photoBorder,
     justifyContent: "center",
     alignItems: "center",
   },

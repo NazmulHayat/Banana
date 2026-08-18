@@ -13,7 +13,7 @@
 
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
-import { Colors, Fonts } from "@/constants/theme";
+import { Colors, Fonts, Scrim } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { signupTransient } from "@/lib/auth/signup-transient";
 import { keyring } from "@/lib/crypto";
@@ -523,7 +523,7 @@ const styles = StyleSheet.create({
   },
   tips: {
     width: "100%",
-    backgroundColor: "rgba(255, 179, 128, 0.18)",
+    backgroundColor: Scrim.accent,
     borderRadius: 12,
     padding: 14,
     marginBottom: 24,

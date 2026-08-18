@@ -1,5 +1,5 @@
 import { Motion } from "@/constants/motion";
-import { Colors, Fonts } from "@/constants/theme";
+import { Colors, Fonts, Hairline } from "@/constants/theme";
 import type { WriteOutcome } from "@/lib/db";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
@@ -33,13 +33,16 @@ const AnimatedPath = Animated.createAnimatedComponent(Path);
 // Approximate length of the checkmark polyline below (M4 12.5 L9.5 18 L20 6.5)
 const CHECK_PATH_LENGTH = 24;
 
+/** How long "Saved" stays on the button before it goes back to "Add". */
+const SAVED_BEAT_MS = 1200;
+
 /** Checkmark that draws itself like a pen stroke. */
 function DrawnCheckmark({ size = 20 }: { size?: number }) {
   const progress = useSharedValue(0);
 
   useEffect(() => {
     progress.value = withTiming(1, {
-      duration: 300,
+      duration: Motion.base,
       easing: Easing.out(Easing.cubic),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -200,7 +203,7 @@ export function HighlightInput({
     // Success beat: drawn checkmark + haptic, then back to "Add"
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setJustSaved(true);
-    savedTimer.current = setTimeout(() => setJustSaved(false), 1200);
+    savedTimer.current = setTimeout(() => setJustSaved(false), SAVED_BEAT_MS);
   };
 
   const nothingToSave = !text.trim() && pickedUris.length === 0;
@@ -237,6 +240,8 @@ export function HighlightInput({
                   style={styles.removeButton}
                   onPress={() => handleRemovePhoto(index)}
                   activeOpacity={0.7}
+                  // 20pt icon: hitSlop brings the target to the 44pt minimum.
+                  hitSlop={12}
                   accessibilityRole="button"
                   accessibilityLabel={`Remove photo ${index + 1} of ${pickedUris.length}`}
                 >
@@ -256,7 +261,7 @@ export function HighlightInput({
           {pickerOpen && (
             <Animated.View
               entering={FadeInUp.duration(Motion.fast)}
-              exiting={FadeOut.duration(100)}
+              exiting={FadeOut.duration(Motion.quick)}
               style={styles.popover}
             >
               <Pressable
@@ -291,60 +296,52 @@ export function HighlightInput({
               <View style={styles.popoverArrow} />
             </Animated.View>
           )}
-          {/* The a11y label sits on a grouping View because PressableScale
-              doesn't forward accessibility props yet. */}
-          <View
-            accessible
-            accessibilityRole="button"
+          <PressableScale
+            style={[
+              styles.mediaButton,
+              (pickedUris.length >= MAX_IMAGES || saving) &&
+                styles.mediaButtonDisabled,
+            ]}
+            onPress={handleAddPhoto}
+            disabled={pickedUris.length >= MAX_IMAGES || saving}
             accessibilityLabel={
               pickerOpen
                 ? "Close photo picker"
                 : `Add photo, ${pickedUris.length} of ${MAX_IMAGES} attached`
             }
-            accessibilityState={{
-              disabled: pickedUris.length >= MAX_IMAGES || !!saving,
-            }}
           >
-            <PressableScale
-              style={[
-                styles.mediaButton,
-                (pickedUris.length >= MAX_IMAGES || saving) &&
-                  styles.mediaButtonDisabled,
-              ]}
-              onPress={handleAddPhoto}
-              disabled={pickedUris.length >= MAX_IMAGES || saving}
-            >
-              <View style={styles.mediaButtonContent}>
-                <IconSymbol
-                  name={pickerOpen ? "xmark" : "camera.fill"}
-                  size={18}
-                  color={
-                    pickedUris.length >= MAX_IMAGES || saving
-                      ? Colors.textSecondary
-                      : Colors.ink
-                  }
-                />
-                <Text
-                  style={[
-                    styles.mediaButtonText,
-                    (pickedUris.length >= MAX_IMAGES || saving) &&
-                      styles.mediaButtonTextDisabled,
-                  ]}
-                >
-                  {pickerOpen ? "Close" : "Add Photo"}
-                  {!pickerOpen && pickedUris.length > 0
-                    ? ` (${pickedUris.length}/${MAX_IMAGES})`
-                    : ""}
-                </Text>
-              </View>
-            </PressableScale>
-          </View>
+            <View style={styles.mediaButtonContent}>
+              <IconSymbol
+                name={pickerOpen ? "xmark" : "camera.fill"}
+                size={18}
+                color={
+                  pickedUris.length >= MAX_IMAGES || saving
+                    ? Colors.textSecondary
+                    : Colors.ink
+                }
+              />
+              <Text
+                style={[
+                  styles.mediaButtonText,
+                  (pickedUris.length >= MAX_IMAGES || saving) &&
+                    styles.mediaButtonTextDisabled,
+                ]}
+              >
+                {pickerOpen ? "Close" : "Add Photo"}
+                {!pickerOpen && pickedUris.length > 0
+                  ? ` (${pickedUris.length}/${MAX_IMAGES})`
+                  : ""}
+              </Text>
+            </View>
+          </PressableScale>
         </View>
-        {/* The a11y label sits on a grouping View because PressableScale
-            doesn't forward accessibility props yet. */}
-        <View
-          accessible
-          accessibilityRole="button"
+        <PressableScale
+          style={[
+            styles.saveButton,
+            saveDisabled ? styles.saveButtonDisabled : null,
+          ]}
+          onPress={handleSave}
+          disabled={saveDisabled}
           accessibilityLabel={
             justSaved
               ? "Highlight saved"
@@ -354,37 +351,28 @@ export function HighlightInput({
                   ? "Save highlight, previous attempt failed"
                   : "Save highlight"
           }
-          accessibilityState={{ disabled: saveDisabled, busy: !!saving }}
+          accessibilityState={{ busy: !!saving }}
         >
-          <PressableScale
-            style={[
-              styles.saveButton,
-              saveDisabled ? styles.saveButtonDisabled : null,
-            ]}
-            onPress={handleSave}
-            disabled={saveDisabled}
-          >
-            <View style={styles.saveButtonContent}>
-              {justSaved ? (
-                <>
-                  <Text style={styles.saveButtonText}>Saved</Text>
-                  <DrawnCheckmark />
-                </>
-              ) : (
-                <>
-                  <Text style={styles.saveButtonText}>
-                    {saving ? "Saving..." : saveError ? "Try again" : "Add"}
-                  </Text>
-                  <IconSymbol
-                    name="checkmark.circle.fill"
-                    size={20}
-                    color={Colors.paper}
-                  />
-                </>
-              )}
-            </View>
-          </PressableScale>
-        </View>
+          <View style={styles.saveButtonContent}>
+            {justSaved ? (
+              <>
+                <Text style={styles.saveButtonText}>Saved</Text>
+                <DrawnCheckmark />
+              </>
+            ) : (
+              <>
+                <Text style={styles.saveButtonText}>
+                  {saving ? "Saving..." : saveError ? "Try again" : "Add"}
+                </Text>
+                <IconSymbol
+                  name="checkmark.circle.fill"
+                  size={20}
+                  color={Colors.paper}
+                />
+              </>
+            )}
+          </View>
+        </PressableScale>
       </View>
 
       {/* Nothing was lost — say so plainly, in the same secondary ink as the
@@ -495,10 +483,10 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.card,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "rgba(26, 26, 26, 0.15)",
+    borderColor: Hairline.raised,
     paddingVertical: 4,
     minWidth: 220,
-    shadowColor: "#1A1A1A",
+    shadowColor: Colors.ink,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.12,
     shadowRadius: 12,
@@ -520,7 +508,7 @@ const styles = StyleSheet.create({
   },
   popoverDivider: {
     height: StyleSheet.hairlineWidth,
-    backgroundColor: "rgba(26, 26, 26, 0.1)",
+    backgroundColor: Hairline.popover,
     marginHorizontal: 8,
   },
   popoverArrow: {
@@ -532,7 +520,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.card,
     borderRightWidth: 1,
     borderBottomWidth: 1,
-    borderColor: "rgba(26, 26, 26, 0.15)",
+    borderColor: Hairline.raised,
     transform: [{ rotate: "45deg" }],
   },
   mediaButtonContent: { flexDirection: "row", alignItems: "center" },

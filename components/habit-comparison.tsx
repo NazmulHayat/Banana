@@ -1,5 +1,5 @@
 import { PressableScale } from "@/components/ui/pressable-scale";
-import { Colors, Fonts } from "@/constants/theme";
+import { Colors, Fonts, Hairline } from "@/constants/theme";
 import type { HabitComparisonRow } from "@/lib/stats";
 import { StyleSheet, Text, View } from "react-native";
 
@@ -9,9 +9,6 @@ interface HabitComparisonProps {
   /** Drill into one habit's deep-dive. */
   onSelect?: (habitId: string) => void;
 }
-
-const HAIRLINE = "rgba(26,26,26,0.09)";
-const TRACK = "rgba(26,26,26,0.07)";
 
 /**
  * FR-AN2 — habits ranked by this month's completion rate, drawn as bars so the
@@ -52,6 +49,15 @@ export function HabitComparison({ rows, onSelect }: HabitComparisonProps) {
             key={row.habitId}
             scaleTo={0.99}
             onPress={() => onSelect(row.habitId)}
+            // The bar is three separate Texts — say the whole row at once.
+            accessibilityLabel={
+              isNew
+                ? `${row.name}, new, starts counting today`
+                : `${row.name}, ${pct} percent, ${row.done} of ${row.days} day${
+                    row.days === 1 ? "" : "s"
+                  } since you started it`
+            }
+            accessibilityHint="Opens this habit's analysis"
           >
             {bar}
           </PressableScale>
@@ -64,7 +70,7 @@ export function HabitComparison({ rows, onSelect }: HabitComparisonProps) {
 }
 
 const styles = StyleSheet.create({
-  row: { paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: HAIRLINE },
+  row: { paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Hairline.strong },
   head: {
     flexDirection: "row",
     alignItems: "baseline",
@@ -79,7 +85,7 @@ const styles = StyleSheet.create({
     marginRight: 12,
   },
   value: { fontSize: 14, color: Colors.ink, fontFamily: Fonts.handwritingSemiBold },
-  track: { height: 8, borderRadius: 4, backgroundColor: TRACK, overflow: "hidden" },
+  track: { height: 8, borderRadius: 4, backgroundColor: Hairline.track, overflow: "hidden" },
   fill: { height: "100%", backgroundColor: Colors.accent },
   meta: {
     fontSize: 11.5,

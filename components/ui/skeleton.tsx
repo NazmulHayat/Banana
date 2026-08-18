@@ -1,3 +1,6 @@
+import { Motion } from "@/constants/motion";
+import { Hairline, Scrim } from "@/constants/theme";
+import { useReduceMotion } from "@/lib/use-reduce-motion";
 import { useEffect, useRef } from "react";
 import { Animated, StyleSheet, View, ViewStyle } from "react-native";
 
@@ -19,25 +22,32 @@ export function Skeleton({
   style,
 }: SkeletonProps) {
   const pulse = useRef(new Animated.Value(0)).current;
+  const reduceMotion = useReduceMotion();
 
   useEffect(() => {
+    // A looping pulse is the textbook thing Reduce Motion turns off — hold it
+    // at the midpoint instead, so the placeholder is still visibly a placeholder.
+    if (reduceMotion) {
+      pulse.setValue(0.5);
+      return;
+    }
     const loop = Animated.loop(
       Animated.sequence([
         Animated.timing(pulse, {
           toValue: 1,
-          duration: 800,
+          duration: Motion.pulse,
           useNativeDriver: true,
         }),
         Animated.timing(pulse, {
           toValue: 0,
-          duration: 800,
+          duration: Motion.pulse,
           useNativeDriver: true,
         }),
       ]),
     );
     loop.start();
     return () => loop.stop();
-  }, [pulse]);
+  }, [pulse, reduceMotion]);
 
   return (
     <Animated.View
@@ -81,14 +91,14 @@ export function SkeletonCard({ height = 120, style }: SkeletonCardProps) {
 
 const styles = StyleSheet.create({
   block: {
-    backgroundColor: "rgba(26, 26, 26, 0.12)",
+    backgroundColor: Hairline.wash,
   },
   card: {
-    backgroundColor: "rgba(255, 255, 255, 0.6)",
+    backgroundColor: Scrim.card,
     borderRadius: 18,
     paddingVertical: 18,
     paddingHorizontal: 20,
     borderWidth: 1,
-    borderColor: "rgba(26, 26, 26, 0.06)",
+    borderColor: Hairline.faint,
   },
 });

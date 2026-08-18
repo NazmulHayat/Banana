@@ -1,4 +1,4 @@
-import { Colors, Fonts } from "@/constants/theme";
+import { Colors, Fonts, Hairline } from "@/constants/theme";
 import type { PersonalRecord, RecordKey, RecordUnit } from "@/lib/gamification";
 import { StyleSheet, Text, View } from "react-native";
 
@@ -6,9 +6,6 @@ interface RecordsBoardProps {
   /** Rows from `lib/gamification.computeRecords`. */
   records: PersonalRecord[];
 }
-
-const HAIRLINE = "rgba(26,26,26,0.09)";
-const TRACK = "rgba(26,26,26,0.07)";
 
 const TITLES: Record<RecordKey, string> = {
   longestStreak: "Longest streak",
@@ -65,7 +62,7 @@ export function RecordsBoard({ records }: RecordsBoardProps) {
 }
 
 const styles = StyleSheet.create({
-  row: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: HAIRLINE },
+  row: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: Hairline.strong },
   head: {
     flexDirection: "row",
     alignItems: "baseline",
@@ -83,7 +80,7 @@ const styles = StyleSheet.create({
   track: {
     height: 8,
     borderRadius: 4,
-    backgroundColor: TRACK,
+    backgroundColor: Hairline.track,
     justifyContent: "center",
   },
   fill: {

@@ -22,7 +22,7 @@ const styles = StyleSheet.create({
     borderColor: Colors.ink,
     ...Platform.select({
       ios: {
-        shadowColor: "#1A1A1A",
+        shadowColor: Colors.ink,
         shadowOffset: { width: 0, height: 4 },
         shadowOpacity: 0.03,
         shadowRadius: 10,

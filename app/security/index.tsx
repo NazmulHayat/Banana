@@ -4,7 +4,7 @@ import { PaperCard } from "@/components/ui/paper-card";
 import { ScreenHeader } from "@/components/ui/screen-header";
 import { SettingsRow } from "@/components/ui/settings-row";
 import { IconSymbol } from "@/components/ui/icon-symbol";
-import { Colors, Fonts } from "@/constants/theme";
+import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { keyring } from "@/lib/crypto";
 import { supabase } from "@/lib/supabase";
@@ -215,13 +215,14 @@ export default function SecurityScreen() {
       >
         <KeyboardAvoidingView
           style={styles.modalContainer}
+          accessibilityViewIsModal
           behavior={Platform.OS === "ios" ? "padding" : "height"}
         >
           <View style={styles.modalHeader}>
             <TouchableOpacity onPress={() => setShowRecoveryModal(false)}>
               <Text style={styles.modalCancel}>Done</Text>
             </TouchableOpacity>
-            <Text style={styles.modalTitle}>Recovery Key</Text>
+            <Text style={styles.modalTitle} accessibilityRole="header">Recovery Key</Text>
             <View style={{ width: 60 }} />
           </View>
           <ScrollView style={styles.modalContent} keyboardShouldPersistTaps="handled">
@@ -303,13 +304,14 @@ export default function SecurityScreen() {
       >
         <KeyboardAvoidingView
           style={styles.modalContainer}
+          accessibilityViewIsModal
           behavior={Platform.OS === "ios" ? "padding" : "height"}
         >
           <View style={styles.modalHeader}>
             <TouchableOpacity onPress={() => setShowChangePasswordModal(false)}>
               <Text style={styles.modalCancel}>Cancel</Text>
             </TouchableOpacity>
-            <Text style={styles.modalTitle}>Change Password</Text>
+            <Text style={styles.modalTitle} accessibilityRole="header">Change Password</Text>
             <View style={{ width: 60 }} />
           </View>
           <ScrollView style={styles.modalContent} keyboardShouldPersistTaps="handled">
@@ -371,7 +373,7 @@ const styles = StyleSheet.create({
   rowGroup: { paddingVertical: 4, paddingHorizontal: 18 },
   rowDivider: {
     height: StyleSheet.hairlineWidth,
-    backgroundColor: "rgba(26, 26, 26, 0.08)",
+    backgroundColor: Hairline.base,
     marginLeft: 38,
   },
   // modal

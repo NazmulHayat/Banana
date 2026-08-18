@@ -1,4 +1,4 @@
-import { Colors, Fonts } from "@/constants/theme";
+import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { DailyEntry } from "@/lib/db";
 import {
   determineLayout,
@@ -61,12 +61,26 @@ function CardHeader({
       {showActions && (
         <View style={styles.actions}>
           {onEdit && (
-            <IconButton size={32} onPress={() => onEdit(entry)}>
+            <IconButton
+              size={32}
+              onPress={() => onEdit(entry)}
+              accessibilityLabel="Edit highlight"
+              accessibilityHint={
+                timeLabel ? `Saved at ${timeLabel}` : undefined
+              }
+            >
               <IconSymbol name="pencil" size={17} color={Colors.textSecondary} />
             </IconButton>
           )}
           {onDelete && (
-            <IconButton size={32} onPress={() => onDelete(entry)}>
+            <IconButton
+              size={32}
+              onPress={() => onDelete(entry)}
+              accessibilityLabel="Delete highlight"
+              accessibilityHint={
+                timeLabel ? `Saved at ${timeLabel}` : undefined
+              }
+            >
               <IconSymbol name="trash" size={16} color={Colors.textSecondary} />
             </IconButton>
           )}
@@ -276,6 +290,9 @@ function TextWithImagesLayout({
               activeOpacity={0.85}
               onPress={() => onImagePress(item.url)}
               style={{ marginRight, marginBottom }}
+              accessibilityRole="button"
+              accessibilityLabel={`Photo ${index + 1} of ${imageCount}`}
+              accessibilityHint="Opens the photo full screen"
             >
               <Image
                 source={{ uri: item.url }}
@@ -337,6 +354,6 @@ const styles = StyleSheet.create({
   image: {
     borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(26, 26, 26, 0.08)",
+    borderColor: Hairline.base,
   },
 });

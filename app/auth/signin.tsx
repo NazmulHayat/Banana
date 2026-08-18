@@ -1,6 +1,6 @@
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
-import { Colors, Fonts } from "@/constants/theme";
+import { Colors, Fonts, Scrim } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { keyring } from "@/lib/crypto";
 import { supabase } from "@/lib/supabase";
@@ -224,6 +224,12 @@ export default function SigninScreen() {
               <TouchableOpacity
                 onPress={() => setShowPassword(!showPassword)}
                 style={styles.eyeButton}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  showPassword ? "Hide password" : "Show password"
+                }
+                accessibilityState={{ selected: showPassword }}
               >
                 <IconSymbol
                   name={showPassword ? "eye.slash" : "eye"}
@@ -416,7 +422,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: Colors.shadow,
-    backgroundColor: "rgba(255, 179, 128, 0.18)",
+    backgroundColor: Scrim.accent,
   },
   repairTitle: {
     fontSize: 16,
