@@ -48,7 +48,7 @@ erDiagram
 | Table | Purpose | Encrypted? | Key columns / constraints |
 |-------|---------|-----------|---------------------------|
 | `profiles` | The keyring — wrapped master key + KDF params (see below) | wrapped blobs | `id` = user. **No delete policy** (can't self-brick). |
-| `accounts` | Public username (uniqueness + future social) | **plaintext, by design** | `username` unique, `^[a-z0-9_]{3,20}$`, lowercase. **No delete policy.** |
+| `accounts` | Public username + avatar pointer | **plaintext, by design** | `username` unique, `^[a-z0-9_]{3,20}$`, lowercase. `avatar_path` = storage key `<uid>/avatar/<id>.<ext>` in `private-media`, constrained to the owner's prefix; image bytes are **not** client-side encrypted in v1. **No delete policy.** |
 | `entries` | One journal entry per day | yes | unique `(owner_id, day_bucket)`; index `(owner_id, month_bucket)` |
 | `entry_media` | Pointers to encrypted images in Storage | meta encrypted | FK → `entries`; `ciphertext_meta` holds the per-media data key; unique `object_path` |
 | `habits` | Habit definitions (name) | yes | index `(owner_id)` |
@@ -184,5 +184,6 @@ Timestamped, idempotent, `begin; … commit;`. Never edit an applied one — app
 |------|-------------|
 | `…120000_initial_setup` | All 6 tables, triggers, RLS, `username_available`, `private-media` bucket. |
 | `…130000_account_deletion` | `delete_my_account()` RPC. |
+| `…20260819120000_account_avatar` | Adds `accounts.avatar_path` + owner-prefix check constraint. Additive; RLS unchanged (row-scoped policies cover the new column). |
 | `…160000_fixes_v1` | `bytea` → `text` for ciphertext/nonce (base64, not hex); dropped `delete` policies on profiles/accounts; hardened RPC `search_path`. |
 | `…170000_fixes_v2` | Moved storage cleanup client-side (Supabase blocks it in the RPC). |
