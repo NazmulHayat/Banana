@@ -8,7 +8,6 @@ import {
   Alert,
   Image,
   Platform,
-  Pressable,
   StyleSheet,
   Text,
   TextInput,
@@ -35,6 +34,16 @@ const CHECK_PATH_LENGTH = 24;
 
 /** How long "Saved" stays on the button before it goes back to "Add". */
 const SAVED_BEAT_MS = 1200;
+
+/**
+ * Character cap for one highlight. Same number the onboarding composer uses —
+ * a highlight is a sentence or two, and the two composers must not disagree
+ * about what fits.
+ */
+export const MAX_HIGHLIGHT_LENGTH = 500;
+
+/** How many characters from the cap the counter appears. */
+const COUNTER_VISIBLE_FROM = 60;
 
 /** Checkmark that draws itself like a pen stroke. */
 function DrawnCheckmark({ size = 20 }: { size?: number }) {
@@ -71,6 +80,15 @@ function DrawnCheckmark({ size = 20 }: { size?: number }) {
 interface HighlightInputProps {
   todayEntryCount: number;
   /**
+   * Today's date, spelled the way the note under the title says it ("Aug 18").
+   * A highlight ALWAYS lands on today — the grid above can be browsing any
+   * month, so when it isn't the current one we say where the words are going
+   * instead of quietly filing them somewhere else.
+   */
+  todayLabel: string;
+  /** True when the grid above is showing a month other than the current one. */
+  browsingOtherMonth?: boolean;
+  /**
    * Called with text + locally-picked image URIs. Parent uploads + persists and
    * reports the outcome — it must not throw, so the composer can decide whether
    * it is safe to clear.
@@ -84,6 +102,8 @@ const MAX_IMAGES = 4;
 
 export function HighlightInput({
   todayEntryCount,
+  todayLabel,
+  browsingOtherMonth,
   onSave,
   saving,
 }: HighlightInputProps) {
@@ -212,20 +232,39 @@ export function HighlightInput({
   return (
     <PaperCard style={styles.container}>
       <Text style={styles.title}>Highlight of the day</Text>
-      <Text style={styles.placeholder}>
-        {todayEntryCount === 0
-          ? "Tell me something about today..."
-          : "Add another highlight..."}
-      </Text>
+      {/* Browsing March and typing here used to file the words under today
+          with no warning. The grid stays back-fillable; the journal is
+          today-only, so say which day this is. */}
+      {browsingOtherMonth && (
+        <Text style={styles.dateNote}>
+          Saves to today, {todayLabel} — not the month you&apos;re viewing.
+        </Text>
+      )}
+      {/* The hint is the TextInput's own placeholder, so it clears the moment
+          you type. It used to be a sibling <Text> that sat there the whole
+          time you were writing. */}
       <TextInput
         style={styles.input}
         value={text}
         onChangeText={setText}
-        placeholder=""
+        placeholder={
+          todayEntryCount === 0
+            ? "Tell me something about today..."
+            : "Add another highlight..."
+        }
         multiline
+        maxLength={MAX_HIGHLIGHT_LENGTH}
         placeholderTextColor={Colors.textSecondary}
         editable={!saving}
+        accessibilityLabel={`Highlight for today, ${todayLabel}`}
       />
+      {/* Silence at the cap reads as a broken keyboard — show the countdown,
+          but only once it's close enough to matter. */}
+      {text.length > MAX_HIGHLIGHT_LENGTH - COUNTER_VISIBLE_FROM && (
+        <Text style={styles.counter} accessibilityLiveRegion="polite">
+          {MAX_HIGHLIGHT_LENGTH - text.length} characters left
+        </Text>
+      )}
       {pickedUris.length > 0 && (
         <View style={styles.mediaPreviewContainer}>
           {pickedUris.map((uri, index) => (
@@ -264,35 +303,38 @@ export function HighlightInput({
               exiting={FadeOut.duration(Motion.quick)}
               style={styles.popover}
             >
-              <Pressable
+              {/* Both rows were bare Pressables — no scale, no opacity, no
+                  haptic. On the most-used menu in the app, that reads as a
+                  dead tap. */}
+              <PressableScale
                 style={styles.popoverItem}
                 onPress={() => {
+                  void Haptics.selectionAsync();
                   setPickerOpen(false);
                   void takePhoto();
                 }}
+                accessibilityLabel="Take photo"
               >
-                <IconSymbol
-                  name="camera.fill"
-                  size={16}
-                  color={Colors.ink}
-                />
-                <Text style={styles.popoverText}>Take Photo</Text>
-              </Pressable>
+                <View style={styles.popoverItemContent}>
+                  <IconSymbol name="camera.fill" size={16} color={Colors.ink} />
+                  <Text style={styles.popoverText}>Take Photo</Text>
+                </View>
+              </PressableScale>
               <View style={styles.popoverDivider} />
-              <Pressable
+              <PressableScale
                 style={styles.popoverItem}
                 onPress={() => {
+                  void Haptics.selectionAsync();
                   setPickerOpen(false);
                   void pickFromLibrary();
                 }}
+                accessibilityLabel="Choose from library"
               >
-                <IconSymbol
-                  name="photo.fill"
-                  size={16}
-                  color={Colors.ink}
-                />
-                <Text style={styles.popoverText}>Choose from Library</Text>
-              </Pressable>
+                <View style={styles.popoverItemContent}>
+                  <IconSymbol name="photo.fill" size={16} color={Colors.ink} />
+                  <Text style={styles.popoverText}>Choose from Library</Text>
+                </View>
+              </PressableScale>
               <View style={styles.popoverArrow} />
             </Animated.View>
           )}
@@ -403,18 +445,28 @@ const styles = StyleSheet.create({
     marginBottom: 4,
     fontFamily: Fonts.handwriting,
   },
-  placeholder: {
-    fontSize: 14,
+  dateNote: {
+    fontSize: 13,
     color: Colors.textSecondary,
-    marginBottom: 12,
+    marginBottom: 8,
     fontFamily: Fonts.handwriting,
     fontStyle: "italic",
+  },
+  counter: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    textAlign: "right",
+    marginBottom: 8,
   },
   input: {
     fontSize: 16,
     color: Colors.ink,
     minHeight: 60,
     fontFamily: Fonts.handwriting,
+    // Keeps the old rhythm now that the hint lives inside the field rather
+    // than as a line of its own above it.
+    marginTop: 8,
     marginBottom: 12,
   },
   footer: {
@@ -494,10 +546,14 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   popoverItem: {
-    flexDirection: "row",
-    alignItems: "center",
     paddingHorizontal: 14,
     paddingVertical: 12,
+    justifyContent: "center",
+    minHeight: 44,
+  },
+  popoverItemContent: {
+    flexDirection: "row",
+    alignItems: "center",
     gap: 12,
   },
   popoverText: {
