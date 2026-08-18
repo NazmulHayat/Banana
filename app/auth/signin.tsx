@@ -89,8 +89,7 @@ export default function SigninScreen() {
       try {
         await keyring.unlock(data.session.user.id, password);
         markKeyringReady(true);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
+      } catch {
         // Supabase password matched but the wrapped key didn't decrypt.
         // Most common cause: user reset their Supabase password via email but
         // their old encryption password is needed to unwrap the master key.
@@ -211,7 +210,7 @@ export default function SigninScreen() {
           </View>
 
           <View style={styles.signupContainer}>
-            <Text style={styles.signupText}>Don't have an account? </Text>
+            <Text style={styles.signupText}>Don&apos;t have an account? </Text>
             <TouchableOpacity onPress={() => router.replace("/auth/signup")}>
               <Text style={styles.signupLink}>Create Account</Text>
             </TouchableOpacity>

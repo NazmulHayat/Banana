@@ -9,7 +9,6 @@ import { Href, router } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import {
     Animated,
-    Dimensions,
     KeyboardAvoidingView,
     Platform,
     StyleSheet,
@@ -20,10 +19,8 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-const { width, height } = Dimensions.get("window");
-
 const DEFAULT_ENTRY_TEXT =
-  "Started a new journey of tracking my habits! Here we go 🍌";
+  "Started a new journey of tracking my habits! Here we go";
 
 type Stage = "intro" | "input" | "saving" | "feed";
 
@@ -75,7 +72,9 @@ export default function FeedDemoScreen() {
         ]).start();
       }, 600);
     });
-  }, []);
+    // Animated.Value refs are stable across renders (useRef); listing them
+    // here satisfies exhaustive-deps without changing when this runs.
+  }, [fadeAnim, inputFade, inputSlide, slideAnim]);
 
   const handleSave = async () => {
     if (!journalText.trim()) return;
@@ -182,7 +181,7 @@ export default function FeedDemoScreen() {
                   },
                 ]}
               >
-                <Text style={styles.inputLabel}>Here's your first entry:</Text>
+                <Text style={styles.inputLabel}>Here&apos;s your first entry:</Text>
                 <View style={styles.inputBox}>
                   <TextInput
                     style={styles.textInput}

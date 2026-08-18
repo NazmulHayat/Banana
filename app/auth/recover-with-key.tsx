@@ -177,8 +177,8 @@ export default function RecoverWithKeyScreen() {
           />
           <Text style={styles.errorTitle}>Sign in first</Text>
           <Text style={styles.errorMsg}>
-            To use your recovery key, you need to be signed in. Use "Reset by
-            email" to get a new password, sign in, then return here.
+            To use your recovery key, you need to be signed in. Use &quot;Reset by
+            email&quot; to get a new password, sign in, then return here.
           </Text>
           <TouchableOpacity
             style={styles.primaryButton}

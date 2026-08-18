@@ -84,8 +84,8 @@ export default function ForgotPasswordScreen() {
               <Text style={styles.optionTitle}>Reset by email</Text>
             </View>
             <Text style={styles.optionDesc}>
-              We'll email you a link to set a new password. After signing in
-              with your new password, you'll be asked for your recovery key to
+              We&apos;ll email you a link to set a new password. After signing in
+              with your new password, you&apos;ll be asked for your recovery key to
               unlock your encrypted data.
             </Text>
 
@@ -124,7 +124,7 @@ export default function ForgotPasswordScreen() {
                   Check your email for a reset link.
                 </Text>
                 <Text style={styles.sentHint}>
-                  After resetting, sign in with your new password. You'll be
+                  After resetting, sign in with your new password. You&apos;ll be
                   prompted for your recovery key.
                 </Text>
               </View>

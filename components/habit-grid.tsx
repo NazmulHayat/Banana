@@ -92,7 +92,7 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, o
 
   const handleHeaderLayout = (event: any) => {
     if (onHeaderLayout) {
-      const { y, height } = event.nativeEvent.layout;
+      const { y } = event.nativeEvent.layout;
       onHeaderLayout(y);
     }
   };

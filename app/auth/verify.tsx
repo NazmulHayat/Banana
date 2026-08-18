@@ -178,7 +178,7 @@ export default function VerifyScreen() {
           </TouchableOpacity>
 
           <Text style={styles.hint}>
-            Can't find the email? Check your spam folder.
+            Can&apos;t find the email? Check your spam folder.
           </Text>
         </View>
       </KeyboardAvoidingView>
