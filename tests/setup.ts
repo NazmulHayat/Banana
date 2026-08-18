@@ -1,6 +1,25 @@
 // Polyfills + mocks for running RN-targeted code in Node.
 
 import { webcrypto } from "node:crypto";
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+// 0. Load .env.local (gitignored — holds SUPABASE_SERVICE_ROLE_KEY for
+//    tests/e2e.test.ts) into process.env, same simple parse as
+//    tests/e2e.test.ts uses for .env. Silent no-op if the file is absent;
+//    never logs the parsed values.
+const envLocalPath = path.join(__dirname, "..", ".env.local");
+try {
+  const envLocalText = fs.readFileSync(envLocalPath, "utf-8");
+  for (const line of envLocalText.split("\n")) {
+    const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
+    if (m && process.env[m[1]] === undefined) {
+      process.env[m[1]] = m[2].trim();
+    }
+  }
+} catch {
+  // .env.local not present — fine, e2e tests will report what's missing.
+}
 
 // 1. crypto.getRandomValues — Node 19+ has globalThis.crypto, older needs polyfill
 if (!globalThis.crypto) {

@@ -6,10 +6,10 @@
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "aightbet",
-    "userInterfaceStyle": "automatic",
+    "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
       "bundleIdentifier": "com.nazmulhayat.aightbet",
       "buildNumber": "1",
       "infoPlist": {

@@ -56,3 +56,6 @@ supabase/.temp/
 
 # Local dev planning doc — personal tracker, kept out of the repo.
 tasks.md
+
+# Static HTML design prototypes — kept on disk for reference, not shipped.
+design-demos/

@@ -8,7 +8,8 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "test": "npx tsx tests/crypto.test.ts && npx tsx tests/stats.test.ts && npx tsx tests/pending-writes.test.ts"
   },
   "dependencies": {
     "@expo-google-fonts/shantell-sans": "^0.4.1",

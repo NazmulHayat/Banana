@@ -28,9 +28,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const APP_VERSION = Constants.expoConfig?.version ?? "1.0.0";
-const PRIVACY_URL = "https://aightbet-app.example.com/privacy"; // TODO: replace with real URL
-const TERMS_URL = "https://aightbet-app.example.com/terms";
-const SUPPORT_EMAIL = "support@aightbet-app.example.com";
+const SUPPORT_EMAIL = "nazmulhayat588@gmail.com";
 
 /**
  * Profile hub. Identity + a free stats peek (taps into the analysis), plus
@@ -212,13 +210,13 @@ export default function ProfileScreen() {
             <SettingsRow
               icon="hand.raised.fill"
               title="Privacy Policy"
-              onPress={() => Linking.openURL(PRIVACY_URL)}
+              onPress={() => router.push("/legal/privacy" as Href)}
             />
             <View style={styles.rowDivider} />
             <SettingsRow
               icon="doc.text"
               title="Terms of Service"
-              onPress={() => Linking.openURL(TERMS_URL)}
+              onPress={() => router.push("/legal/terms" as Href)}
             />
             <View style={styles.rowDivider} />
             <SettingsRow

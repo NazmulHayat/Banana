@@ -1,6 +1,5 @@
 import { HabitGrid } from "@/components/habit-grid";
 import { HighlightInput } from "@/components/highlight-input";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { IconButton } from "@/components/ui/icon-button";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
@@ -26,12 +25,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     Alert,
     Animated,
-    Modal,
     RefreshControl,
     ScrollView,
     StyleSheet,
     Text,
-    TextInput,
     TouchableOpacity,
     View,
 } from "react-native";
@@ -54,15 +51,6 @@ export default function TrackerScreen() {
 
   // Progressive day animation refs
   const dayAnimations = useRef<Map<string, Animated.Value>>(new Map());
-
-  // Habit management state
-  const [showHabitModal, setShowHabitModal] = useState(false);
-  const [editingHabit, setEditingHabit] = useState<Habit | null>(null);
-  const [habitName, setHabitName] = useState("");
-
-  // Delete-habit confirmation (reusable ConfirmDialog drives the confirm step)
-  const [habitToDelete, setHabitToDelete] = useState<Habit | null>(null);
-  const [deleting, setDeleting] = useState(false);
 
   // Entry save state (upload + persist)
   const [savingEntry, setSavingEntry] = useState(false);
@@ -138,16 +126,6 @@ export default function TrackerScreen() {
       }
     });
   }, [dataStore.habitLogsByDay]);
-
-  // Real habits from store (for editing, not the derived placeholders)
-  const realHabits = dataStore.habits;
-  
-  // Local setters for optimistic updates
-  const setHabits = (newHabits: Habit[]) => dataStore.updateHabits(newHabits);
-  const setLogs = (newLogs: HabitLog[]) => {
-    // For optimistic updates, update each log individually
-    newLogs.forEach((log) => dataStore.updateHabitLog(log));
-  };
 
   // Refresh data for current month when month changes
   const loadData = useCallback(async () => {
@@ -329,71 +307,6 @@ export default function TrackerScreen() {
     };
   }, []);
 
-  // Habit management handlers
-  const handleOpenHabitModal = (habit?: Habit) => {
-    if (habit) {
-      setEditingHabit(habit);
-      setHabitName(habit.name);
-    } else {
-      setEditingHabit(null);
-      setHabitName("");
-    }
-    setShowHabitModal(true);
-  };
-
-  const handleSaveHabit = async () => {
-    const name = habitName.trim();
-    if (!name) {
-      Alert.alert("Required", "Please enter a habit name.");
-      return;
-    }
-    if (name.length > 20) {
-      Alert.alert("Too long", "Habit name must be 20 characters or less.");
-      return;
-    }
-
-    let updatedHabits: Habit[];
-    if (editingHabit) {
-      // Update existing habit - use realHabits, not placeholder habits
-      updatedHabits = realHabits.map((h) =>
-        h.id === editingHabit.id ? { ...h, name } : h,
-      );
-    } else {
-      // Add new habit - use realHabits, not placeholder habits
-      const id =
-        typeof crypto !== "undefined" &&
-        typeof crypto.randomUUID === "function"
-          ? crypto.randomUUID()
-          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const newHabit: Habit = {
-        id,
-        name,
-        createdAt: new Date().toISOString(),
-      };
-      updatedHabits = [...realHabits, newHabit];
-    }
-
-    // Optimistic UI update via DataStore
-    dataStore.updateHabits(updatedHabits);
-    setShowHabitModal(false);
-    setHabitName("");
-    setEditingHabit(null);
-
-    try {
-      // Save to Supabase
-      await saveHabits(updatedHabits);
-
-      // Refresh logs in background (habits may affect grid rendering)
-      await dataStore.refreshHabitLogs(currentYear, currentMonth);
-    } catch (error) {
-      console.error("[TrackerScreen] Failed to save habits:", error);
-      Alert.alert("Save failed", "Could not save habits. Please try again.");
-
-      // Re-sync state from server on failure
-      await dataStore.refreshHabits();
-    }
-  };
-
   // Persist a drag-to-reorder result. saveHabits stores the list in array
   // order, so the reordered array IS the new persisted order — same
   // optimistic-then-persist pattern as create/edit/delete above.
@@ -408,40 +321,6 @@ export default function TrackerScreen() {
       Alert.alert("Save failed", "Could not reorder habits. Please try again.");
       // Re-sync state from server on failure
       await dataStore.refreshHabits();
-    }
-  };
-
-  // Open the reusable confirm dialog for the chosen habit.
-  const handleDeleteHabit = (habit: Habit) => {
-    setHabitToDelete(habit);
-  };
-
-  // Runs the existing delete logic, driven by ConfirmDialog's confirm + loading.
-  const handleConfirmDeleteHabit = async () => {
-    const habit = habitToDelete;
-    if (!habit) return;
-    setDeleting(true);
-
-    const updatedHabits = realHabits.filter((h) => h.id !== habit.id);
-
-    // Optimistic update via DataStore
-    dataStore.updateHabits(updatedHabits);
-    setShowHabitModal(false);
-
-    try {
-      await saveHabits(updatedHabits);
-      await dataStore.refreshHabitLogs(currentYear, currentMonth);
-      setHabitToDelete(null);
-    } catch (error) {
-      console.error("[TrackerScreen] Failed to delete habit:", error);
-      Alert.alert(
-        "Delete failed",
-        "Could not delete habit. Please try again.",
-      );
-      await dataStore.refreshHabits();
-      setHabitToDelete(null);
-    } finally {
-      setDeleting(false);
     }
   };
 
@@ -583,113 +462,6 @@ export default function TrackerScreen() {
           </Animated.View>
         )}
 
-        {/* Habit Management Modal */}
-        <Modal
-          visible={showHabitModal}
-          animationType="slide"
-          presentationStyle="pageSheet"
-          onRequestClose={() => setShowHabitModal(false)}
-        >
-          <View style={styles.modalContainer}>
-            <View style={styles.modalHeader}>
-              <TouchableOpacity onPress={() => setShowHabitModal(false)}>
-                <Text style={styles.modalCancel}>Cancel</Text>
-              </TouchableOpacity>
-              <Text style={styles.modalTitle}>
-                {editingHabit ? "Edit Habit" : "Manage Habits"}
-              </Text>
-              <TouchableOpacity onPress={() => handleOpenHabitModal()}>
-                <IconSymbol name="plus" size={24} color={Colors.accent} />
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView style={styles.modalContent}>
-              {/* Current habits list - use realHabits, not placeholder habits */}
-              {realHabits.length > 0 && !editingHabit && (
-                <View style={styles.habitsList}>
-                  <Text style={styles.habitsListTitle}>Your Habits</Text>
-                  {realHabits.map((habit) => (
-                    <TouchableOpacity
-                      key={habit.id}
-                      style={styles.habitItem}
-                      onPress={() => handleOpenHabitModal(habit)}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={styles.habitItemName}>{habit.name}</Text>
-                      <IconSymbol
-                        name="chevron.right"
-                        size={16}
-                        color={Colors.textSecondary}
-                      />
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              )}
-
-              {/* Add/Edit form */}
-              {(editingHabit || realHabits.length === 0 || habitName !== "") && (
-                <View style={styles.habitForm}>
-                  <Text style={styles.formLabel}>
-                    {editingHabit ? "Habit Name" : "Add New Habit"}
-                  </Text>
-                  <TextInput
-                    style={styles.habitInput}
-                    value={habitName}
-                    onChangeText={setHabitName}
-                    placeholder="e.g. Exercise, Read, Meditate"
-                    placeholderTextColor={Colors.textSecondary}
-                    maxLength={20}
-                    autoFocus={editingHabit !== null || realHabits.length === 0}
-                  />
-                  <Text style={styles.charCount}>{habitName.length}/20</Text>
-
-                  <TouchableOpacity
-                    style={styles.saveButton}
-                    onPress={handleSaveHabit}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={styles.saveButtonText}>
-                      {editingHabit ? "Save Changes" : "Add Habit"}
-                    </Text>
-                  </TouchableOpacity>
-
-                  {editingHabit && (
-                    <TouchableOpacity
-                      style={styles.deleteButton}
-                      onPress={() => handleDeleteHabit(editingHabit)}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={styles.deleteButtonText}>Delete Habit</Text>
-                    </TouchableOpacity>
-                  )}
-
-                  {editingHabit && (
-                    <TouchableOpacity
-                      style={styles.backButton}
-                      onPress={() => {
-                        setEditingHabit(null);
-                        setHabitName("");
-                      }}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={styles.backButtonText}>Back to list</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-              )}
-
-              {realHabits.length === 0 && habitName === "" && (
-                <View style={styles.emptyHabits}>
-                  <Text style={styles.emptyText}>No habits yet</Text>
-                  <Text style={styles.emptyHint}>
-                    Add your first habit to start tracking
-                  </Text>
-                </View>
-              )}
-            </ScrollView>
-          </View>
-        </Modal>
-
         {snackbar.visible && (
           <Animated.View
             pointerEvents="none"
@@ -717,21 +489,6 @@ export default function TrackerScreen() {
             <Text style={styles.snackbarText}>{snackbar.message}</Text>
           </Animated.View>
         )}
-
-        <ConfirmDialog
-          visible={habitToDelete !== null}
-          title="Delete habit?"
-          message={
-            habitToDelete
-              ? `"${habitToDelete.name}" and all of its logs will be removed. This can't be undone.`
-              : undefined
-          }
-          confirmLabel="Delete"
-          destructive
-          loading={deleting}
-          onConfirm={handleConfirmDeleteHabit}
-          onCancel={() => setHabitToDelete(null)}
-        />
       </View>
     </PaperBackground>
   );
@@ -834,149 +591,6 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwriting,
     textAlign: "center",
     fontWeight: "700",
-  },
-  // Modal styles
-  modalContainer: {
-    flex: 1,
-    backgroundColor: Colors.paper,
-  },
-  modalHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.shadow,
-  },
-  modalCancel: {
-    fontSize: 16,
-    color: Colors.accent,
-    fontFamily: Fonts.handwriting,
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: "600",
-    color: Colors.ink,
-    fontFamily: Fonts.handwriting,
-  },
-  modalContent: {
-    flex: 1,
-    padding: 16,
-  },
-  habitsList: {
-    marginBottom: 24,
-  },
-  habitsListTitle: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
-    marginBottom: 12,
-    textTransform: "uppercase",
-    letterSpacing: 1,
-  },
-  habitItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingVertical: 16,
-    paddingHorizontal: 16,
-    backgroundColor: Colors.card,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: Colors.shadow,
-    marginBottom: 8,
-  },
-  habitItemName: {
-    fontSize: 16,
-    color: Colors.ink,
-    fontFamily: Fonts.handwriting,
-    fontWeight: "500",
-  },
-  habitForm: {
-    marginBottom: 24,
-  },
-  formLabel: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
-    marginBottom: 12,
-    textTransform: "uppercase",
-    letterSpacing: 1,
-  },
-  habitInput: {
-    height: 52,
-    borderWidth: 1.5,
-    borderColor: Colors.ink,
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    fontSize: 16,
-    fontFamily: Fonts.handwriting,
-    color: Colors.ink,
-    backgroundColor: Colors.card,
-  },
-  charCount: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
-    textAlign: "right",
-    marginTop: 4,
-    marginBottom: 16,
-  },
-  saveButton: {
-    height: 52,
-    backgroundColor: Colors.ink,
-    borderRadius: 12,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  saveButtonText: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: Colors.paper,
-    fontFamily: Fonts.handwriting,
-  },
-  deleteButton: {
-    height: 52,
-    backgroundColor: "transparent",
-    borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: Colors.danger,
-    justifyContent: "center",
-    alignItems: "center",
-    marginTop: 12,
-  },
-  deleteButtonText: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: Colors.danger,
-    fontFamily: Fonts.handwriting,
-  },
-  backButton: {
-    alignItems: "center",
-    marginTop: 16,
-  },
-  backButtonText: {
-    fontSize: 14,
-    color: Colors.accent,
-    fontFamily: Fonts.handwriting,
-  },
-  emptyHabits: {
-    alignItems: "center",
-    paddingVertical: 40,
-  },
-  emptyText: {
-    fontSize: 18,
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
-    marginBottom: 8,
-  },
-  emptyHint: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
   },
   snackbar: {
     position: "absolute",

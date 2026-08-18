@@ -38,7 +38,7 @@ const POST_SESSION_AUTH_SCREENS = new Set([
 // session exists, and never auto-kick off the auth/onboarding screens —
 // so the first-run experience is easy to iterate on. Dev builds only;
 // flip to false to get normal routing back.
-const DEV_FORCE_INTRO = __DEV__ && true;
+const DEV_FORCE_INTRO = false;
 
 function RootLayoutNav() {
   const { session, loading: authLoading, keyringReady } = useAuth();

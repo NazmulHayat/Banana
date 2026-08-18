@@ -1,6 +1,5 @@
 import { DayHighlightSheet } from "@/components/day-highlight-sheet";
 import { HabitHeatmap } from "@/components/habit-heatmap";
-import { PremiumLock } from "@/components/premium-lock";
 import { StatSparkline } from "@/components/stat-sparkline";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Colors, Fonts } from "@/constants/theme";
@@ -45,7 +44,6 @@ const pct = (r: number): number => Math.round(r * 100);
  * comes from the pure `lib/stats` engine; this file only arranges + animates.
  */
 export function AnalysisContent({ habits, logs, habitId, loading }: AnalysisContentProps) {
-  const [premium, setPremium] = useState(false);
   const [rangeDays, setRangeDays] = useState<number>(183);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
 
@@ -129,9 +127,8 @@ export function AnalysisContent({ habits, logs, habitId, loading }: AnalysisCont
         </View>
       </View>
 
-      {/* ---- Premium: the Tight 4 ---- */}
-      <PremiumLock locked={!premium} onUnlock={() => setPremium(true)}>
-        {/* 1 — Consistency heatmap */}
+      {/* ---- The Tight 4 ---- */}
+      {/* 1 — Consistency heatmap */}
         <View style={styles.section}>
           <View style={styles.sectionHead}>
             <Text style={styles.sectionLabel}>Consistency</Text>
@@ -226,7 +223,6 @@ export function AnalysisContent({ habits, logs, habitId, loading }: AnalysisCont
             })}
           </View>
         )}
-      </PremiumLock>
 
       <DayHighlightSheet
         visible={selectedDay !== null}
