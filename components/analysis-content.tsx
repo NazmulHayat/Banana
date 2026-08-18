@@ -3,7 +3,8 @@ import { HabitHeatmap } from "@/components/habit-heatmap";
 import { StatSparkline } from "@/components/stat-sparkline";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Colors, Fonts } from "@/constants/theme";
-import { DateFormats, type Habit, type HabitLog } from "@/lib/db";
+import { todayKey } from "@/lib/dates";
+import { type Habit, type HabitLog } from "@/lib/db";
 import {
   bestDayOfWeek,
   buildInsight,
@@ -76,7 +77,7 @@ export function AnalysisContent({ habits, logs, habitId, loading }: AnalysisCont
     );
   }
 
-  const today = DateFormats.formatDate(new Date());
+  const today = todayKey();
   const [ty, tm] = today.split("-").map(Number);
 
   // Headline streak + record: per-habit stats, or the best across all habits.

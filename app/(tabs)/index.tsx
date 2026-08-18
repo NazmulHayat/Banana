@@ -18,7 +18,7 @@ import {
     toggleHabitLog,
     upsertEntryInCache,
 } from "@/lib/db";
-import { DateFormats } from "@/lib/db/schema";
+import { monthKeyOfParts, todayKey } from "@/lib/dates";
 import { uploadImage } from "@/lib/media";
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -63,7 +63,7 @@ export default function TrackerScreen() {
     month: "long",
     year: "numeric",
   });
-  const monthKey = DateFormats.formatYearMonth(currentYear, currentMonth);
+  const monthKey = monthKeyOfParts(currentYear, currentMonth);
 
   // Get logs for current month with progressive rendering
   const logsForMonth = dataStore.getLogsForMonth(currentYear, currentMonth);
@@ -139,7 +139,7 @@ export default function TrackerScreen() {
     }
 
     // Get count of entries for today (background)
-    const today = new Date().toISOString().split("T")[0];
+    const today = todayKey();
     void getEntriesForDate(today).then((todayEntries) => {
       setTodayEntryCount(todayEntries.length);
     });
@@ -177,7 +177,7 @@ export default function TrackerScreen() {
         dataStore.refreshHabitLogs(currentYear, currentMonth, { force: true }),
         dataStore.refreshEntries(currentYear, currentMonth, { force: true }),
       ]);
-      const todayStr = new Date().toISOString().split("T")[0];
+      const todayStr = todayKey();
       const todayEntries = await getEntriesForDate(todayStr);
       setTodayEntryCount(todayEntries.length);
     } finally {
@@ -217,7 +217,7 @@ export default function TrackerScreen() {
   const handleSaveEntry = async (text: string, localUris: string[]) => {
     if (!session) return;
     const userId = session.user.id;
-    const today = new Date().toISOString().split("T")[0];
+    const today = todayKey();
     const entryId =
       typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
         ? crypto.randomUUID()

@@ -1,3 +1,16 @@
+// Local-time calendar keys (bug D1) — re-exported so `@/lib/db` consumers get
+// the sanctioned constructors alongside the types they already import.
+export {
+  daysInMonth,
+  fromDayKey,
+  isFutureDay,
+  monthKeyOf,
+  monthKeyOfParts,
+  parseDayKey,
+  toDayKey,
+  todayKey,
+} from "../dates";
+
 export type {
   AccountRow,
   DailyEntry,

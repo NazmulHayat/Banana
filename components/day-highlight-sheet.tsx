@@ -1,6 +1,7 @@
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { Colors, Fonts } from "@/constants/theme";
 import { useDataStore } from "@/lib/data-store";
+import { fromDayKey, parseDayKey } from "@/lib/dates";
 import type { DailyEntry, Habit, HabitLog } from "@/lib/db";
 import { useEffect, useState } from "react";
 import {
@@ -25,10 +26,12 @@ interface DayHighlightSheetProps {
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+// Day keys are local-time (lib/dates.ts) — parse them there, never inline.
 function pretty(date: string): string {
-  const [y, m, d] = date.split("-").map(Number);
-  const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
-  return `${WEEKDAYS[dow]}, ${MONTHS[m - 1]} ${d}`;
+  const parts = parseDayKey(date);
+  if (!parts) return "";
+  const dow = fromDayKey(date).getDay();
+  return `${WEEKDAYS[dow]}, ${MONTHS[parts.month - 1]} ${parts.day}`;
 }
 
 /**
@@ -48,11 +51,11 @@ export function DayHighlightSheet({ visible, date, habits, logs, onClose }: DayH
     let cancelled = false;
     const load = async () => {
       setLoading(true);
-      const [y, m] = date.split("-").map(Number);
+      const parts = parseDayKey(date);
       let month: DailyEntry[] = [];
       try {
         // Use the returned array (already current) rather than a store getter.
-        month = await refreshEntries(y, m);
+        if (parts) month = await refreshEntries(parts.year, parts.month);
       } catch {
         // Read degrades to whatever's cached — never block the sheet.
       }

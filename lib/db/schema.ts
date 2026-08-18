@@ -1,3 +1,5 @@
+import { monthKeyOf, monthKeyOfParts, toDayKey } from "../dates";
+
 export const Tables = {
   ACCOUNTS: "accounts",
   PROFILES: "profiles",
@@ -103,15 +105,19 @@ export const HabitLimits = {
   MAX_NAME_LENGTH: 20,
 } as const;
 
+// Calendar keys are LOCAL, always — these delegate to lib/dates.ts, the single
+// sanctioned source. They used to build keys from `toISOString()` (UTC), which
+// disagreed with the habit grid's local keys for part of every day (bug D1).
+// Prefer importing from "@/lib/dates" directly in new code.
 export const DateFormats = {
   formatDate(date: Date): string {
-    return date.toISOString().split("T")[0];
+    return toDayKey(date);
   },
   formatMonth(date: Date): string {
-    return date.toISOString().slice(0, 7);
+    return monthKeyOf(date);
   },
   formatYearMonth(year: number, month: number): string {
-    return `${year}-${String(month).padStart(2, "0")}`;
+    return monthKeyOfParts(year, month);
   },
 } as const;
 

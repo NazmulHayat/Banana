@@ -1,5 +1,6 @@
 import { Motion } from '@/constants/motion';
 import { Colors, Fonts } from '@/constants/theme';
+import { daysInMonth as daysInMonthOf, toDayKey } from '@/lib/dates';
 import { Habit, HabitLog } from '@/lib/db';
 import * as Haptics from 'expo-haptics';
 import { useRef, useState } from 'react';
@@ -35,7 +36,7 @@ interface HabitGridProps {
 }
 
 export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, onEdit, onReorder, onHeaderLayout, headerRef, onHorizontalScroll, stickyHeaderScrollRef }: HabitGridProps) {
-  const daysInMonth = new Date(currentYear, currentMonth, 0).getDate();
+  const daysInMonth = daysInMonthOf(currentYear, currentMonth);
   const today = new Date();
   const isCurrentMonth = today.getMonth() + 1 === currentMonth && today.getFullYear() === currentYear;
   const currentDay = isCurrentMonth ? today.getDate() : null;
@@ -56,8 +57,12 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, o
     onReorder(next);
   };
 
+  // Day keys are local-time and built in exactly one place (lib/dates.ts) so a
+  // tapped cell and a saved highlight always agree on the day (bug D1).
+  const dayKeyFor = (day: number) => toDayKey(new Date(currentYear, currentMonth - 1, day));
+
   const isCompleted = (habitId: string, day: number) => {
-    const date = `${currentYear}-${String(currentMonth).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const date = dayKeyFor(day);
     return logs.some((log) => log.habitId === habitId && log.date === date && log.completed);
   };
 
@@ -212,7 +217,7 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, o
             contentContainerStyle={{ width: totalHabitsWidth }}>
             <View style={styles.habitsColumn}>
               {Array.from({ length: daysInMonth }, (_, i) => i + 1).map((day) => {
-                const date = `${currentYear}-${String(currentMonth).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                const date = dayKeyFor(day);
                 return (
                   <View key={day} style={styles.row}>
                     {habits.map((habit) => (

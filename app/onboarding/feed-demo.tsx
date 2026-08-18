@@ -3,6 +3,7 @@ import { PaperBackground } from "@/components/ui/paper-background";
 import { PaperCard } from "@/components/ui/paper-card";
 import { Colors, Fonts } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
+import { todayKey } from "@/lib/dates";
 import { DailyEntry, saveEntry } from "@/lib/db";
 import { useOnboarding } from "@/lib/onboarding-context";
 import { Href, router } from "expo-router";
@@ -89,7 +90,7 @@ export default function FeedDemoScreen() {
     // Save the entry with today's date
     const entry: DailyEntry = {
       id: "onboarding-" + Date.now().toString(),
-      date: new Date().toISOString().split("T")[0],
+      date: todayKey(),
       text: journalText.trim(),
       mediaPaths: [],
       createdAt: new Date().toISOString(),

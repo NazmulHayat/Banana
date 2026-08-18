@@ -9,6 +9,7 @@ import { Motion } from "@/constants/motion";
 import { Colors, Fonts } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { useDataStore } from "@/lib/data-store";
+import { fromDayKey } from "@/lib/dates";
 import type { DailyEntry } from "@/lib/db";
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
@@ -68,7 +69,7 @@ export default function FeedScreen() {
     );
     return [...monthEntries].sort((a, b) => {
       if (a.date !== b.date) {
-        return new Date(b.date).getTime() - new Date(a.date).getTime();
+        return fromDayKey(b.date).getTime() - fromDayKey(a.date).getTime();
       }
       const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
       const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
@@ -155,12 +156,8 @@ export default function FeedScreen() {
   };
 
   const formatDate = (dateString: string): string => {
-    const [yearStr, monthStr, dayStr] = dateString.split("-");
-    const date = new Date(
-      parseInt(yearStr, 10),
-      parseInt(monthStr, 10) - 1,
-      parseInt(dayStr, 10),
-    );
+    // Day keys are local-time; fromDayKey is the only sanctioned parse.
+    const date = fromDayKey(dateString);
     const weekday = date.toLocaleDateString("en-US", { weekday: "short" });
     const md = date.toLocaleDateString("en-US", {
       month: "short",

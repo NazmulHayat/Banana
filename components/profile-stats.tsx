@@ -2,7 +2,8 @@ import { PaperCard } from "@/components/ui/paper-card";
 import { PressableScale } from "@/components/ui/pressable-scale";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Colors, Fonts } from "@/constants/theme";
-import { DateFormats, type Habit } from "@/lib/db";
+import { todayKey } from "@/lib/dates";
+import { type Habit } from "@/lib/db";
 import {
   bestDayOfWeek,
   buildInsight,
@@ -52,7 +53,7 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
     );
   }
 
-  const today = DateFormats.formatDate(new Date());
+  const today = todayKey();
   const [ty, tm] = today.split("-").map(Number);
   const perHabit = computeAllHabitStats(habits, logs, today);
   const overall = computeOverallStats(perHabit, logs);
