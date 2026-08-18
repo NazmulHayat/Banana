@@ -25,6 +25,12 @@ export interface HabitLog {
   completed: boolean;
 }
 
+/** One calendar month, 1-12. The unit every read is keyed by. */
+export interface MonthRef {
+  year: number;
+  month: number;
+}
+
 export interface AccountRow {
   id: string;
   username: string;
@@ -81,6 +87,25 @@ export type WriteOutcome =
   | { status: "failed"; reason: string };
 
 /**
+ * The result of a `lib/db` READ (D16). Reads used to degrade to `[]` on a
+ * server error, which the store then wrote into the in-memory Map AND
+ * AsyncStorage — so one failed pull-to-refresh while offline wiped the month
+ * off the device and blanked the UI. A read now says which of the two it is:
+ *
+ * - `ok: true`  — the network answered; `data` is the truth and is safe to
+ *   cache, even when it's empty (a genuinely empty month is a real result).
+ * - `ok: false` — the read never produced data (offline, server error, locked
+ *   keyring). NOTHING may be cached; the caller keeps what it already had.
+ *   `reason` is for a `__DEV__` log only, never for the UI.
+ *
+ * A single row that fails to DECRYPT is a different thing and stays non-fatal:
+ * it's skipped with a `__DEV__` warn and the read still reports `ok: true`.
+ */
+export type ReadResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; reason: string };
+
+/**
  * Thrown by `lib/db` writes that can never succeed by retrying as-is (locked
  * keyring, no session, undecryptable row). The data store maps these to
  * `{ status: "failed" }` rather than queueing them, so a doomed write can't sit
@@ -100,7 +125,16 @@ export interface EntryRef {
   date: string;
 }
 
-/** Identifies the habit whose logs a queued purge must remove (D12). */
+/**
+ * Identifies the habit whose logs a queued purge must remove (D12), plus the
+ * day range to sweep (D17). `day_bucket` is HMAC(masterKey, habitlog:<id>:<date>)
+ * and therefore forward-computable, so the purge enumerates days instead of
+ * downloading and decrypting the user's entire log history to find them.
+ * `from`/`to` are local day keys ("YYYY-MM-DD"); both are optional so a purge
+ * queued by an older build still replays (the caller supplies a fallback).
+ */
 export interface HabitRef {
   habitId: string;
+  from?: string;
+  to?: string;
 }

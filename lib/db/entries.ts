@@ -12,27 +12,41 @@ import {
 } from "../crypto";
 import { supabase } from "../supabase";
 import { DateFormats } from "./schema";
-import type { DailyEntry, EntryPayload } from "./types";
+import type {
+  DailyEntry,
+  EntryPayload,
+  MonthRef,
+  ReadResult,
+} from "./types";
 import { UnrecoverableWriteError } from "./types";
 
 // ----------------------------------------------------------------------------
 // Caches
 // ----------------------------------------------------------------------------
+// This module owns BOTH cache tiers for entries (D18): every write through here
+// updates the in-memory Map and AsyncStorage together, and the data store never
+// writes them a second time. One owner, one JSON.stringify per change.
 const entriesMonthCache = new Map<string, DailyEntry[]>(); // userId:YYYY-MM
-const entriesDayCache = new Map<string, DailyEntry[]>(); // userId:YYYY-MM-DD
 // Storage key is a protocol constant, not branding — renaming orphans caches.
 const ASYNC_STORAGE_PREFIX = "banana_entries_v2";
+
+// Rows per page on a batched read. PostgREST can cap a response (`db-max-rows`)
+// and would silently truncate it, so every multi-month read pages explicitly.
+const PAGE_SIZE = 500;
 
 function monthKey(userId: string, yearMonth: string): string {
   return `${userId}:${yearMonth}`;
 }
 
-function dayKey(userId: string, date: string): string {
-  return `${userId}:${date}`;
-}
-
 function storageKey(userId: string, yearMonth: string): string {
   return `${ASYNC_STORAGE_PREFIX}:${userId}:${yearMonth}`;
+}
+
+function writeMonth(userId: string, ym: string, entries: DailyEntry[]): void {
+  entriesMonthCache.set(monthKey(userId, ym), entries);
+  void AsyncStorage.setItem(storageKey(userId, ym), JSON.stringify(entries)).catch(
+    () => {},
+  );
 }
 
 export function getCachedEntriesForMonth(
@@ -53,69 +67,49 @@ export function setCachedEntriesForMonth(
   userId: string,
   entries: DailyEntry[],
 ): void {
-  const ym = DateFormats.formatYearMonth(year, month);
-  entriesMonthCache.set(monthKey(userId, ym), entries);
-  void AsyncStorage.setItem(storageKey(userId, ym), JSON.stringify(entries)).catch(
-    () => {},
-  );
-}
-
-export function upsertEntryInCache(entry: DailyEntry, userId: string): void {
-  const ym = entry.date.slice(0, 7);
-  const mKey = monthKey(userId, ym);
-  const existing = entriesMonthCache.get(mKey);
-  if (existing) {
-    const next = [...existing];
-    const i = next.findIndex((e) => e.id === entry.id);
-    if (i >= 0) next[i] = entry;
-    else next.push(entry);
-    entriesMonthCache.set(mKey, next);
-    void AsyncStorage.setItem(
-      storageKey(userId, ym),
-      JSON.stringify(next),
-    ).catch(() => {});
-  }
-  const dKey = dayKey(userId, entry.date);
-  const dayExisting = entriesDayCache.get(dKey);
-  if (dayExisting) {
-    const next = [...dayExisting];
-    const i = next.findIndex((e) => e.id === entry.id);
-    if (i >= 0) next[i] = entry;
-    else next.push(entry);
-    entriesDayCache.set(dKey, next);
-  }
+  writeMonth(userId, DateFormats.formatYearMonth(year, month), entries);
 }
 
 /**
- * Drop one entry from both cache tiers, keeping the rest of the month intact.
- * Used by `deleteEntry` instead of invalidating the whole month: an offline
- * delete must leave a usable (just smaller) cached month behind, not a hole
- * the next read can only fill from a server it can't reach.
+ * Write one entry into the cached month it belongs to. A month that isn't
+ * cached is left alone: caching a single optimistic entry as if it were the
+ * whole month would hide every other entry in it on the next cold start.
  */
-function removeEntryFromCache(
+export function upsertEntryInCache(entry: DailyEntry, userId: string): void {
+  const ym = entry.date.slice(0, 7);
+  const existing = entriesMonthCache.get(monthKey(userId, ym));
+  if (!existing) return;
+  const next = [...existing];
+  const i = next.findIndex((e) => e.id === entry.id);
+  if (i >= 0) next[i] = entry;
+  else next.push(entry);
+  writeMonth(userId, ym, next);
+}
+
+/**
+ * Drop one entry from the cached month, keeping the rest of it intact.
+ * Used by `deleteEntry` (and by the store's optimistic delete) instead of
+ * invalidating the whole month: an offline delete must leave a usable (just
+ * smaller) cached month behind, not a hole the next read can only fill from a
+ * server it can't reach.
+ */
+export function removeEntryFromCache(
   entryId: string,
   date: string,
   userId: string,
 ): void {
   const ym = date.slice(0, 7);
-  const mKey = monthKey(userId, ym);
-  const month = entriesMonthCache.get(mKey);
-  if (month) {
-    const next = month.filter((e) => e.id !== entryId);
-    entriesMonthCache.set(mKey, next);
-    void AsyncStorage.setItem(
-      storageKey(userId, ym),
-      JSON.stringify(next),
-    ).catch(() => {});
-  }
-  const dKey = dayKey(userId, date);
-  const day = entriesDayCache.get(dKey);
-  if (day) entriesDayCache.set(dKey, day.filter((e) => e.id !== entryId));
+  const month = entriesMonthCache.get(monthKey(userId, ym));
+  if (!month) return;
+  writeMonth(
+    userId,
+    ym,
+    month.filter((e) => e.id !== entryId),
+  );
 }
 
 export function clearEntriesCache(): void {
   entriesMonthCache.clear();
-  entriesDayCache.clear();
 }
 
 /**
@@ -167,14 +161,6 @@ function entriesToPayload(date: string, entries: DailyEntry[]): EntryPayload {
   };
 }
 
-async function requireUserId(): Promise<string> {
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  if (!session) throw new UnrecoverableWriteError("Not signed in");
-  return session.user.id;
-}
-
 // ----------------------------------------------------------------------------
 // Public API
 // ----------------------------------------------------------------------------
@@ -183,17 +169,22 @@ async function requireUserId(): Promise<string> {
  * Save (insert or merge) a single entry for the given day.
  * Multiple entries per day are merged into one encrypted row.
  *
+ * `userId` comes from the caller's session (the data store already holds it) —
+ * this layer no longer re-reads the session on every call (D19).
+ *
  * Throws on failure — an `UnrecoverableWriteError` when the write can never
  * land as-is (locked, signed out), a plain `Error` when the server/network is
  * at fault. The caller (data-store) decides what to do; this layer NEVER
  * queues its own retry (D5: a replaying executor that re-queues rewrites the
  * queue instead of retrying it).
  */
-export async function saveEntry(entry: DailyEntry): Promise<void> {
+export async function saveEntry(
+  entry: DailyEntry,
+  userId: string,
+): Promise<void> {
   if (!keyring.isUnlocked()) {
     throw new UnrecoverableWriteError("Encryption is locked");
   }
-  const userId = await requireUserId();
   const mk = keyring.getMasterKey();
 
   const dBucket = dayBucket(mk, entry.date);
@@ -269,11 +260,14 @@ export async function saveEntry(entry: DailyEntry): Promise<void> {
  * error entirely, and the "deleted" entry reappeared on the next sync).
  * Replays are safe: an already-deleted entry resolves as a no-op.
  */
-export async function deleteEntry(entryId: string, date: string): Promise<void> {
+export async function deleteEntry(
+  entryId: string,
+  date: string,
+  userId: string,
+): Promise<void> {
   if (!keyring.isUnlocked()) {
     throw new UnrecoverableWriteError("Encryption is locked");
   }
-  const userId = await requireUserId();
   const mk = keyring.getMasterKey();
   const dBucket = dayBucket(mk, date);
 
@@ -333,95 +327,87 @@ export async function deleteEntry(entryId: string, date: string): Promise<void> 
   removeEntryFromCache(entryId, date, userId);
 }
 
-export async function getEntriesForDate(date: string): Promise<DailyEntry[]> {
-  if (!keyring.isUnlocked()) return [];
-  const userId = await requireUserId();
-  const mk = keyring.getMasterKey();
-  const dKey = dayKey(userId, date);
+interface EntryRow {
+  ciphertext: string;
+  nonce: string;
+  day_bucket: string;
+}
 
-  const cached = entriesDayCache.get(dKey);
-  if (cached) return cached;
+/**
+ * Every row for the given month buckets, paged so a server-side row cap can
+ * never silently truncate the window (D20). Ordered by `day_bucket` — an
+ * opaque HMAC, but a stable one, which is all `.range()` paging needs.
+ */
+async function fetchByMonthBuckets(
+  userId: string,
+  buckets: string[],
+): Promise<ReadResult<EntryRow[]>> {
+  const rows: EntryRow[] = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from("entries")
+      .select("ciphertext, nonce, day_bucket")
+      .eq("owner_id", userId)
+      .in("month_bucket", buckets)
+      .order("day_bucket", { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
 
-  const dBucket = dayBucket(mk, date);
-  const { data, error } = await supabase
-    .from("entries")
-    .select("ciphertext, nonce")
-    .eq("owner_id", userId)
-    .eq("day_bucket", dBucket)
-    .maybeSingle();
-
-  if (error || !data) return [];
-  try {
-    const decrypted = decryptJson<EntryPayload>(
-      mk,
-      {
-        ciphertext: data.ciphertext as string,
-        nonce: data.nonce as string,
-      },
-      AAD.entry(dBucket, userId),
-    );
-    const entries = payloadToEntries(decrypted);
-    entriesDayCache.set(dKey, entries);
-    return entries;
-  } catch (e) {
-    if (__DEV__) console.error("[entries] Decrypt failure for date", date, e);
-    return [];
+    if (error) return { ok: false, reason: error.message };
+    const page = (data ?? []) as EntryRow[];
+    rows.push(...page);
+    if (page.length < PAGE_SIZE) return { ok: true, data: rows };
   }
 }
 
-export async function getEntriesForMonth(
-  year: number,
-  month: number,
-): Promise<DailyEntry[]> {
-  if (!keyring.isUnlocked()) return [];
-  const userId = await requireUserId();
+/**
+ * Read a whole window of months in ONE round trip (D20). The client computes
+ * the month buckets, so the server still learns nothing it didn't already
+ * store; rows are regrouped locally by their decrypted date.
+ *
+ * Every requested month is present in the result — a month with no rows maps
+ * to `[]`, which is a real "this month is empty" answer and is cached as such.
+ * A transport failure returns `ok: false` and caches NOTHING (D16).
+ */
+export async function getEntriesForMonths(
+  months: MonthRef[],
+  userId: string,
+): Promise<ReadResult<Map<string, DailyEntry[]>>> {
+  if (!keyring.isUnlocked()) return { ok: false, reason: "locked" };
   const mk = keyring.getMasterKey();
-  const ym = DateFormats.formatYearMonth(year, month);
-  const mBucket = monthBucket(mk, ym);
 
-  const { data, error } = await supabase
-    .from("entries")
-    .select("ciphertext, nonce, day_bucket")
-    .eq("owner_id", userId)
-    .eq("month_bucket", mBucket);
+  const byMonth = new Map<string, DailyEntry[]>();
+  for (const m of months) {
+    byMonth.set(DateFormats.formatYearMonth(m.year, m.month), []);
+  }
+  if (byMonth.size === 0) return { ok: true, data: byMonth };
 
-  if (error) {
-    if (__DEV__) console.error("[entries] Month fetch error:", error.message);
-    return [];
+  const buckets = [...byMonth.keys()].map((ym) => monthBucket(mk, ym));
+  const fetched = await fetchByMonthBuckets(userId, buckets);
+  if (!fetched.ok) {
+    if (__DEV__) console.warn("[entries] Month fetch error:", fetched.reason);
+    return fetched;
   }
 
-  const all: DailyEntry[] = [];
-  for (const row of data ?? []) {
+  for (const row of fetched.data) {
     try {
       const decrypted = decryptJson<EntryPayload>(
         mk,
-        {
-          ciphertext: row.ciphertext as string,
-          nonce: row.nonce as string,
-        },
-        AAD.entry(row.day_bucket as string, userId),
+        { ciphertext: row.ciphertext, nonce: row.nonce },
+        AAD.entry(row.day_bucket, userId),
       );
-      all.push(...payloadToEntries(decrypted));
+      // Group by the decrypted date: the day bucket is opaque, the payload is
+      // not. A row from a month we didn't ask for can't happen, but if it did
+      // it would be dropped rather than corrupt a requested month.
+      const ym = decrypted.date.slice(0, 7);
+      const bucketList = byMonth.get(ym);
+      if (bucketList) bucketList.push(...payloadToEntries(decrypted));
     } catch (e) {
+      // One unreadable row must not blank the window.
       if (__DEV__) console.warn("[entries] Failed to decrypt a row:", e);
     }
   }
 
-  setCachedEntriesForMonth(year, month, userId, all);
-  return all;
+  byMonth.forEach((list, ym) => writeMonth(userId, ym, list));
+  return { ok: true, data: byMonth };
 }
 
-export async function prefetchEntriesForMonth(
-  year: number,
-  month: number,
-): Promise<void> {
-  if (!keyring.isUnlocked()) return;
-  try {
-    const userId = await requireUserId();
-    const ym = DateFormats.formatYearMonth(year, month);
-    if (entriesMonthCache.has(monthKey(userId, ym))) return;
-    await getEntriesForMonth(year, month);
-  } catch {
-    // best effort
-  }
-}

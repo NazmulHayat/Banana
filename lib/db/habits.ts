@@ -5,7 +5,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { AAD, decryptJson, encryptJson, keyring } from "../crypto";
 import { supabase } from "../supabase";
-import type { Habit, HabitPayload } from "./types";
+import type { Habit, HabitPayload, ReadResult } from "./types";
 import { UnrecoverableWriteError } from "./types";
 
 // Storage key is a protocol constant, not branding — renaming orphans caches.
@@ -50,14 +50,6 @@ export async function loadHabitsFromStorage(
   }
 }
 
-async function requireUserId(): Promise<string> {
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  if (!session) throw new UnrecoverableWriteError("Not signed in");
-  return session.user.id;
-}
-
 /**
  * Replace all habits with the given list. Atomic-ish: deletes all existing rows
  * then inserts new ones. RLS guarantees we only touch our own rows.
@@ -69,12 +61,17 @@ async function requireUserId(): Promise<string> {
  * Throws on failure (never queues its own retry — see saveEntry). The caller
  * queues the whole desired list once; the replay re-runs the full replace-all
  * against whatever the server currently has, so it is idempotent.
+ *
+ * `userId` comes from the caller's session — this layer no longer re-reads the
+ * session on every call (D19).
  */
-export async function saveHabits(habits: Habit[]): Promise<void> {
+export async function saveHabits(
+  habits: Habit[],
+  userId: string,
+): Promise<void> {
   if (!keyring.isUnlocked()) {
     throw new UnrecoverableWriteError("Encryption is locked");
   }
-  const userId = await requireUserId();
   const mk = keyring.getMasterKey();
 
   // Delete all existing habits for this user (RLS scopes to owner_id = uid)
@@ -119,22 +116,18 @@ export async function saveHabits(habits: Habit[]): Promise<void> {
 }
 
 /**
- * Fetch habits. Reads short-circuit on the in-memory cache unless `force` is
- * set (pull-to-refresh), which goes straight to the network.
+ * Fetch habits from the network. The cache tiers are the caller's short-circuit
+ * (`getCachedHabits` / `loadHabitsFromStorage`); this is the network tier only.
  *
- * Note `getCachedHabits` returns `null` when nothing has been resolved for this
- * user and `[]` when the user genuinely has no habits — an empty list is a real
- * result and short-circuits like any other.
+ * Returns a `ReadResult` (D16): `ok: false` means the read never produced data
+ * (offline, server error, locked keyring) and the caller must keep whatever it
+ * already had. Degrading to `[]` here is what let one failed pull-to-refresh
+ * overwrite the cached habit list with nothing. An empty list under `ok: true`
+ * is a real answer — this user has no habits — and is cached as such.
  */
-export async function getHabits(opts?: { force?: boolean }): Promise<Habit[]> {
-  if (!keyring.isUnlocked()) return [];
-  const userId = await requireUserId();
+export async function getHabits(userId: string): Promise<ReadResult<Habit[]>> {
+  if (!keyring.isUnlocked()) return { ok: false, reason: "locked" };
   const mk = keyring.getMasterKey();
-
-  if (!opts?.force) {
-    const cached = getCachedHabits(userId);
-    if (cached !== null) return cached;
-  }
 
   const { data, error } = await supabase
     .from("habits")
@@ -143,8 +136,8 @@ export async function getHabits(opts?: { force?: boolean }): Promise<Habit[]> {
     .order("created_at", { ascending: true });
 
   if (error) {
-    if (__DEV__) console.error("[habits] Fetch error:", error.message);
-    return [];
+    if (__DEV__) console.warn("[habits] Fetch error:", error.message);
+    return { ok: false, reason: error.message };
   }
 
   const aad = AAD.habit(userId);
@@ -190,5 +183,5 @@ export async function getHabits(opts?: { force?: boolean }): Promise<Habit[]> {
   const habits = ordered.map((d) => d.habit);
 
   setCachedHabits(userId, habits);
-  return habits;
+  return { ok: true, data: habits };
 }

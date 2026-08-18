@@ -21,33 +21,22 @@ export type {
   HabitLogPayload,
   HabitPayload,
   HabitRef,
+  MonthRef,
+  ReadResult,
   WriteOutcome,
 } from "./types";
 
 export { UnrecoverableWriteError } from "./types";
 
-export {
-  AccountColumns,
-  DateFormats,
-  EntryColumns,
-  EntryMediaColumns,
-  HabitColumns,
-  HabitLimits,
-  HabitLogColumns,
-  ProfileColumns,
-  SCHEMA_VERSION,
-  Tables,
-  UsernameRules,
-} from "./schema";
+export { DateFormats, HabitLimits, UsernameRules } from "./schema";
 
 export {
   clearEntriesCache,
   deleteEntry,
   getCachedEntriesForMonth,
-  getEntriesForDate,
-  getEntriesForMonth,
+  getEntriesForMonths,
   loadEntriesForMonthFromStorage,
-  prefetchEntriesForMonth,
+  removeEntryFromCache,
   saveEntry,
   setCachedEntriesForMonth,
   upsertEntryInCache,
@@ -65,13 +54,14 @@ export {
 export {
   clearHabitLogsCache,
   deleteHabitLogsForHabit,
+  enumeratePurgeDays,
   getCachedHabitLogsForMonth,
-  getHabitLogsForMonth,
-  getHabitLogsForMonthDirect,
+  getHabitLogsForMonths,
+  type HabitLogPurgeRange,
   loadHabitLogsFromStorage,
   setCachedHabitLogsForMonth,
-  toggleHabitLog,
   upsertHabitLog,
+  upsertHabitLogInCache,
 } from "./habit-logs";
 
 export {
