@@ -5,10 +5,16 @@ import "./setup";
 import { test, assertEq, assertTrue, run } from "./helpers";
 import type { Habit, HabitLog } from "../lib/db/types";
 import {
+  completionForMonth,
   computeAllHabitStats,
   computeHabitStats,
   computeOverallStats,
   completionRateForMonth,
+  consistencyScore,
+  dailyRateSeries,
+  habitComparison,
+  habitCorrelations,
+  perfectDays,
   monthOverMonthTrend,
   monthlyRateSeries,
   heatmapCells,
@@ -157,7 +163,7 @@ test("computeOverallStats aggregation", () => {
     log("h2", "2026-06-16"),
   ];
   const all = computeAllHabitStats(habits, logs, TODAY);
-  const overall = computeOverallStats(all, logs);
+  const overall = computeOverallStats(all, logs, TODAY, habits);
   assertEq(overall.totalCompletions, 4);
   assertEq(overall.bestCurrentStreak, 3); // h1
   assertEq(overall.bestLongestStreak, 3); // h1
@@ -166,12 +172,13 @@ test("computeOverallStats aggregation", () => {
 });
 
 test("computeOverallStats empty -> all zeros", () => {
-  const overall = computeOverallStats([], []);
+  const overall = computeOverallStats([], [], TODAY);
   assertEq(overall, {
     totalCompletions: 0,
     bestCurrentStreak: 0,
     bestLongestStreak: 0,
     activeDays: 0,
+    perfectDays: 0,
   });
 });
 
@@ -181,7 +188,7 @@ test("activeDays counts distinct dates, ignores incomplete", () => {
     log("h2", "2026-06-16"), // same day, two habits -> one active day
     log("h1", "2026-06-15", false), // incomplete -> not active
   ];
-  const overall = computeOverallStats([], logs);
+  const overall = computeOverallStats([], logs, TODAY);
   assertEq(overall.activeDays, 1);
   assertTrue(overall.activeDays === 1);
 });
@@ -200,7 +207,7 @@ test("malformed/overflow dates are excluded everywhere", () => {
   assertEq(s.currentStreak, 1);
   assertEq(s.longestStreak, 1);
 
-  const overall = computeOverallStats([s], logs);
+  const overall = computeOverallStats([s], logs, TODAY);
   assertEq(overall.activeDays, 1);
 });
 
@@ -209,19 +216,19 @@ test("malformed/overflow dates are excluded everywhere", () => {
 test("completionRateForMonth: elapsed-day rate for current month", () => {
   // June has 30 days; today is the 16th -> 16 elapsed days.
   const logs = range("h1", 2026, 6, 1, 8); // 8 of 16 elapsed days
-  assertEq(completionRateForMonth(logs, 2026, 6, TODAY, "h1"), 0.5);
+  assertEq(completionRateForMonth(logs, 2026, 6, TODAY, { habitId: "h1" }), 0.5);
 });
 
 test("completionRateForMonth: full past month, future month is 0", () => {
   const may = range("h1", 2026, 5, 1, 31); // every day of May
-  assertEq(completionRateForMonth(may, 2026, 5, TODAY, "h1"), 1);
+  assertEq(completionRateForMonth(may, 2026, 5, TODAY, { habitId: "h1" }), 1);
   // December is in the future relative to asOf -> 0
-  assertEq(completionRateForMonth(may, 2026, 12, TODAY, "h1"), 0);
+  assertEq(completionRateForMonth(may, 2026, 12, TODAY, { habitId: "h1" }), 0);
 });
 
 test("monthOverMonthTrend: current vs previous month", () => {
   const logs = range("h1", 2026, 6, 1, 16); // June fully done -> current 1.0
-  const t = monthOverMonthTrend(logs, TODAY, "h1");
+  const t = monthOverMonthTrend(logs, TODAY, { habitId: "h1" });
   assertEq(t.current, 1);
   assertEq(t.previous, 0); // nothing in May
   assertEq(t.delta, 100);
@@ -229,7 +236,7 @@ test("monthOverMonthTrend: current vs previous month", () => {
 
 test("monthlyRateSeries: n points oldest->newest, ends on current month", () => {
   const logs = range("h1", 2026, 6, 1, 16);
-  const series = monthlyRateSeries(logs, TODAY, 6, "h1");
+  const series = monthlyRateSeries(logs, TODAY, 6, { habitId: "h1" });
   assertEq(series.length, 6);
   assertEq(series[5].label, "Jun");
   assertEq(series[5].rate, 1);
@@ -258,7 +265,7 @@ test("longestStreakRange: returns the longest run as dates", () => {
     ...range("h2", 2026, 6, 1, 5), // run of 5
     ...range("h2", 2026, 6, 10, 16), // run of 7 (the longest)
   ];
-  const r = longestStreakRange(logs, "h2");
+  const r = longestStreakRange(logs, "h2", TODAY);
   assertTrue(r !== null);
   assertEq(r?.length, 7);
   assertEq(r?.startDate, "2026-06-10");
@@ -279,10 +286,10 @@ test("bestDayOfWeek: picks the weekday with most completions", () => {
     log("h1", "2026-06-15"),
     log("h1", "2026-06-16"),
   ];
-  const best = bestDayOfWeek(logs, "h1");
+  const best = bestDayOfWeek(logs, TODAY, { habitId: "h1" });
   assertEq(best?.count, 3);
   assertEq(best?.dow, new Date(Date.UTC(2026, 5, 1)).getUTCDay());
-  assertEq(bestDayOfWeek([], "h1"), null);
+  assertEq(bestDayOfWeek([], TODAY, { habitId: "h1" }), null);
 });
 
 test("weekendComparison: weekday-only logging -> weekendRate 0", () => {
@@ -296,7 +303,7 @@ test("weekendComparison: weekday-only logging -> weekendRate 0", () => {
       logs.push(log("h1", `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}`));
     }
   }
-  const c = weekendComparison(logs, TODAY, 14, "h1");
+  const c = weekendComparison(logs, TODAY, 14, { habitId: "h1" });
   assertEq(c.weekdayRate, 1);
   assertEq(c.weekendRate, 0);
 });
@@ -307,9 +314,9 @@ test("hadRecentComeback: gap then fresh run is a comeback", () => {
     // gap 4-13
     ...range("h1", 2026, 6, 14, 16), // fresh run of 3 ending today
   ];
-  assertTrue(hadRecentComeback(comeback, TODAY, "h1"));
+  assertTrue(hadRecentComeback(comeback, TODAY, { habitId: "h1" }));
   // a clean continuous streak is not a comeback
-  assertEq(hadRecentComeback(range("h1", 2026, 6, 1, 16), TODAY, "h1"), false);
+  assertEq(hadRecentComeback(range("h1", 2026, 6, 1, 16), TODAY, { habitId: "h1" }), false);
 });
 
 test("buildInsight: applicable lines, rotation, and fallback", () => {
@@ -332,6 +339,270 @@ test("buildInsight: applicable lines, rotation, and fallback", () => {
     hadComeback: false,
   };
   assertTrue(buildInsight(empty, 0).length > 0); // graceful fallback
+});
+
+// --- D13a: eligible habit-days ---------------------------------------------
+
+test("D13a: a habit created mid-month is scored from its creation day", () => {
+  // Created on the 11th, done every day since -> 100%, not 6/16.
+  const habits = [{ id: "h1", name: "h1", createdAt: "2026-06-11" }];
+  const logs = range("h1", 2026, 6, 11, 16);
+  const c = completionForMonth(logs, 2026, 6, TODAY, { habitId: "h1", habits });
+  assertEq(c, { done: 6, days: 6, rate: 1 });
+  // Without the habit set the old (wrong) elapsed-day denominator returns.
+  assertEq(completionRateForMonth(logs, 2026, 6, TODAY, { habitId: "h1" }), 6 / 16);
+});
+
+test("D13a: partial month since creation uses the shorter denominator", () => {
+  const habits = [{ id: "h1", name: "h1", createdAt: "2026-06-11T09:00:00.000Z" }];
+  const logs = range("h1", 2026, 6, 11, 13); // 3 of the 6 eligible days
+  const c = completionForMonth(logs, 2026, 6, TODAY, { habitId: "h1", habits });
+  assertEq(c, { done: 3, days: 6, rate: 0.5 });
+});
+
+test("D13a: months entirely before creation report zero eligible days", () => {
+  const habits = [habit("h1", "h1")];
+  habits[0].createdAt = "2026-06-11";
+  const logs = range("h1", 2026, 6, 11, 16);
+  const may = completionForMonth(logs, 2026, 5, TODAY, { habitId: "h1", habits });
+  assertEq(may, { done: 0, days: 0, rate: 0 });
+  const series = monthlyRateSeries(logs, TODAY, 6, { habitId: "h1", habits });
+  assertEq(series[4].days, 0); // May — nothing to score
+  assertEq(series[5].days, 6); // June — six eligible days
+});
+
+test("D13a: a log older than createdAt still opens the window", () => {
+  // Clock skew / a UTC createdAt read in a western zone: evidence wins.
+  const habits = [{ id: "h1", name: "h1", createdAt: "2026-06-11" }];
+  const logs = range("h1", 2026, 6, 9, 16); // starts two days "early"
+  const c = completionForMonth(logs, 2026, 6, TODAY, { habitId: "h1", habits });
+  assertEq(c, { done: 8, days: 8, rate: 1 });
+});
+
+test("D13a: overall rate is eligible from the earliest habit", () => {
+  const habits = [
+    { id: "h1", name: "h1", createdAt: "2026-06-10" },
+    { id: "h2", name: "h2", createdAt: "2026-06-14" },
+  ];
+  const logs = [...range("h1", 2026, 6, 10, 16), ...range("h2", 2026, 6, 14, 16)];
+  // Days 10..16 = 7 eligible days, all with at least one completion.
+  assertEq(completionForMonth(logs, 2026, 6, TODAY, { habits }), {
+    done: 7,
+    days: 7,
+    rate: 1,
+  });
+});
+
+// --- D13b: future logs ------------------------------------------------------
+
+test("D13b: future logs never inflate totals, streaks or active days", () => {
+  const habits = [habit("h1")];
+  const logs = [
+    ...range("h1", 2026, 6, 14, 16), // real: 3-day run ending today
+    log("h1", "2026-06-17"), // tomorrow
+    log("h1", "2026-06-18"),
+    log("h1", "2026-07-01"), // next month
+  ];
+  const s = computeHabitStats("h1", logs, TODAY);
+  assertEq(s.totalCompletions, 3);
+  assertEq(s.currentStreak, 3);
+  assertEq(s.longestStreak, 3); // NOT 5 — the future days can't extend it
+  const overall = computeOverallStats([s], logs, TODAY, habits);
+  assertEq(overall.activeDays, 3);
+  assertEq(completionForMonth(logs, 2026, 6, TODAY, { habitId: "h1", habits }).done, 3);
+});
+
+test("D13b: a future log can't create a heatmap cell or a perfect day", () => {
+  const habits = [habit("h1")];
+  const logs = [log("h1", "2026-06-20")];
+  const cells = heatmapCells(logs, TODAY, 7, { habits });
+  assertEq(cells.length, 7);
+  assertEq(cells[cells.length - 1].date, TODAY);
+  assertEq(cells.filter((c) => c.level > 0).length, 0);
+  assertEq(perfectDays(habits, logs, TODAY), []);
+});
+
+// --- D13c: deleted habits ---------------------------------------------------
+
+test("D13c: logs from a deleted habit stay out of the aggregates", () => {
+  const habits = [habit("h1")]; // "gone" was deleted
+  const logs = [log("h1", TODAY), log("gone", "2026-06-15"), log("gone", TODAY)];
+  const all = computeAllHabitStats(habits, logs, TODAY);
+  const scoped = computeOverallStats(all, logs, TODAY, habits);
+  assertEq(scoped.activeDays, 1); // only today, only h1
+  // Without the habit set the ghost day is still there — that's the bug.
+  assertEq(computeOverallStats(all, logs, TODAY).activeDays, 2);
+});
+
+test("D13c: a deleted habit can't break a perfect day", () => {
+  const habits = [habit("h1")];
+  const logs = [log("h1", TODAY), log("gone", "2026-06-15")];
+  assertEq(perfectDays(habits, logs, TODAY), [TODAY]);
+});
+
+// --- leap year --------------------------------------------------------------
+
+test("leap year: Feb 2024 has 29 eligible days, Feb 2025 has 28", () => {
+  const habits = [{ id: "h1", name: "h1", createdAt: "2024-01-01" }];
+  const feb24 = [
+    ...range("h1", 2024, 2, 1, 29),
+    ...range("h1", 2025, 2, 1, 28),
+  ];
+  assertEq(completionForMonth(feb24, 2024, 2, "2024-03-31", { habitId: "h1", habits }), {
+    done: 29,
+    days: 29,
+    rate: 1,
+  });
+  assertEq(completionForMonth(feb24, 2025, 2, "2025-03-31", { habitId: "h1", habits }), {
+    done: 28,
+    days: 28,
+    rate: 1,
+  });
+  // Feb 29 in a non-leap year isn't a date at all.
+  const bogus = [log("h1", "2025-02-29")];
+  assertEq(computeHabitStats("h1", bogus, "2025-03-01").totalCompletions, 0);
+});
+
+test("leap day is a real completion and extends a streak", () => {
+  const logs = range("h1", 2024, 2, 27, 29);
+  const s = computeHabitStats("h1", logs, "2024-02-29");
+  assertEq(s.currentStreak, 3);
+  assertEq(s.longestStreak, 3);
+});
+
+// --- FR-G1 perfect days -----------------------------------------------------
+
+test("FR-G1: perfect days respect a habit added mid-month", () => {
+  const habits = [
+    { id: "h1", name: "h1", createdAt: "2026-06-01" },
+    { id: "h2", name: "h2", createdAt: "2026-06-10" },
+  ];
+  const logs = [
+    log("h1", "2026-06-05"), // only h1 existed -> perfect
+    log("h1", "2026-06-10"),
+    log("h2", "2026-06-10"), // both done -> perfect
+    log("h1", "2026-06-11"), // h2 existed and wasn't done -> not perfect
+  ];
+  assertEq(perfectDays(habits, logs, TODAY), ["2026-06-05", "2026-06-10"]);
+});
+
+test("FR-G1: no habits means no perfect days", () => {
+  assertEq(perfectDays([], [log("h1", TODAY)], TODAY), []);
+});
+
+// --- FR-AN2 comparison ------------------------------------------------------
+
+test("FR-AN2: habits rank by this month's rate, new habits read as 0 days", () => {
+  const habits = [
+    { id: "slipping", name: "Slipping", createdAt: "2026-06-01" },
+    { id: "solid", name: "Solid", createdAt: "2026-06-01" },
+    { id: "fresh", name: "Fresh", createdAt: "2026-07-01" }, // not eligible yet
+  ];
+  const logs = [
+    ...range("solid", 2026, 6, 1, 16),
+    ...range("slipping", 2026, 6, 1, 4),
+  ];
+  const rows = habitComparison(habits, logs, TODAY);
+  assertEq(rows[0].habitId, "solid");
+  assertEq(rows[0].rate, 1);
+  assertEq(rows[1].habitId, "slipping");
+  assertEq(rows[1].days, 16);
+  assertEq(rows[2].habitId, "fresh");
+  assertEq(rows[2].days, 0); // "new", never a punitive 0%
+});
+
+// --- FR-AN3 consistency score ----------------------------------------------
+
+test("FR-AN3: perfect 30 days scores 100, nothing scores 0", () => {
+  const habits = [{ id: "h1", name: "h1", createdAt: "2026-05-01" }];
+  const full: HabitLog[] = [];
+  for (let d = 18; d <= 31; d++) full.push(log("h1", `2026-05-${p2(d)}`));
+  full.push(...range("h1", 2026, 6, 1, 16));
+  assertEq(consistencyScore(habits, full, TODAY).score, 100);
+  assertEq(consistencyScore(habits, [], TODAY).score, 0);
+  assertEq(consistencyScore([], full, TODAY).daysCounted, 0);
+});
+
+test("FR-AN3: recent days weigh more than old ones", () => {
+  const habits = [{ id: "h1", name: "h1", createdAt: "2026-05-01" }];
+  const recent = range("h1", 2026, 6, 2, 16); // last 15 days
+  const older: HabitLog[] = [];
+  for (let d = 18; d <= 31; d++) older.push(log("h1", `2026-05-${p2(d)}`));
+  older.push(log("h1", "2026-06-01"));
+  const recentScore = consistencyScore(habits, recent, TODAY).score;
+  const olderScore = consistencyScore(habits, older, TODAY).score;
+  assertTrue(recentScore > olderScore);
+  assertTrue(recentScore <= 100 && olderScore >= 0);
+});
+
+test("FR-AN3: days before the habit existed are skipped, not failed", () => {
+  const habits = [{ id: "h1", name: "h1", createdAt: "2026-06-14" }];
+  const logs = range("h1", 2026, 6, 14, 16);
+  const r = consistencyScore(habits, logs, TODAY);
+  assertEq(r.daysCounted, 3);
+  assertEq(r.score, 100);
+});
+
+// --- FR-AN4 correlations ----------------------------------------------------
+
+test("FR-AN4: a strong pair is reported with its sample", () => {
+  const habits = [
+    { id: "gym", name: "Gym", createdAt: "2026-06-01" },
+    { id: "read", name: "Read", createdAt: "2026-06-01" },
+  ];
+  const logs = [
+    ...range("gym", 2026, 6, 1, 10),
+    ...range("read", 2026, 6, 1, 9),
+  ];
+  const found = habitCorrelations(habits, logs, TODAY);
+  assertEq(found.length, 1);
+  assertTrue(found[0].sample >= 5);
+  assertTrue(found[0].rate >= 0.6);
+  assertTrue(found[0].lift >= 0.15);
+});
+
+test("FR-AN4: too small a sample claims nothing", () => {
+  const habits = [
+    { id: "gym", name: "Gym", createdAt: "2026-06-01" },
+    { id: "read", name: "Read", createdAt: "2026-06-01" },
+  ];
+  const logs = [...range("gym", 2026, 6, 1, 3), ...range("read", 2026, 6, 1, 3)];
+  assertEq(habitCorrelations(habits, logs, TODAY), []);
+});
+
+test("FR-AN4: an always-done habit isn't a correlation", () => {
+  const habits = [
+    { id: "always", name: "Always", createdAt: "2026-06-01" },
+    { id: "some", name: "Some", createdAt: "2026-06-01" },
+  ];
+  const logs = [
+    ...range("always", 2026, 6, 1, 16), // baseline 100% -> zero lift
+    ...range("some", 2026, 6, 1, 10),
+  ];
+  assertEq(habitCorrelations(habits, logs, TODAY), []);
+});
+
+test("FR-AN4: results are capped so noise can't take over", () => {
+  const ids = ["a", "b", "c", "d"];
+  const habits = ids.map((id) => ({ id, name: id, createdAt: "2026-06-01" }));
+  const logs = ids.flatMap((id) => range(id, 2026, 6, 1, 10)); // 6 perfect pairs
+  assertTrue(habitCorrelations(habits, logs, TODAY).length <= 3);
+  assertEq(habitCorrelations(habits, logs, TODAY, { limit: 2 }).length, 2);
+});
+
+// --- range control ----------------------------------------------------------
+
+test("dailyRateSeries: one point per day, share of eligible habits", () => {
+  const habits = [
+    { id: "h1", name: "h1", createdAt: "2026-06-01" },
+    { id: "h2", name: "h2", createdAt: "2026-06-01" },
+  ];
+  const logs = [log("h1", TODAY), log("h2", TODAY), log("h1", "2026-06-15")];
+  const series = dailyRateSeries(logs, TODAY, 30, { habits });
+  assertEq(series.length, 30);
+  assertEq(series[29].rate, 1); // both habits today
+  assertEq(series[28].rate, 0.5); // one of two yesterday
+  assertEq(series[0].days, 0); // before either habit existed
 });
 
 (async () => {

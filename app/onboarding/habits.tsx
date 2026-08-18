@@ -1,35 +1,52 @@
+// Onboarding step 2 of 3 — pick starter habits.
+//
+// This screen used to run a scripted demo before letting anyone touch it: a
+// timed fake scroll, a "transition" message, and three chained setTimeouts,
+// none of which were cleared on unmount — leaving the app to fade, scroll and
+// setState against a screen the user had already left. It is now a plain form:
+// the controls are live on first paint, Back works, nothing waits on a timer,
+// and the only animation is one entrance handle that is stopped on unmount.
+//
+// The selection is mirrored to the onboarding draft, so backgrounding the app
+// or a failed save never costs the user their picks.
+
 import { HabitCell } from "@/components/ui/habit-cell";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
+import { PaperCard } from "@/components/ui/paper-card";
+import { PressableScale } from "@/components/ui/pressable-scale";
+import { Motion } from "@/constants/motion";
 import { Colors, Fonts } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
-import { getHabits, Habit, saveHabits } from "@/lib/db";
-import { LinearGradient } from "expo-linear-gradient";
+import { useDataStore } from "@/lib/data-store";
+import type { Habit } from "@/lib/db";
+import { HabitLimits } from "@/lib/db";
+import {
+  loadOnboardingDraft,
+  saveOnboardingDraft,
+} from "@/lib/onboarding-draft";
+import * as Haptics from "expo-haptics";
 import { Href, router } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import {
-    Animated,
-    Dimensions,
-    KeyboardAvoidingView,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  Animated,
+  AppState,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-const { width } = Dimensions.get("window");
-
-// Calculate cell size to fill screen width (6 columns: 1 day + 5 habits)
-const GRID_PADDING = 8; // horizontal padding on each side
-const CELL_GAP = 2; // gap between cells
-const NUM_COLUMNS = 6;
-const CALCULATED_CELL_SIZE = Math.floor(
-  (width - GRID_PADDING * 2 - CELL_GAP * (NUM_COLUMNS - 1)) / NUM_COLUMNS,
-);
+/** Start small — five is plenty to build a rhythm, and the grid stays legible. */
+const MAX_STARTER_HABITS = 5;
+/** Columns in the little live preview grid. */
+const PREVIEW_DAYS = 5;
+const PREVIEW_CELL_SIZE = 28;
 
 const HABIT_SUGGESTIONS = [
   { name: "Exercise", emoji: "💪" },
@@ -44,486 +61,198 @@ const HABIT_SUGGESTIONS = [
   { name: "Vitamins", emoji: "💊" },
 ];
 
-// Demo habits for the preview animation
-const DEMO_HABITS = ["Exercise", "Read", "Meditate", "Hydrate", "Sleep"];
-
-// Generate realistic demo data - just enough to show the concept
-const generateRealisticMonth = () => {
-  const days = 18; // Fewer days - just enough to show the effect
-  const patterns: boolean[][] = [];
-
-  for (let day = 0; day < days; day++) {
-    const dayOfWeek = day % 7;
-    const isWeekend = dayOfWeek === 5 || dayOfWeek === 6;
-    const isEarlyWeek = day < 7;
-
-    const row: boolean[] = [
-      // Exercise - 75% consistent, worse on weekends
-      isWeekend ? Math.random() > 0.5 : Math.random() > 0.25,
-      // Read - 85% consistent
-      Math.random() > 0.15,
-      // Meditate - builds up over time
-      isEarlyWeek ? Math.random() > 0.5 : Math.random() > 0.2,
-      // Hydrate - consistent
-      Math.random() > 0.25,
-      // Sleep - weekends are harder
-      isWeekend ? Math.random() > 0.6 : Math.random() > 0.25,
-    ];
-    patterns.push(row);
-  }
-
-  return patterns;
-};
-
-const DEMO_DATA = generateRealisticMonth();
-
-type Stage = "demo" | "transition" | "select";
-
-export default function HabitsScreen() {
+export default function OnboardingHabitsScreen() {
   const insets = useSafeAreaInsets();
   const { session } = useAuth();
-  const [stage, setStage] = useState<Stage>("demo");
+  const dataStore = useDataStore();
+
   const [selectedHabits, setSelectedHabits] = useState<string[]>([]);
   const [customHabit, setCustomHabit] = useState("");
-  const [showPreview, setShowPreview] = useState(false);
+  const [saving, setSaving] = useState(false);
+  // User-safe reason from the last failed save; keeps the user on this step.
+  const [saveError, setSaveError] = useState<string | null>(null);
+  // Second tap while a save is in flight must not start a second write.
+  const submittingRef = useRef(false);
 
-  // Demo animation refs
-  const demoScrollRef = useRef<ScrollView>(null);
-  const demoFade = useRef(new Animated.Value(0)).current;
-  const demoTitleFade = useRef(new Animated.Value(0)).current;
-  const transitionFade = useRef(new Animated.Value(0)).current;
-  const transitionSlide = useRef(new Animated.Value(30)).current;
-
-  // Selection stage animations
-  const fadeAnim = useRef(new Animated.Value(0)).current;
-  const slideAnim = useRef(new Animated.Value(30)).current;
-  const previewFade = useRef(new Animated.Value(0)).current;
-  const previewSlide = useRef(new Animated.Value(50)).current;
-  const suggestionsStagger = useRef(
-    HABIT_SUGGESTIONS.map(() => new Animated.Value(0)),
-  ).current;
+  const fade = useRef(new Animated.Value(0)).current;
+  const rise = useRef(new Animated.Value(16)).current;
 
   useEffect(() => {
-    // startDemoScroll / transitionToSelect / showSelectionUI are defined
-    // inline (rather than as component-level functions) so this effect has
-    // no external function deps to track — it only ever runs once on mount,
-    // driving the whole demo -> transition -> selection animation chain.
-    function showSelectionUI() {
-      Animated.parallel([
-        Animated.timing(fadeAnim, {
-          toValue: 1,
-          duration: 600,
-          useNativeDriver: true,
-        }),
-        Animated.timing(slideAnim, {
-          toValue: 0,
-          duration: 600,
-          useNativeDriver: true,
-        }),
-      ]).start();
-
-      // Stagger suggestion pills
-      Animated.stagger(
-        60,
-        suggestionsStagger.map((anim) =>
-          Animated.spring(anim, {
-            toValue: 1,
-            friction: 6,
-            tension: 100,
-            useNativeDriver: true,
-          }),
-        ),
-      ).start();
-    }
-
-    function transitionToSelect() {
-      setStage("transition");
-
-      // Quick fade out demo - 400ms
-      Animated.timing(demoFade, {
+    const entrance = Animated.parallel([
+      Animated.timing(fade, {
+        toValue: 1,
+        duration: Motion.base,
+        useNativeDriver: true,
+      }),
+      Animated.timing(rise, {
         toValue: 0,
-        duration: 400,
-        useNativeDriver: true,
-      }).start(() => {
-        // Show transition message
-        Animated.parallel([
-          Animated.timing(transitionFade, {
-            toValue: 1,
-            duration: 500,
-            useNativeDriver: true,
-          }),
-          Animated.timing(transitionSlide, {
-            toValue: 0,
-            duration: 500,
-            useNativeDriver: true,
-          }),
-        ]).start(() => {
-          // Wait 1.2 seconds on transition message, then move to selection
-          setTimeout(() => {
-            Animated.timing(transitionFade, {
-              toValue: 0,
-              duration: 350,
-              useNativeDriver: true,
-            }).start(() => {
-              setStage("select");
-              showSelectionUI();
-            });
-          }, 1200);
-        });
-      });
-    }
-
-    function startDemoScroll() {
-      // Short smooth scroll - just enough to show the concept
-      const scrollDuration = 3000;
-      const rowHeight = CALCULATED_CELL_SIZE + CELL_GAP;
-      // Only scroll through about 8-10 rows - just to show movement
-      const scrollDistance = rowHeight * 8;
-
-      let startTime: number;
-      const animateScroll = (timestamp: number) => {
-        if (!startTime) startTime = timestamp;
-        const progress = (timestamp - startTime) / scrollDuration;
-
-        if (progress < 1 && demoScrollRef.current) {
-          // Smooth ease-in-out for more natural feel
-          const easeProgress =
-            progress < 0.5
-              ? 2 * progress * progress
-              : 1 - Math.pow(-2 * progress + 2, 2) / 2;
-          const scrollY = easeProgress * scrollDistance;
-          demoScrollRef.current.scrollTo({ y: scrollY, animated: false });
-          requestAnimationFrame(animateScroll);
-        } else {
-          // Demo complete - quick transition
-          setTimeout(() => {
-            transitionToSelect();
-          }, 500);
-        }
-      };
-
-      requestAnimationFrame(animateScroll);
-    }
-
-    // Start with demo animation
-    Animated.parallel([
-      Animated.timing(demoFade, {
-        toValue: 1,
-        duration: 800,
+        duration: Motion.base,
         useNativeDriver: true,
       }),
-      Animated.timing(demoTitleFade, {
-        toValue: 1,
-        duration: 1000,
-        useNativeDriver: true,
-      }),
-    ]).start(() => {
-      // Quick start scrolling
-      setTimeout(() => {
-        startDemoScroll();
-      }, 600);
-    });
-    // Animated.Value refs are stable across renders (useRef); listing them
-    // here satisfies exhaustive-deps without changing when this runs.
-  }, [
-    demoFade,
-    demoTitleFade,
-    fadeAnim,
-    slideAnim,
-    suggestionsStagger,
-    transitionFade,
-    transitionSlide,
-  ]);
+    ]);
+    entrance.start();
+    return () => entrance.stop();
+    // Animated.Value refs are stable across renders (useRef).
+  }, [fade, rise]);
 
+  // Restore anything picked before a background/relaunch.
   useEffect(() => {
-    // Show preview when habits are selected
-    if (selectedHabits.length > 0 && !showPreview && stage === "select") {
-      setShowPreview(true);
-      Animated.parallel([
-        Animated.timing(previewFade, {
-          toValue: 1,
-          duration: 400,
-          useNativeDriver: true,
-        }),
-        Animated.spring(previewSlide, {
-          toValue: 0,
-          friction: 8,
-          useNativeDriver: true,
-        }),
-      ]).start();
-    }
-  }, [selectedHabits, stage, showPreview, previewFade, previewSlide]);
+    let cancelled = false;
+    void loadOnboardingDraft().then((draft) => {
+      if (cancelled || draft.habits.length === 0) return;
+      setSelectedHabits(draft.habits.slice(0, MAX_STARTER_HABITS));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  const toggleHabit = (habitName: string) => {
-    setSelectedHabits((prev) =>
-      prev.includes(habitName)
-        ? prev.filter((h) => h !== habitName)
-        : [...prev, habitName],
+  // Flush on the way to the background as well as on every change, so a
+  // process kill while backgrounded can't lose the selection.
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state !== "active") saveOnboardingDraft({ habits: selectedHabits });
+    });
+    return () => sub.remove();
+  }, [selectedHabits]);
+
+  function commitSelection(next: string[]) {
+    setSelectedHabits(next);
+    saveOnboardingDraft({ habits: next });
+  }
+
+  const atLimit = selectedHabits.length >= MAX_STARTER_HABITS;
+
+  function toggleHabit(name: string) {
+    const isSelected = selectedHabits.includes(name);
+    if (!isSelected && atLimit) return;
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSaveError(null);
+    commitSelection(
+      isSelected
+        ? selectedHabits.filter((h) => h !== name)
+        : [...selectedHabits, name],
     );
-  };
+  }
 
-  const addCustomHabit = () => {
-    const name = customHabit.trim();
-    if (name && !selectedHabits.includes(name) && name.length <= 20) {
-      setSelectedHabits((prev) => [...prev, name]);
+  function addCustomHabit() {
+    const name = customHabit.trim().slice(0, HabitLimits.MAX_NAME_LENGTH);
+    if (!name || atLimit) return;
+    const exists = selectedHabits.some(
+      (h) => h.toLowerCase() === name.toLowerCase(),
+    );
+    if (exists) {
       setCustomHabit("");
-    }
-  };
-
-  const handleContinue = async () => {
-    if (selectedHabits.length === 0) return;
-
-    if (!session) {
-      console.error("[Onboarding] No session, cannot save habits");
       return;
     }
-
-    // Get existing habits first to merge with new ones
-    const existingHabits = await getHabits();
-    console.log("[Onboarding] Found", existingHabits.length, "existing habits");
-
-    // Create new habits only for names that don't exist
-    const existingNames = new Set(
-      existingHabits.map((h) => h.name.toLowerCase()),
-    );
-    const newHabits: Habit[] = selectedHabits
-      .filter((name) => !existingNames.has(name.toLowerCase()))
-      .map((name, index) => ({
-        id: Date.now().toString() + index,
-        name,
-        createdAt: new Date().toISOString(),
-      }));
-
-    // Merge existing and new habits
-    const allHabits = [...existingHabits, ...newHabits];
-    console.log(
-      "[Onboarding] Saving",
-      allHabits.length,
-      "habits (",
-      newHabits.length,
-      "new)",
-    );
-
-    await saveHabits(allHabits);
-
-    // Verify save worked
-    const savedHabits = await getHabits();
-    console.log("[Onboarding] Verified", savedHabits.length, "habits saved");
-
-    router.push("/onboarding/feed-demo" as Href);
-  };
-
-  const dayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-  const cellSize = CALCULATED_CELL_SIZE;
-
-  // Demo stage - show animated month view with actual HabitCell component
-  if (stage === "demo") {
-    return (
-      <PaperBackground>
-        <View style={[styles.container, { paddingTop: insets.top + 12 }]}>
-          <Animated.View
-            style={[styles.demoHeader, { opacity: demoTitleFade }]}
-          >
-            <Text style={styles.demoTitle}>Imagine tracking your habits</Text>
-            <Text style={styles.demoSubtitle}>
-              Day by day, building momentum...
-            </Text>
-          </Animated.View>
-
-          <Animated.View style={[styles.demoContainer, { opacity: demoFade }]}>
-            <View style={styles.demoGridWrapper}>
-              {/* Fixed header row */}
-              <View style={styles.demoHeaderRow}>
-                <View
-                  style={[
-                    styles.demoDayHeaderCell,
-                    { width: cellSize, height: cellSize },
-                  ]}
-                >
-                  <Text style={styles.demoDayLabel}>DAY</Text>
-                </View>
-                {DEMO_HABITS.map((habit) => (
-                  <View
-                    key={habit}
-                    style={[
-                      styles.demoHabitHeader,
-                      { width: cellSize, height: cellSize },
-                    ]}
-                  >
-                    <Text
-                      style={styles.demoHabitName}
-                      numberOfLines={2}
-                      adjustsFontSizeToFit
-                    >
-                      {habit}
-                    </Text>
-                  </View>
-                ))}
-              </View>
-
-              {/* Scrollable content with fade overlay */}
-              <View style={styles.demoScrollContainer}>
-                <ScrollView
-                  ref={demoScrollRef}
-                  style={styles.demoScroll}
-                  showsVerticalScrollIndicator={false}
-                  scrollEnabled={false}
-                >
-                  {DEMO_DATA.map((row, dayIndex) => (
-                    <View key={dayIndex} style={styles.demoRow}>
-                      <View
-                        style={[
-                          styles.demoDayCell,
-                          { width: cellSize, height: cellSize },
-                        ]}
-                      >
-                        <Text style={styles.demoDayName}>
-                          {dayNames[dayIndex % 7]}
-                        </Text>
-                        <Text style={styles.demoDayNumber}>{dayIndex + 1}</Text>
-                      </View>
-                      {row.map((completed, habitIndex) => (
-                        <View
-                          key={habitIndex}
-                          style={[
-                            styles.demoCellWrapper,
-                            { width: cellSize, height: cellSize },
-                          ]}
-                        >
-                          <HabitCell
-                            completed={completed}
-                            onPress={() => {}}
-                            size={cellSize}
-                          />
-                        </View>
-                      ))}
-                    </View>
-                  ))}
-                </ScrollView>
-
-                {/* Bottom fade gradient - professional edge blur effect */}
-                <LinearGradient
-                  colors={[
-                    `${Colors.paper}00`,
-                    `${Colors.paper}40`,
-                    `${Colors.paper}CC`,
-                    Colors.paper,
-                  ]}
-                  locations={[0, 0.3, 0.7, 1]}
-                  style={styles.bottomFadeGradient}
-                  pointerEvents="none"
-                />
-              </View>
-            </View>
-          </Animated.View>
-
-          {/* Progress indicator */}
-          <View
-            style={[
-              styles.progressContainer,
-              { paddingBottom: insets.bottom + 12 },
-            ]}
-          >
-            <View style={styles.progressDot} />
-            <View style={[styles.progressDot, styles.progressDotActive]} />
-            <View style={styles.progressDot} />
-          </View>
-        </View>
-      </PaperBackground>
-    );
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    commitSelection([...selectedHabits, name]);
+    setCustomHabit("");
   }
 
-  // Transition stage - "You can do just the same"
-  if (stage === "transition") {
-    return (
-      <PaperBackground>
-        <View
-          style={[
-            styles.container,
-            styles.centerContent,
-            { paddingTop: insets.top },
-          ]}
-        >
-          <Animated.View
-            style={[
-              styles.transitionContainer,
-              {
-                opacity: transitionFade,
-                transform: [{ translateY: transitionSlide }],
-              },
-            ]}
-          >
-            <Text style={styles.transitionText}>You can build this too.</Text>
-            <Text style={styles.transitionSubtext}>Let&apos;s get started.</Text>
-          </Animated.View>
-        </View>
-      </PaperBackground>
-    );
+  async function handleContinue() {
+    if (selectedHabits.length === 0 || submittingRef.current) return;
+    submittingRef.current = true;
+    setSaving(true);
+    setSaveError(null);
+
+    try {
+      if (!session) {
+        setSaveError("You're signed out. Sign in to save your habits.");
+        return;
+      }
+
+      // Existing habits come from the store (memory → storage → network), so an
+      // offline retry merges against what we already have instead of nothing.
+      const existingHabits = await dataStore.refreshHabits();
+      const existingNames = new Set(
+        existingHabits.map((h) => h.name.toLowerCase()),
+      );
+      const createdAt = new Date().toISOString();
+      const newHabits: Habit[] = selectedHabits
+        .filter((name) => !existingNames.has(name.toLowerCase()))
+        .map((name, index) => ({
+          id: `${Date.now()}${index}`,
+          name,
+          createdAt,
+        }));
+
+      // The store never throws. `queued` means the write is in the durable
+      // queue and will replay, so onboarding carries on — only `failed` holds
+      // the user here, with the retry on the same button. Either way the draft
+      // still holds the selection.
+      const outcome = await dataStore.saveHabits([
+        ...existingHabits,
+        ...newHabits,
+      ]);
+      if (outcome.status === "failed") {
+        setSaveError(outcome.reason);
+        return;
+      }
+      router.push("/onboarding/feed-demo" as Href);
+    } finally {
+      submittingRef.current = false;
+      setSaving(false);
+    }
   }
 
-  // Selection stage
   return (
     <PaperBackground>
       <KeyboardAvoidingView
-        style={{ flex: 1 }}
+        style={styles.flex}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <ScrollView
-          style={styles.container}
+          style={styles.flex}
           contentContainerStyle={[
-            styles.contentContainer,
-            { paddingTop: insets.top + 20, paddingBottom: insets.bottom + 100 },
+            styles.content,
+            // The action bar below is a sibling, not an overlay — the scroll
+            // only needs breathing room, not clearance.
+            { paddingTop: insets.top + 16, paddingBottom: 24 },
           ]}
+          keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {/* Header */}
+          <TouchableOpacity
+            style={styles.backButton}
+            onPress={() => router.back()}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Back"
+          >
+            <IconSymbol name="chevron.left" size={22} color={Colors.ink} />
+            <Text style={styles.backText}>Back</Text>
+          </TouchableOpacity>
+
           <Animated.View
-            style={[
-              styles.header,
-              {
-                opacity: fadeAnim,
-                transform: [{ translateY: slideAnim }],
-              },
-            ]}
+            style={{ opacity: fade, transform: [{ translateY: rise }] }}
           >
             <Text style={styles.title}>What do you want to track?</Text>
             <Text style={styles.subtitle}>
-              Start simple. Pick a few habits that matter to you.
+              Pick up to {MAX_STARTER_HABITS}. You can change them any time —
+              or skip and add them later.
             </Text>
-          </Animated.View>
 
-          {/* Suggestion pills */}
-          <View style={styles.suggestionsContainer}>
-            {HABIT_SUGGESTIONS.map((habit, index) => {
-              const isSelected = selectedHabits.includes(habit.name);
-              return (
-                <Animated.View
-                  key={habit.name}
-                  style={{
-                    opacity: suggestionsStagger[index],
-                    transform: [
-                      {
-                        scale: suggestionsStagger[index].interpolate({
-                          inputRange: [0, 1],
-                          outputRange: [0.5, 1],
-                        }),
-                      },
-                    ],
-                  }}
-                >
-                  <TouchableOpacity
+            <View style={styles.suggestions}>
+              {HABIT_SUGGESTIONS.map((habit) => {
+                const isSelected = selectedHabits.includes(habit.name);
+                const isBlocked = !isSelected && atLimit;
+                return (
+                  <PressableScale
+                    key={habit.name}
                     style={[
-                      styles.suggestionPill,
-                      isSelected && styles.suggestionPillSelected,
+                      styles.pill,
+                      isSelected && styles.pillSelected,
+                      isBlocked && styles.pillBlocked,
                     ]}
+                    disabled={isBlocked}
                     onPress={() => toggleHabit(habit.name)}
-                    activeOpacity={0.7}
                   >
-                    <Text style={styles.suggestionEmoji}>{habit.emoji}</Text>
+                    <Text style={styles.pillEmoji}>{habit.emoji}</Text>
                     <Text
                       style={[
-                        styles.suggestionText,
-                        isSelected && styles.suggestionTextSelected,
+                        styles.pillText,
+                        isSelected && styles.pillTextSelected,
                       ]}
                     >
                       {habit.name}
@@ -531,93 +260,111 @@ export default function HabitsScreen() {
                     {isSelected && (
                       <IconSymbol
                         name="checkmark"
-                        size={16}
+                        size={15}
                         color={Colors.paper}
                       />
                     )}
-                  </TouchableOpacity>
-                </Animated.View>
-              );
-            })}
-          </View>
+                  </PressableScale>
+                );
+              })}
+            </View>
 
-          {/* Custom habit input */}
-          <View style={styles.customInputContainer}>
             <Text style={styles.customLabel}>Or add your own:</Text>
-            <View style={styles.customInputRow}>
+            <View style={styles.customRow}>
               <TextInput
                 style={styles.customInput}
                 value={customHabit}
                 onChangeText={setCustomHabit}
                 placeholder="Your habit..."
                 placeholderTextColor={Colors.textSecondary}
-                maxLength={20}
+                maxLength={HabitLimits.MAX_NAME_LENGTH}
                 onSubmitEditing={addCustomHabit}
                 returnKeyType="done"
+                editable={!atLimit}
               />
-              <TouchableOpacity
+              <PressableScale
                 style={[
                   styles.addButton,
-                  !customHabit.trim() && styles.addButtonDisabled,
+                  (!customHabit.trim() || atLimit) && styles.disabled,
                 ]}
+                disabled={!customHabit.trim() || atLimit}
                 onPress={addCustomHabit}
-                disabled={!customHabit.trim()}
               >
                 <IconSymbol name="plus" size={20} color={Colors.paper} />
-              </TouchableOpacity>
+              </PressableScale>
             </View>
-          </View>
 
-          {/* Mini preview of selected habits */}
-          {showPreview && (
-            <Animated.View
-              style={[
-                styles.miniPreview,
-                {
-                  opacity: previewFade,
-                  transform: [{ translateY: previewSlide }],
-                },
-              ]}
-            >
-              <Text style={styles.miniPreviewLabel}>Your habits:</Text>
-              <View style={styles.miniPreviewChips}>
-                {selectedHabits.map((habit) => (
-                  <View key={habit} style={styles.miniPreviewChip}>
-                    <Text style={styles.miniPreviewChipText}>{habit}</Text>
+            {/* Live preview — updates as they pick, so the grid isn't a
+                surprise on day one. */}
+            <PaperCard style={styles.preview}>
+              <Text style={styles.previewLabel}>Your tracker</Text>
+              {selectedHabits.length === 0 ? (
+                <Text style={styles.previewEmpty}>
+                  Pick a habit and it&apos;ll show up here.
+                </Text>
+              ) : (
+                selectedHabits.map((habit) => (
+                  <View key={habit} style={styles.previewRow}>
+                    <Text style={styles.previewName} numberOfLines={1}>
+                      {habit}
+                    </Text>
+                    <View style={styles.previewCells}>
+                      {Array.from({ length: PREVIEW_DAYS }).map((_, i) => (
+                        <HabitCell
+                          key={i}
+                          completed={false}
+                          onPress={() => {}}
+                          size={PREVIEW_CELL_SIZE}
+                          // A preview, not a control — dead on purpose.
+                          disabled
+                          accessibilityLabel={`${habit}, preview`}
+                        />
+                      ))}
+                    </View>
                   </View>
-                ))}
-              </View>
-            </Animated.View>
-          )}
+                ))
+              )}
+            </PaperCard>
+          </Animated.View>
         </ScrollView>
 
-        {/* Fixed bottom button */}
         <View
-          style={[
-            styles.bottomContainer,
-            { paddingBottom: insets.bottom + 20 },
-          ]}
+          style={[styles.bottomBar, { paddingBottom: insets.bottom + 16 }]}
         >
-          <View style={styles.selectedCount}>
-            <Text style={styles.selectedCountText}>
-              {selectedHabits.length} habit
-              {selectedHabits.length !== 1 ? "s" : ""} selected
-            </Text>
-          </View>
+          <Text style={styles.countText}>
+            {selectedHabits.length} of {MAX_STARTER_HABITS} selected
+          </Text>
 
-          <TouchableOpacity
+          {saveError ? (
+            <Text style={styles.saveError}>
+              {saveError} Tap continue to try again.
+            </Text>
+          ) : null}
+
+          <PressableScale
             style={[
               styles.continueButton,
-              selectedHabits.length === 0 && styles.continueButtonDisabled,
+              (selectedHabits.length === 0 || saving) && styles.disabled,
             ]}
+            disabled={selectedHabits.length === 0 || saving}
             onPress={handleContinue}
-            disabled={selectedHabits.length === 0}
-            activeOpacity={0.7}
           >
-            <Text style={styles.continueButtonText}>Continue</Text>
+            <Text style={styles.continueText}>
+              {saving ? "Saving…" : "Continue"}
+            </Text>
+          </PressableScale>
+
+          <TouchableOpacity
+            style={styles.skipButton}
+            onPress={() => router.push("/onboarding/feed-demo" as Href)}
+            disabled={saving}
+            activeOpacity={0.85}
+          >
+            <Text style={[styles.skipText, saving && styles.disabled]}>
+              Skip for now
+            </Text>
           </TouchableOpacity>
 
-          {/* Progress indicator */}
           <View style={styles.progressContainer}>
             <View style={styles.progressDot} />
             <View style={[styles.progressDot, styles.progressDotActive]} />
@@ -630,147 +377,24 @@ export default function HabitsScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  centerContent: {
-    justifyContent: "center",
+  flex: { flex: 1 },
+  content: { paddingHorizontal: 24 },
+  backButton: {
+    flexDirection: "row",
     alignItems: "center",
-  },
-  contentContainer: {
-    paddingHorizontal: 24,
-  },
-  // Demo stage styles
-  demoHeader: {
-    paddingHorizontal: 24,
     marginBottom: 16,
+    alignSelf: "flex-start",
   },
-  demoTitle: {
-    fontSize: 26,
-    fontWeight: "600",
-    color: Colors.ink,
-    fontFamily: Fonts.handwriting,
-    textAlign: "center",
-    marginBottom: 8,
-  },
-  demoSubtitle: {
+  backText: {
     fontSize: 16,
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
-    textAlign: "center",
-  },
-  demoContainer: {
-    flex: 1,
-    paddingHorizontal: GRID_PADDING,
-  },
-  demoGridWrapper: {
-    flex: 1,
-    backgroundColor: "transparent",
-  },
-  demoHeaderRow: {
-    flexDirection: "row",
-    marginBottom: 2,
-  },
-  demoDayHeaderCell: {
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 1.5,
-    borderColor: Colors.ink,
-    marginRight: 2,
-    backgroundColor: "transparent",
-  },
-  demoDayLabel: {
-    fontSize: 10,
-    fontWeight: "700",
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
-  },
-  demoHabitHeader: {
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 1.5,
-    borderColor: Colors.ink,
-    marginRight: 2,
-    paddingHorizontal: 2,
-    backgroundColor: "transparent",
-  },
-  demoHabitName: {
-    fontSize: 9,
-    fontWeight: "700",
-    color: Colors.ink,
-    fontFamily: Fonts.handwriting,
-    textAlign: "center",
-  },
-  demoScrollContainer: {
-    flex: 1,
-    position: "relative",
-    overflow: "hidden",
-  },
-  demoScroll: {
-    flex: 1,
-  },
-  bottomFadeGradient: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 120,
-  },
-  demoRow: {
-    flexDirection: "row",
-    marginBottom: 2,
-  },
-  demoDayCell: {
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 1.5,
-    borderColor: Colors.ink,
-    marginRight: 2,
-    backgroundColor: "transparent",
-  },
-  demoDayName: {
-    fontSize: 8,
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
-    fontWeight: "700",
-  },
-  demoDayNumber: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: Colors.ink,
-    fontFamily: Fonts.handwriting,
-  },
-  demoCellWrapper: {
-    marginRight: 2,
-  },
-  // Transition stage styles
-  transitionContainer: {
-    alignItems: "center",
-    paddingHorizontal: 32,
-  },
-  transitionText: {
-    fontSize: 28,
-    fontWeight: "600",
-    color: Colors.ink,
-    fontFamily: Fonts.handwriting,
-    textAlign: "center",
-    marginBottom: 12,
-  },
-  transitionSubtext: {
-    fontSize: 20,
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
-    textAlign: "center",
-  },
-  // Selection stage styles
-  header: {
-    marginBottom: 32,
+    marginLeft: 4,
   },
   title: {
     fontSize: 28,
-    fontWeight: "600",
     color: Colors.ink,
-    fontFamily: Fonts.handwriting,
+    fontFamily: Fonts.handwritingSemiBold,
     marginBottom: 8,
   },
   subtitle: {
@@ -778,14 +402,15 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
     lineHeight: 24,
+    marginBottom: 24,
   },
-  suggestionsContainer: {
+  suggestions: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 10,
-    marginBottom: 32,
+    marginBottom: 28,
   },
-  suggestionPill: {
+  pill: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: Colors.card,
@@ -796,34 +421,22 @@ const styles = StyleSheet.create({
     borderColor: Colors.ink,
     gap: 8,
   },
-  suggestionPillSelected: {
-    backgroundColor: Colors.ink,
-  },
-  suggestionEmoji: {
-    fontSize: 18,
-  },
-  suggestionText: {
+  pillSelected: { backgroundColor: Colors.ink },
+  pillBlocked: { opacity: 0.4 },
+  pillEmoji: { fontSize: 18 },
+  pillText: {
     fontSize: 15,
     color: Colors.ink,
-    fontFamily: Fonts.handwriting,
-    fontWeight: "500",
+    fontFamily: Fonts.handwritingMedium,
   },
-  suggestionTextSelected: {
-    color: Colors.paper,
-  },
-  customInputContainer: {
-    marginBottom: 32,
-  },
+  pillTextSelected: { color: Colors.paper },
   customLabel: {
     fontSize: 14,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
     marginBottom: 12,
   },
-  customInputRow: {
-    flexDirection: "row",
-    gap: 12,
-  },
+  customRow: { flexDirection: "row", gap: 12, marginBottom: 28 },
   customInput: {
     flex: 1,
     height: 52,
@@ -844,75 +457,79 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
-  addButtonDisabled: {
-    opacity: 0.4,
+  disabled: { opacity: 0.4 },
+  preview: { padding: 16 },
+  previewLabel: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    textTransform: "uppercase",
+    letterSpacing: 1,
+    marginBottom: 12,
   },
-  miniPreview: {
-    marginBottom: 24,
-  },
-  miniPreviewLabel: {
+  previewEmpty: {
     fontSize: 14,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
-    marginBottom: 12,
   },
-  miniPreviewChips: {
+  previewRow: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+    gap: 12,
   },
-  miniPreviewChip: {
-    backgroundColor: Colors.accent,
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 16,
-  },
-  miniPreviewChipText: {
+  previewName: {
+    flex: 1,
     fontSize: 14,
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
-    fontWeight: "500",
   },
-  bottomContainer: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
+  previewCells: { flexDirection: "row", gap: 4 },
+  bottomBar: {
     backgroundColor: Colors.paper,
     paddingHorizontal: 24,
-    paddingTop: 16,
+    paddingTop: 12,
     borderTopWidth: 1,
     borderTopColor: Colors.shadow,
   },
-  selectedCount: {
-    alignItems: "center",
-    marginBottom: 12,
-  },
-  selectedCountText: {
+  countText: {
     fontSize: 14,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
+    textAlign: "center",
+    marginBottom: 10,
+  },
+  saveError: {
+    fontSize: 14,
+    lineHeight: 20,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    textAlign: "center",
+    marginBottom: 10,
   },
   continueButton: {
     backgroundColor: Colors.ink,
-    paddingVertical: 18,
+    paddingVertical: 16,
     borderRadius: 30,
     alignItems: "center",
-    marginBottom: 16,
   },
-  continueButtonDisabled: {
-    opacity: 0.4,
-  },
-  continueButtonText: {
+  continueText: {
     fontSize: 18,
-    fontWeight: "600",
     color: Colors.paper,
+    fontFamily: Fonts.handwritingSemiBold,
+  },
+  skipButton: { alignItems: "center", paddingVertical: 12 },
+  skipText: {
+    fontSize: 15,
+    color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
   },
   progressContainer: {
     flexDirection: "row",
     justifyContent: "center",
     gap: 8,
+    paddingTop: 4,
   },
   progressDot: {
     width: 8,
@@ -920,8 +537,5 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     backgroundColor: Colors.shadow,
   },
-  progressDotActive: {
-    backgroundColor: Colors.ink,
-    width: 24,
-  },
+  progressDotActive: { backgroundColor: Colors.ink, width: 24 },
 });

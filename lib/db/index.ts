@@ -1,12 +1,30 @@
+// Local-time calendar keys (bug D1) — re-exported so `@/lib/db` consumers get
+// the sanctioned constructors alongside the types they already import.
+export {
+  daysInMonth,
+  fromDayKey,
+  isFutureDay,
+  monthKeyOf,
+  monthKeyOfParts,
+  parseDayKey,
+  toDayKey,
+  todayKey,
+} from "../dates";
+
 export type {
   AccountRow,
   DailyEntry,
   EntryPayload,
+  EntryRef,
   Habit,
   HabitLog,
   HabitLogPayload,
   HabitPayload,
+  HabitRef,
+  WriteOutcome,
 } from "./types";
+
+export { UnrecoverableWriteError } from "./types";
 
 export {
   AccountColumns,
@@ -46,6 +64,7 @@ export {
 
 export {
   clearHabitLogsCache,
+  deleteHabitLogsForHabit,
   getCachedHabitLogsForMonth,
   getHabitLogsForMonth,
   getHabitLogsForMonthDirect,
@@ -61,6 +80,8 @@ export {
   flushPendingWrites,
   getPendingWrites,
   type PendingWrite,
+  type PendingWriteBody,
   pendingWriteCount,
+  pendingWriteKey,
   removePendingWrite,
 } from "./pending-writes";

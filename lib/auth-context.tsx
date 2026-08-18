@@ -62,9 +62,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // This shouldn't happen on the same device that signed in, but
           // can occur after a reinstall when Supabase tokens persisted but
           // SecureStore did not. Force re-login so password is asked again.
-          console.warn(
-            "[Auth] Session valid but no master key in SecureStore — forcing re-login",
-          );
+          if (__DEV__) {
+            console.warn(
+              "[Auth] Session valid but no master key in SecureStore — forcing re-login",
+            );
+          }
           await supabase.auth.signOut();
           if (!mounted) return;
           setSession(null);

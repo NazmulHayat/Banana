@@ -1,3 +1,4 @@
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { IconButton } from "@/components/ui/icon-button";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
@@ -6,7 +7,7 @@ import { PressableScale } from "@/components/ui/pressable-scale";
 import { ScreenHeader } from "@/components/ui/screen-header";
 import { Colors, Fonts } from "@/constants/theme";
 import { useDataStore } from "@/lib/data-store";
-import { type Habit, saveHabits } from "@/lib/db";
+import type { Habit } from "@/lib/db";
 import { useState } from "react";
 import {
   Alert,
@@ -34,6 +35,8 @@ export default function HabitsScreen() {
   const [showHabitModal, setShowHabitModal] = useState(false);
   const [editingHabit, setEditingHabit] = useState<Habit | null>(null);
   const [habitName, setHabitName] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<Habit | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const openModal = (habit?: Habit) => {
     setEditingHabit(habit ?? null);
@@ -65,35 +68,40 @@ export default function HabitsScreen() {
     setShowHabitModal(false);
     setEditingHabit(null);
     setHabitName("");
-    try {
-      await saveHabits(updated);
-    } catch (e) {
-      console.error("[habits] save habit failed:", e);
-      Alert.alert("Save failed", "Could not save habit. Please try again.");
+    // The store never throws — `queued` is durable and replays on reconnect,
+    // so only `failed` puts the old list back.
+    const outcome = await dataStore.saveHabits(updated);
+    if (outcome.status === "failed") {
+      Alert.alert("Save failed", outcome.reason);
       await dataStore.refreshHabits();
     }
   };
 
+  // Destructive confirmations go through ConfirmDialog (the app's own paper
+  // dialog with haptics + a double-submit latch), never a native Alert.
   const handleDeleteHabit = (habit: Habit) => {
-    Alert.alert("Delete habit", `Delete "${habit.name}"? This can't be undone.`, [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Delete",
-        style: "destructive",
-        onPress: async () => {
-          const updated = habits.filter((h) => h.id !== habit.id);
-          dataStore.updateHabits(updated);
-          setShowHabitModal(false);
-          try {
-            await saveHabits(updated);
-          } catch (e) {
-            console.error("[habits] delete habit failed:", e);
-            Alert.alert("Delete failed", "Could not delete habit.");
-            await dataStore.refreshHabits();
-          }
-        },
-      },
-    ]);
+    // Close the edit sheet first — two stacked native modals fight over the
+    // presentation on iOS.
+    setShowHabitModal(false);
+    setPendingDelete(habit);
+  };
+
+  const handleConfirmDelete = async () => {
+    const habit = pendingDelete;
+    if (!habit) return;
+    setDeleting(true);
+    const updated = habits.filter((h) => h.id !== habit.id);
+    dataStore.updateHabits(updated);
+    try {
+      const outcome = await dataStore.saveHabits(updated);
+      if (outcome.status === "failed") {
+        Alert.alert("Delete failed", outcome.reason);
+        await dataStore.refreshHabits();
+      }
+    } finally {
+      setDeleting(false);
+      setPendingDelete(null);
+    }
   };
 
   return (
@@ -125,9 +133,17 @@ export default function HabitsScreen() {
                       <Text style={styles.renameText}>Rename</Text>
                     </View>
                   </TouchableOpacity>
-                  <IconButton onPress={() => handleDeleteHabit(habit)} style={styles.trashBtn}>
-                    <IconSymbol name="trash" size={20} color={Colors.danger} />
-                  </IconButton>
+                  {/* The a11y label sits on a grouping View because IconButton
+                      doesn't forward accessibility props yet. */}
+                  <View
+                    accessible
+                    accessibilityRole="button"
+                    accessibilityLabel={`Delete habit ${habit.name}`}
+                  >
+                    <IconButton onPress={() => handleDeleteHabit(habit)} style={styles.trashBtn}>
+                      <IconSymbol name="trash" size={20} color={Colors.danger} />
+                    </IconButton>
+                  </View>
                 </PaperCard>
               ))}
             </View>
@@ -205,6 +221,20 @@ export default function HabitsScreen() {
           </ScrollView>
         </KeyboardAvoidingView>
       </Modal>
+
+      <ConfirmDialog
+        visible={pendingDelete !== null}
+        title="Delete habit?"
+        message={
+          pendingDelete
+            ? `"${pendingDelete.name}" and its history will be removed. This can't be undone.`
+            : undefined
+        }
+        confirmLabel="Delete"
+        loading={deleting}
+        onConfirm={handleConfirmDelete}
+        onCancel={() => setPendingDelete(null)}
+      />
     </PaperBackground>
   );
 }

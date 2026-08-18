@@ -1,5 +1,6 @@
 import { Motion } from '@/constants/motion';
 import { Colors, Fonts } from '@/constants/theme';
+import { daysInMonth as daysInMonthOf, isFutureDay, toDayKey, todayKey } from '@/lib/dates';
 import { Habit, HabitLog } from '@/lib/db';
 import * as Haptics from 'expo-haptics';
 import { useRef, useState } from 'react';
@@ -16,8 +17,33 @@ import { HabitCell } from './ui/habit-cell';
 import { IconSymbol } from './ui/icon-symbol';
 
 // Column geometry — kept in sync with the styles below. One column is the
-// cell (60) plus its 2pt right margin.
-const CELL_WIDTH = 62;
+// cell plus its 2pt right margin.
+export const CELL_GAP = 2;
+/** Every cell is 60pt tall so the habit rows line up with the DAY column. */
+export const CELL_HEIGHT = 60;
+/** A fixed column (60pt cell + 2pt gap) — the 4-or-more-habits layout. */
+export const HABIT_COLUMN_WIDTH = 62;
+/** The pinned DAY column on the left, same width as a fixed habit column. */
+export const DAY_COLUMN_WIDTH = 62;
+/**
+ * At or below this many habits the columns stretch to fill the row instead of
+ * hugging the left edge with dead paper to the right — and the grid does not
+ * scroll horizontally. Above it we keep fixed columns + horizontal scroll.
+ */
+export const ADAPTIVE_MAX_HABITS = 3;
+
+/**
+ * Width of one habit column for `habitCount` habits in `availableWidth` points
+ * (the space left of the pinned DAY column). 1–3 habits divide the row evenly;
+ * 4+ keep the fixed column so the month stays scannable. Never narrower than a
+ * fixed column, so the 44pt touch-target floor always holds.
+ */
+export function computeColumnWidth(availableWidth: number, habitCount: number): number {
+  if (habitCount <= 0 || habitCount > ADAPTIVE_MAX_HABITS || availableWidth <= 0) {
+    return HABIT_COLUMN_WIDTH;
+  }
+  return Math.max(HABIT_COLUMN_WIDTH, Math.floor(availableWidth / habitCount));
+}
 
 interface HabitGridProps {
   habits: Habit[];
@@ -35,12 +61,22 @@ interface HabitGridProps {
 }
 
 export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, onEdit, onReorder, onHeaderLayout, headerRef, onHorizontalScroll, stickyHeaderScrollRef }: HabitGridProps) {
-  const daysInMonth = new Date(currentYear, currentMonth, 0).getDate();
+  const daysInMonth = daysInMonthOf(currentYear, currentMonth);
   const today = new Date();
   const isCurrentMonth = today.getMonth() + 1 === currentMonth && today.getFullYear() === currentYear;
   const currentDay = isCurrentMonth ? today.getDate() : null;
   const horizontalScrollRef = useRef<ScrollView>(null);
   const headerScrollRef = useRef<ScrollView>(null);
+  const todayStr = todayKey();
+
+  // Available width for the habit columns, measured from the real layout
+  // (never Dimensions.get) so it is right on every device and after any
+  // layout change. 0 until the first onLayout — we render fixed columns
+  // meanwhile, then settle into the adaptive width on the next frame.
+  const [gridWidth, setGridWidth] = useState(0);
+  const columnWidth = computeColumnWidth(gridWidth, habits.length);
+  const cellSize = columnWidth - CELL_GAP;
+  const adaptive = habits.length > 0 && habits.length <= ADAPTIVE_MAX_HABITS;
 
   // Drag-to-reorder: long-press a habit name to enter reorder mode, then drag
   // the lifted column left/right. Disabled while names are still loading
@@ -56,8 +92,12 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, o
     onReorder(next);
   };
 
+  // Day keys are local-time and built in exactly one place (lib/dates.ts) so a
+  // tapped cell and a saved highlight always agree on the day (bug D1).
+  const dayKeyFor = (day: number) => toDayKey(new Date(currentYear, currentMonth - 1, day));
+
   const isCompleted = (habitId: string, day: number) => {
-    const date = `${currentYear}-${String(currentMonth).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const date = dayKeyFor(day);
     return logs.some((log) => log.habitId === habitId && log.date === date && log.completed);
   };
 
@@ -65,6 +105,13 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, o
     const date = new Date(currentYear, currentMonth - 1, day);
     return date.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase();
   };
+
+  /** "March 4" — the date half of a cell's spoken label. */
+  const getDayLabel = (day: number) =>
+    new Date(currentYear, currentMonth - 1, day).toLocaleDateString('en-US', {
+      month: 'long',
+      day: 'numeric',
+    });
 
   const handleContentScroll = (event: { nativeEvent: { contentOffset: { x: number } } }) => {
     const offsetX = event.nativeEvent.contentOffset.x;
@@ -97,7 +144,7 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, o
     }
   };
 
-  const totalHabitsWidth = habits.length * CELL_WIDTH;
+  const totalHabitsWidth = habits.length * columnWidth;
 
   if (habits.length === 0) {
     return (
@@ -164,13 +211,14 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, o
             showsHorizontalScrollIndicator={false}
             scrollEventThrottle={16}
             onScroll={handleHeaderScroll}
-            scrollEnabled={!reordering}
+            scrollEnabled={!reordering && !adaptive}
             style={styles.headerScrollView}
             contentContainerStyle={{ width: totalHabitsWidth }}>
             {reordering ? (
               <ReorderableHeaderRow
                 habits={habits}
                 width={totalHabitsWidth}
+                columnWidth={columnWidth}
                 onCommit={commitReorder}
               />
             ) : (
@@ -179,6 +227,7 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, o
                   <HabitHeaderName
                     key={habit.id}
                     name={habit.name}
+                    width={cellSize}
                     canReorder={canReorder}
                     onLongPress={() => setReordering(true)}
                   />
@@ -207,24 +256,39 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, o
             ref={horizontalScrollRef}
             scrollEventThrottle={16}
             onScroll={handleContentScroll}
-            scrollEnabled={true}
+            scrollEnabled={!adaptive}
+            onLayout={(event) => setGridWidth(event.nativeEvent.layout.width)}
             style={styles.habitsScrollView}
             contentContainerStyle={{ width: totalHabitsWidth }}>
             <View style={styles.habitsColumn}>
               {Array.from({ length: daysInMonth }, (_, i) => i + 1).map((day) => {
-                const date = `${currentYear}-${String(currentMonth).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                const date = dayKeyFor(day);
+                // A day you haven't lived yet can't be ticked (D14). Past days
+                // stay editable — back-filling is the point of a journal.
+                const future = isFutureDay(date, todayStr);
+                const dayLabel = getDayLabel(day);
                 return (
                   <View key={day} style={styles.row}>
-                    {habits.map((habit) => (
-                      <View key={`${habit.id}-${day}`} style={styles.cellWrapper}>
-                        <HabitCell
-                          completed={isCompleted(habit.id, day)}
-                          isCurrentDay={currentDay === day}
-                          onPress={() => onToggle(habit.id, date)}
-                          size={60}
-                        />
-                      </View>
-                    ))}
+                    {habits.map((habit) => {
+                      const completed = isCompleted(habit.id, day);
+                      return (
+                        <View
+                          key={`${habit.id}-${day}`}
+                          style={[styles.cellWrapper, { width: cellSize }]}>
+                          <HabitCell
+                            completed={completed}
+                            isCurrentDay={currentDay === day}
+                            onPress={() => onToggle(habit.id, date)}
+                            size={cellSize}
+                            height={CELL_HEIGHT}
+                            disabled={future}
+                            accessibilityLabel={`${habit.name}, ${dayLabel}, ${
+                              completed ? 'completed' : 'not completed'
+                            }`}
+                          />
+                        </View>
+                      );
+                    })}
                   </View>
                 );
               })}
@@ -242,22 +306,27 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, o
  */
 interface HabitHeaderNameProps {
   name: string;
+  /** Measured cell width (adaptive when there are 1–3 habits). */
+  width: number;
   canReorder: boolean;
   onLongPress: () => void;
 }
 
-function HabitHeaderName({ name, canReorder, onLongPress }: HabitHeaderNameProps) {
+function HabitHeaderName({ name, width, canReorder, onLongPress }: HabitHeaderNameProps) {
   return (
     <TouchableOpacity
-      style={styles.habitHeaderCell}
+      style={[styles.habitHeaderCell, { width }]}
       activeOpacity={canReorder ? 0.6 : 1}
       delayLongPress={300}
       disabled={!canReorder}
+      // The header clamps long names to two lines; the full name still reads
+      // out here and lives unabridged in the habit editor.
+      accessibilityLabel={name}
       onLongPress={() => {
         void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         onLongPress();
       }}>
-      <Text style={styles.habitName} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.7}>
+      <Text style={styles.habitName} numberOfLines={2} ellipsizeMode="tail">
         {name}
       </Text>
     </TouchableOpacity>
@@ -273,10 +342,12 @@ function HabitHeaderName({ name, canReorder, onLongPress }: HabitHeaderNameProps
 interface ReorderableHeaderRowProps {
   habits: Habit[];
   width: number;
+  /** One column's width — drives both the hit test and the make-room shift. */
+  columnWidth: number;
   onCommit: (from: number, to: number) => void;
 }
 
-function ReorderableHeaderRow({ habits, width, onCommit }: ReorderableHeaderRowProps) {
+function ReorderableHeaderRow({ habits, width, columnWidth, onCommit }: ReorderableHeaderRowProps) {
   // -1 = nothing being dragged.
   const activeIndex = useSharedValue(-1);
   const dragX = useSharedValue(0); // finger delta from the column's home x
@@ -294,7 +365,7 @@ function ReorderableHeaderRow({ habits, width, onCommit }: ReorderableHeaderRowP
 
   const pan = Gesture.Pan()
     .onBegin((e) => {
-      const idx = clampIndex(Math.floor(e.x / CELL_WIDTH));
+      const idx = clampIndex(Math.floor(e.x / columnWidth));
       activeIndex.value = idx;
       targetIndex.value = idx;
       dragX.value = 0;
@@ -303,7 +374,7 @@ function ReorderableHeaderRow({ habits, width, onCommit }: ReorderableHeaderRowP
     .onUpdate((e) => {
       if (activeIndex.value < 0) return;
       dragX.value = e.translationX;
-      const moved = activeIndex.value + Math.round(e.translationX / CELL_WIDTH);
+      const moved = activeIndex.value + Math.round(e.translationX / columnWidth);
       targetIndex.value = clampIndex(moved);
     })
     .onEnd(() => {
@@ -333,6 +404,7 @@ function ReorderableHeaderRow({ habits, width, onCommit }: ReorderableHeaderRowP
               key={habit.id}
               name={habit.name}
               index={index}
+              columnWidth={columnWidth}
               activeIndex={activeIndex}
               targetIndex={targetIndex}
               dragX={dragX}
@@ -347,12 +419,14 @@ function ReorderableHeaderRow({ habits, width, onCommit }: ReorderableHeaderRowP
 interface ReorderCellProps {
   name: string;
   index: number;
+  /** One column's width — how far a neighbour slides to open the gap. */
+  columnWidth: number;
   activeIndex: SharedValue<number>;
   targetIndex: SharedValue<number>;
   dragX: SharedValue<number>;
 }
 
-function ReorderCell({ name, index, activeIndex, targetIndex, dragX }: ReorderCellProps) {
+function ReorderCell({ name, index, columnWidth, activeIndex, targetIndex, dragX }: ReorderCellProps) {
   const animatedStyle = useAnimatedStyle(() => {
     // The picked-up column follows the finger and lifts above the rest.
     if (activeIndex.value === index) {
@@ -370,8 +444,8 @@ function ReorderCell({ name, index, activeIndex, targetIndex, dragX }: ReorderCe
     const to = targetIndex.value;
     let shift = 0;
     if (from >= 0 && to >= 0) {
-      if (from < to && index > from && index <= to) shift = -CELL_WIDTH;
-      else if (from > to && index < from && index >= to) shift = CELL_WIDTH;
+      if (from < to && index > from && index <= to) shift = -columnWidth;
+      else if (from > to && index < from && index >= to) shift = columnWidth;
     }
     const dragging = from >= 0;
     return {
@@ -385,9 +459,11 @@ function ReorderCell({ name, index, activeIndex, targetIndex, dragX }: ReorderCe
   });
 
   return (
-    <Animated.View style={[styles.reorderCell, animatedStyle]}>
+    <Animated.View
+      style={[styles.reorderCell, { width: columnWidth - CELL_GAP }, animatedStyle]}
+      accessibilityLabel={name}>
       <View style={styles.reorderCellInner}>
-        <Text style={styles.habitName} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.7}>
+        <Text style={styles.habitName} numberOfLines={2} ellipsizeMode="tail">
           {name}
         </Text>
       </View>
@@ -441,7 +517,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   fixedDayHeader: {
-    width: 62,
+    width: DAY_COLUMN_WIDTH,
   },
   headerScrollView: {
     flex: 1,
@@ -454,7 +530,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
   },
   fixedDayColumn: {
-    width: 62,
+    width: DAY_COLUMN_WIDTH,
     paddingTop: 0,
   },
   habitsScrollView: {
@@ -546,9 +622,10 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwriting,
   },
   cellWrapper: {
-    width: 60,
-    height: 60,
-    marginRight: 2,
+    // width is set inline (adaptive when there are 1-3 habits)
+    width: HABIT_COLUMN_WIDTH - CELL_GAP,
+    height: CELL_HEIGHT,
+    marginRight: CELL_GAP,
   },
   emptyCard: {
     backgroundColor: Colors.card,

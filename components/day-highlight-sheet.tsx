@@ -1,7 +1,9 @@
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { Colors, Fonts } from "@/constants/theme";
 import { useDataStore } from "@/lib/data-store";
+import { fromDayKey, parseDayKey, todayKey } from "@/lib/dates";
 import type { DailyEntry, Habit, HabitLog } from "@/lib/db";
+import { perfectDays } from "@/lib/stats";
 import { useEffect, useState } from "react";
 import {
   Modal,
@@ -25,10 +27,12 @@ interface DayHighlightSheetProps {
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+// Day keys are local-time (lib/dates.ts) — parse them there, never inline.
 function pretty(date: string): string {
-  const [y, m, d] = date.split("-").map(Number);
-  const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
-  return `${WEEKDAYS[dow]}, ${MONTHS[m - 1]} ${d}`;
+  const parts = parseDayKey(date);
+  if (!parts) return "";
+  const dow = fromDayKey(date).getDay();
+  return `${WEEKDAYS[dow]}, ${MONTHS[parts.month - 1]} ${parts.day}`;
 }
 
 /**
@@ -48,11 +52,11 @@ export function DayHighlightSheet({ visible, date, habits, logs, onClose }: DayH
     let cancelled = false;
     const load = async () => {
       setLoading(true);
-      const [y, m] = date.split("-").map(Number);
+      const parts = parseDayKey(date);
       let month: DailyEntry[] = [];
       try {
         // Use the returned array (already current) rather than a store getter.
-        month = await refreshEntries(y, m);
+        if (parts) month = await refreshEntries(parts.year, parts.month);
       } catch {
         // Read degrades to whatever's cached — never block the sheet.
       }
@@ -65,6 +69,11 @@ export function DayHighlightSheet({ visible, date, habits, logs, onClose }: DayH
       cancelled = true;
     };
   }, [visible, date, refreshEntries]);
+
+  // FR-G1 — was every habit that existed on this day completed? Eligibility
+  // lives in the engine, so a habit added later never spoils an older day.
+  const isPerfect =
+    date !== null && perfectDays(habits, logs, todayKey()).includes(date);
 
   const nameById = new Map(habits.map((h) => [h.id, h.name] as const));
   const completed = date
@@ -89,6 +98,7 @@ export function DayHighlightSheet({ visible, date, habits, logs, onClose }: DayH
         </View>
 
         <ScrollView contentContainerStyle={styles.body}>
+          {isPerfect && <Text style={styles.perfect}>A perfect day — everything you&apos;d taken on.</Text>}
           <Text style={styles.section}>Completed</Text>
           {completed.length > 0 ? (
             completed.map((n) => (
@@ -147,6 +157,12 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwritingMedium,
     letterSpacing: 0.3,
     marginBottom: 10,
+  },
+  perfect: {
+    fontSize: 15,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingSemiBold,
+    marginBottom: 14,
   },
   habitRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 6 },
   habitText: { fontSize: 16, color: Colors.ink, fontFamily: Fonts.handwritingMedium },

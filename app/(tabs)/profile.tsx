@@ -7,6 +7,7 @@ import { PressableScale } from "@/components/ui/pressable-scale";
 import { SectionTitle, SettingsRow } from "@/components/ui/settings-row";
 import { Colors, Fonts } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
+import { purgeLocalUserData } from "@/lib/auth/local-purge";
 import { useDataStore } from "@/lib/data-store";
 import { clearUserMedia } from "@/lib/media";
 import { useOnboarding } from "@/lib/onboarding-context";
@@ -45,6 +46,8 @@ export default function ProfileScreen() {
 
   const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
 
   const username = dataStore.profile?.username ?? null;
   const habits = dataStore.habits;
@@ -79,60 +82,61 @@ export default function ProfileScreen() {
   };
 
   // ============ ACCOUNT: DELETE ACCOUNT ============
-  const handleDeleteAccount = () => {
-    Alert.alert(
-      "Delete your account?",
-      "This permanently deletes your account, all journal entries, habits, and encryption keys. This cannot be undone.",
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "Delete Permanently", style: "destructive", onPress: () => confirmDeleteAccount() },
-      ],
-    );
-  };
+  // One paper dialog with a type-DELETE guard replaces the old three-step
+  // native Alert → Alert → Alert.prompt chain. The safety (you must type the
+  // word) and the order of operations below are unchanged.
+  const handleConfirmDeleteAccount = async () => {
+    setDeletingAccount(true);
+    try {
+      // Supabase blocks direct DELETE from storage.objects in SECURITY
+      // DEFINER, so clean up media client-side BEFORE the RPC that drops the
+      // auth.users row.
+      if (!user?.id) {
+        Alert.alert(
+          "Not signed in",
+          "We couldn't confirm who you are, so nothing was deleted. Sign in again and retry.",
+        );
+        return;
+      }
 
-  const confirmDeleteAccount = () => {
-    Alert.alert("One more time", "Type the word DELETE on the next screen to confirm.", [
-      { text: "Cancel", style: "cancel" },
-      { text: "I understand", onPress: () => promptDeleteConfirmation() },
-    ]);
-  };
+      // D9: the sweep now pages through the whole bucket and reports how far it
+      // got. Anything short of a complete sweep aborts here — once the RPC drops
+      // the auth.users row we lose the credentials to reach those objects, and a
+      // deleted user's photos left in storage is a privacy failure, not clutter.
+      const cleanup = await clearUserMedia(user.id);
+      if (cleanup.status !== "complete") {
+        Alert.alert(
+          "Couldn't remove your photos",
+          "Some of your photos couldn't be deleted, so we stopped before touching anything else. Your account is untouched. Check your connection and try again.",
+        );
+        return;
+      }
 
-  const promptDeleteConfirmation = () => {
-    Alert.prompt(
-      "Type DELETE to confirm",
-      "This is your final confirmation.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async (value?: string) => {
-            if ((value ?? "").trim().toUpperCase() !== "DELETE") {
-              Alert.alert("Confirmation failed", "You didn't type DELETE.");
-              return;
-            }
-            try {
-              // Supabase blocks direct DELETE from storage.objects in
-              // SECURITY DEFINER, so clean up media client-side BEFORE the RPC
-              // that drops the auth.users row.
-              if (user?.id) {
-                await clearUserMedia(user.id);
-              }
-              const { error } = await supabase.rpc("delete_my_account");
-              if (error) {
-                Alert.alert("Delete failed", error.message);
-                return;
-              }
-              await signOut();
-            } catch (e) {
-              const msg = e instanceof Error ? e.message : String(e);
-              Alert.alert("Error", msg);
-            }
-          },
-        },
-      ],
-      "plain-text",
-    );
+      const { error } = await supabase.rpc("delete_my_account");
+      if (error) {
+        if (__DEV__) console.warn("[profile] delete_my_account:", error.message);
+        Alert.alert(
+          "Couldn't delete your account",
+          "Something went wrong on our side, so your account is still here and untouched. Check your connection and try again.",
+        );
+        return;
+      }
+
+      // D10: only now — the backend row is confirmed gone. Wipe every local
+      // trace (decrypted month caches, the durable write queue, the master key
+      // in SecureStore) before ending the session.
+      await purgeLocalUserData(user.id);
+      await signOut();
+      setShowDeleteConfirm(false);
+    } catch (e) {
+      if (__DEV__) console.warn("[profile] delete account threw:", e);
+      Alert.alert(
+        "Couldn't delete your account",
+        "Something went wrong, so we stopped. Your account is still here. Check your connection and try again.",
+      );
+    } finally {
+      setDeletingAccount(false);
+    }
   };
 
   const handleConfirmSignOut = async () => {
@@ -238,7 +242,13 @@ export default function ProfileScreen() {
             <Text style={styles.signOutText}>Sign out</Text>
           </PressableScale>
 
-          <TouchableOpacity style={styles.deleteButton} onPress={handleDeleteAccount} activeOpacity={0.7}>
+          <TouchableOpacity
+            style={styles.deleteButton}
+            onPress={() => setShowDeleteConfirm(true)}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Delete account"
+          >
             <Text style={styles.deleteText}>Delete Account</Text>
           </TouchableOpacity>
         </View>
@@ -272,6 +282,17 @@ export default function ProfileScreen() {
         loading={signingOut}
         onConfirm={handleConfirmSignOut}
         onCancel={() => setShowSignOutConfirm(false)}
+      />
+
+      <ConfirmDialog
+        visible={showDeleteConfirm}
+        title="Delete your account?"
+        message="This permanently deletes your account, every journal entry, your habits, and your encryption keys. It cannot be undone. Type DELETE to confirm."
+        confirmLabel="Delete forever"
+        confirmPhrase="DELETE"
+        loading={deletingAccount}
+        onConfirm={handleConfirmDeleteAccount}
+        onCancel={() => setShowDeleteConfirm(false)}
       />
     </PaperBackground>
   );

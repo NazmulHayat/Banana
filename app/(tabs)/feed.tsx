@@ -9,6 +9,7 @@ import { Motion } from "@/constants/motion";
 import { Colors, Fonts } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { useDataStore } from "@/lib/data-store";
+import { fromDayKey } from "@/lib/dates";
 import type { DailyEntry } from "@/lib/db";
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
@@ -44,12 +45,13 @@ export default function FeedScreen() {
   const [editingEntry, setEditingEntry] = useState<DailyEntry | null>(null);
   const [editText, setEditText] = useState("");
   const [editSaving, setEditSaving] = useState(false);
-  const [editError, setEditError] = useState(false);
+  // User-safe reason from the last failed edit — null while things are fine.
+  const [editError, setEditError] = useState<string | null>(null);
 
   // Delete (FR-E4): the entry pending confirmation + delete in-flight + error.
   const [deletingEntry, setDeletingEntry] = useState<DailyEntry | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
-  const [deleteError, setDeleteError] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const currentMonth = currentDate.getMonth() + 1;
   const currentYear = currentDate.getFullYear();
@@ -68,7 +70,7 @@ export default function FeedScreen() {
     );
     return [...monthEntries].sort((a, b) => {
       if (a.date !== b.date) {
-        return new Date(b.date).getTime() - new Date(a.date).getTime();
+        return fromDayKey(b.date).getTime() - fromDayKey(a.date).getTime();
       }
       const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
       const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
@@ -155,12 +157,8 @@ export default function FeedScreen() {
   };
 
   const formatDate = (dateString: string): string => {
-    const [yearStr, monthStr, dayStr] = dateString.split("-");
-    const date = new Date(
-      parseInt(yearStr, 10),
-      parseInt(monthStr, 10) - 1,
-      parseInt(dayStr, 10),
-    );
+    // Day keys are local-time; fromDayKey is the only sanctioned parse.
+    const date = fromDayKey(dateString);
     const weekday = date.toLocaleDateString("en-US", { weekday: "short" });
     const md = date.toLocaleDateString("en-US", {
       month: "short",
@@ -173,14 +171,14 @@ export default function FeedScreen() {
   const openEditor = (entry: DailyEntry) => {
     setEditingEntry(entry);
     setEditText(entry.text);
-    setEditError(false);
+    setEditError(null);
   };
 
   const closeEditor = () => {
     if (editSaving) return;
     setEditingEntry(null);
     setEditText("");
-    setEditError(false);
+    setEditError(null);
   };
 
   const handleEditSave = async () => {
@@ -194,47 +192,49 @@ export default function FeedScreen() {
     // Photos are preserved; only the text changes.
     const updated: DailyEntry = { ...editingEntry, text: trimmed };
     setEditSaving(true);
-    setEditError(false);
-    // Store action does the optimistic update + persistence.
-    try {
-      await dataStore.saveEntry(updated);
-      setEditingEntry(null);
-      setEditText("");
-    } catch {
+    setEditError(null);
+    // The store action does the optimistic update + persistence, and never
+    // throws: `queued` is durable (it replays on reconnect) so it closes just
+    // like `synced`; only `failed` keeps the editor open with the user's text.
+    const outcome = await dataStore.saveEntry(updated);
+    setEditSaving(false);
+    if (outcome.status === "failed") {
       // Re-sync from the server so the optimistic edit doesn't stick.
-      setEditError(true);
+      setEditError(outcome.reason);
       void dataStore.refreshEntries(currentYear, currentMonth, { force: true });
-    } finally {
-      setEditSaving(false);
+      return;
     }
+    setEditingEntry(null);
+    setEditText("");
   };
 
   // --- Delete (FR-E4) -------------------------------------------------------
   const requestDelete = (entry: DailyEntry) => {
     setDeletingEntry(entry);
-    setDeleteError(false);
+    setDeleteError(null);
   };
 
   const cancelDelete = () => {
     if (deleteLoading) return;
     setDeletingEntry(null);
-    setDeleteError(false);
+    setDeleteError(null);
   };
 
   const confirmDelete = async () => {
     if (!deletingEntry) return;
     const entry = deletingEntry;
     setDeleteLoading(true);
-    setDeleteError(false);
-    try {
-      await dataStore.deleteEntry(entry);
-      setDeletingEntry(null);
-    } catch {
-      setDeleteError(true);
+    setDeleteError(null);
+    // `queued` deletes are durable too, so the dialog closes; only `failed`
+    // holds it open with the reason swapped into the message.
+    const outcome = await dataStore.deleteEntry(entry);
+    setDeleteLoading(false);
+    if (outcome.status === "failed") {
+      setDeleteError(outcome.reason);
       void dataStore.refreshEntries(currentYear, currentMonth, { force: true });
-    } finally {
-      setDeleteLoading(false);
+      return;
     }
+    setDeletingEntry(null);
   };
 
   return (
@@ -265,6 +265,14 @@ export default function FeedScreen() {
             <IconSymbol name="chevron.right" size={22} color={Colors.ink} />
           </IconButton>
         </View>
+
+        {/* A queued write is saved on this device and replays on reconnect —
+            say so once, quietly, instead of interrupting the edit flow. */}
+        {dataStore.pendingWriteCount > 0 ? (
+          <Text style={styles.syncNote}>
+            Saved on this device — will sync when you&apos;re back online.
+          </Text>
+        ) : null}
 
         {loading ? (
           <View style={styles.entriesContainer}>
@@ -370,11 +378,9 @@ export default function FeedScreen() {
                 placeholder="Tell me something about today..."
                 placeholderTextColor={Colors.textSecondary}
               />
-              {editError && (
-                <Text style={styles.editErrorText}>
-                  Couldn&apos;t save your edit. Please try again.
-                </Text>
-              )}
+              {editError ? (
+                <Text style={styles.editErrorText}>{editError}</Text>
+              ) : null}
               <View style={styles.editButtonRow}>
                 <PressableScale
                   style={[styles.editButton, styles.editCancelButton]}
@@ -406,11 +412,7 @@ export default function FeedScreen() {
       <ConfirmDialog
         visible={deletingEntry !== null}
         title="Delete entry?"
-        message={
-          deleteError
-            ? "Couldn't delete that entry. Please try again."
-            : "This highlight will be permanently removed."
-        }
+        message={deleteError ?? "This highlight will be permanently removed."}
         confirmLabel="Delete"
         destructive
         loading={deleteLoading}
@@ -589,6 +591,15 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwriting,
     lineHeight: 24,
     textAlignVertical: "top",
+  },
+  syncNote: {
+    fontFamily: Fonts.handwriting,
+    fontSize: 13,
+    lineHeight: 18,
+    color: Colors.textSecondary,
+    textAlign: "center",
+    paddingHorizontal: 20,
+    marginBottom: 12,
   },
   editErrorText: {
     fontFamily: Fonts.handwriting,

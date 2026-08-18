@@ -5,8 +5,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { AAD, decryptJson, encryptJson, keyring } from "../crypto";
 import { supabase } from "../supabase";
-import { enqueuePendingWrite } from "./pending-writes";
 import type { Habit, HabitPayload } from "./types";
+import { UnrecoverableWriteError } from "./types";
 
 // Storage key is a protocol constant, not branding — renaming orphans caches.
 const HABITS_STORAGE_KEY = "banana_habits_v2";
@@ -31,6 +31,11 @@ export function clearHabitsCache(): void {
   memCache = null;
 }
 
+/**
+ * AsyncStorage tier of the read path (in-memory Map -> AsyncStorage -> network).
+ * Returns `null` when nothing is persisted for this user, `[]` when an empty
+ * list was persisted. A hit is promoted back into the in-memory cache.
+ */
 export async function loadHabitsFromStorage(
   userId: string,
 ): Promise<Habit[] | null> {
@@ -49,17 +54,26 @@ async function requireUserId(): Promise<string> {
   const {
     data: { session },
   } = await supabase.auth.getSession();
-  if (!session) throw new Error("Not signed in");
+  if (!session) throw new UnrecoverableWriteError("Not signed in");
   return session.user.id;
 }
 
 /**
- * Replace all habits with the given list. Atomic-ish:
- * deletes all existing rows then inserts new ones. RLS guarantees
- * we only touch our own rows.
+ * Replace all habits with the given list. Atomic-ish: deletes all existing rows
+ * then inserts new ones. RLS guarantees we only touch our own rows.
+ *
+ * Array order IS the order: each row carries its 0-based index as
+ * `HabitPayload.position` (D11), so drag-to-reorder is durable rather than an
+ * accident of insertion order.
+ *
+ * Throws on failure (never queues its own retry — see saveEntry). The caller
+ * queues the whole desired list once; the replay re-runs the full replace-all
+ * against whatever the server currently has, so it is idempotent.
  */
 export async function saveHabits(habits: Habit[]): Promise<void> {
-  if (!keyring.isUnlocked()) throw new Error("Encryption is locked");
+  if (!keyring.isUnlocked()) {
+    throw new UnrecoverableWriteError("Encryption is locked");
+  }
   const userId = await requireUserId();
   const mk = keyring.getMasterKey();
 
@@ -69,14 +83,8 @@ export async function saveHabits(habits: Habit[]): Promise<void> {
     .delete()
     .eq("owner_id", userId);
   if (delErr) {
-    // NFR-1: the delete (first half of replace-all) failed — queue the full
-    // desired list for retry instead of throwing it away. The replay re-runs
-    // saveHabits, which redoes delete-all + insert atomically against the
-    // server's current rows. Cache reflects the desired state optimistically.
-    if (__DEV__) console.warn("[habits] Clear failed, queued for retry");
-    await enqueuePendingWrite(userId, { kind: "habits", payload: habits });
-    setCachedHabits(userId, habits);
-    return;
+    // First half of replace-all failed — nothing was changed server-side.
+    throw new Error(`Failed to save habits: ${delErr.message}`);
   }
 
   if (habits.length === 0) {
@@ -85,11 +93,12 @@ export async function saveHabits(habits: Habit[]): Promise<void> {
   }
 
   const aad = AAD.habit(userId);
-  const rows = habits.map((h) => {
+  const rows = habits.map((h, index) => {
     const payload: HabitPayload = {
       id: h.id,
       name: h.name,
       createdAt: h.createdAt,
+      position: index,
     };
     const blob = encryptJson(mk, payload, aad);
     return {
@@ -101,25 +110,31 @@ export async function saveHabits(habits: Habit[]): Promise<void> {
 
   const { error: insErr } = await supabase.from("habits").insert(rows);
   if (insErr) {
-    // NFR-1: the insert failed after the delete succeeded — queue the full list
-    // for retry so the habits aren't lost (the delete may have already cleared
-    // the server rows). The replay re-runs the full replace-all.
-    if (__DEV__) console.warn("[habits] Save failed, queued for retry");
-    await enqueuePendingWrite(userId, { kind: "habits", payload: habits });
-    setCachedHabits(userId, habits);
-    return;
+    // The insert failed after the delete succeeded, so the server may now be
+    // empty: the queued retry (owned by the caller) is what restores the list.
+    throw new Error(`Failed to save habits: ${insErr.message}`);
   }
 
   setCachedHabits(userId, habits);
 }
 
-export async function getHabits(): Promise<Habit[]> {
+/**
+ * Fetch habits. Reads short-circuit on the in-memory cache unless `force` is
+ * set (pull-to-refresh), which goes straight to the network.
+ *
+ * Note `getCachedHabits` returns `null` when nothing has been resolved for this
+ * user and `[]` when the user genuinely has no habits — an empty list is a real
+ * result and short-circuits like any other.
+ */
+export async function getHabits(opts?: { force?: boolean }): Promise<Habit[]> {
   if (!keyring.isUnlocked()) return [];
   const userId = await requireUserId();
   const mk = keyring.getMasterKey();
 
-  const cached = getCachedHabits(userId);
-  if (cached) return cached;
+  if (!opts?.force) {
+    const cached = getCachedHabits(userId);
+    if (cached !== null) return cached;
+  }
 
   const { data, error } = await supabase
     .from("habits")
@@ -133,7 +148,9 @@ export async function getHabits(): Promise<Habit[]> {
   }
 
   const aad = AAD.habit(userId);
-  const habits: Habit[] = [];
+  // Decrypt in `created_at` order (the query's order), keeping each habit's
+  // stored `position` alongside it so we can restore the user's order below.
+  const decrypted: { habit: Habit; position?: number }[] = [];
   for (const row of data ?? []) {
     try {
       const payload = decryptJson<HabitPayload>(
@@ -144,15 +161,33 @@ export async function getHabits(): Promise<Habit[]> {
         },
         aad,
       );
-      habits.push({
-        id: payload.id,
-        name: payload.name,
-        createdAt: payload.createdAt,
+      decrypted.push({
+        habit: {
+          id: payload.id,
+          name: payload.name,
+          createdAt: payload.createdAt,
+        },
+        position:
+          typeof payload.position === "number" && Number.isFinite(payload.position)
+            ? payload.position
+            : undefined,
       });
     } catch (e) {
       if (__DEV__) console.warn("[habits] Failed to decrypt a habit:", e);
     }
   }
+
+  // D11 back-compat: only trust `position` when EVERY row has one (habits are
+  // written wholesale, so it's all-or-nothing in practice). A list containing
+  // any pre-position row keeps its `created_at` ordering untouched — upgrading
+  // must never scramble someone's habits. The first save re-stamps positions.
+  const ordered =
+    decrypted.length > 0 && decrypted.every((d) => d.position !== undefined)
+      ? [...decrypted].sort(
+          (a, b) => (a.position as number) - (b.position as number),
+        )
+      : decrypted;
+  const habits = ordered.map((d) => d.habit);
 
   setCachedHabits(userId, habits);
   return habits;

@@ -11,9 +11,9 @@ import {
   monthBucket,
 } from "../crypto";
 import { supabase } from "../supabase";
-import { enqueuePendingWrite } from "./pending-writes";
 import { DateFormats } from "./schema";
 import type { DailyEntry, EntryPayload } from "./types";
+import { UnrecoverableWriteError } from "./types";
 
 // ----------------------------------------------------------------------------
 // Caches
@@ -86,11 +86,45 @@ export function upsertEntryInCache(entry: DailyEntry, userId: string): void {
   }
 }
 
+/**
+ * Drop one entry from both cache tiers, keeping the rest of the month intact.
+ * Used by `deleteEntry` instead of invalidating the whole month: an offline
+ * delete must leave a usable (just smaller) cached month behind, not a hole
+ * the next read can only fill from a server it can't reach.
+ */
+function removeEntryFromCache(
+  entryId: string,
+  date: string,
+  userId: string,
+): void {
+  const ym = date.slice(0, 7);
+  const mKey = monthKey(userId, ym);
+  const month = entriesMonthCache.get(mKey);
+  if (month) {
+    const next = month.filter((e) => e.id !== entryId);
+    entriesMonthCache.set(mKey, next);
+    void AsyncStorage.setItem(
+      storageKey(userId, ym),
+      JSON.stringify(next),
+    ).catch(() => {});
+  }
+  const dKey = dayKey(userId, date);
+  const day = entriesDayCache.get(dKey);
+  if (day) entriesDayCache.set(dKey, day.filter((e) => e.id !== entryId));
+}
+
 export function clearEntriesCache(): void {
   entriesMonthCache.clear();
   entriesDayCache.clear();
 }
 
+/**
+ * AsyncStorage tier of the read path (in-memory Map -> AsyncStorage -> network).
+ * Returns `null` when nothing is persisted for that month, `[]` when a month
+ * that is genuinely empty was persisted. A hit is promoted back into the
+ * in-memory cache. Callers (data-store) use this on a Map miss, before the
+ * network, so an offline cold start still paints.
+ */
 export async function loadEntriesForMonthFromStorage(
   year: number,
   month: number,
@@ -137,7 +171,7 @@ async function requireUserId(): Promise<string> {
   const {
     data: { session },
   } = await supabase.auth.getSession();
-  if (!session) throw new Error("Not signed in");
+  if (!session) throw new UnrecoverableWriteError("Not signed in");
   return session.user.id;
 }
 
@@ -148,9 +182,17 @@ async function requireUserId(): Promise<string> {
 /**
  * Save (insert or merge) a single entry for the given day.
  * Multiple entries per day are merged into one encrypted row.
+ *
+ * Throws on failure — an `UnrecoverableWriteError` when the write can never
+ * land as-is (locked, signed out), a plain `Error` when the server/network is
+ * at fault. The caller (data-store) decides what to do; this layer NEVER
+ * queues its own retry (D5: a replaying executor that re-queues rewrites the
+ * queue instead of retrying it).
  */
 export async function saveEntry(entry: DailyEntry): Promise<void> {
-  if (!keyring.isUnlocked()) throw new Error("Encryption is locked");
+  if (!keyring.isUnlocked()) {
+    throw new UnrecoverableWriteError("Encryption is locked");
+  }
   const userId = await requireUserId();
   const mk = keyring.getMasterKey();
 
@@ -158,12 +200,18 @@ export async function saveEntry(entry: DailyEntry): Promise<void> {
   const mBucket = monthBucket(mk, entry.date.slice(0, 7));
 
   // Fetch existing row (if any) to merge same-day highlights
-  const { data: existing } = await supabase
+  const { data: existing, error: readErr } = await supabase
     .from("entries")
     .select("ciphertext, nonce")
     .eq("owner_id", userId)
     .eq("day_bucket", dBucket)
     .maybeSingle();
+
+  // Can't read the day → can't merge it. Fail rather than overwrite the day
+  // with just this entry (that would delete the other highlights on it).
+  if (readErr) {
+    throw new Error(`Failed to save entry: ${readErr.message}`);
+  }
 
   let merged: DailyEntry[] = [];
   if (existing) {
@@ -202,13 +250,10 @@ export async function saveEntry(entry: DailyEntry): Promise<void> {
     { onConflict: "owner_id,day_bucket" },
   );
 
+  // NFR-1: never swallow a write error. The data store catches this and
+  // durably queues the entry for retry (flushed on init + app-foreground).
   if (error) {
-    // NFR-1: don't throw the write away on a server/network failure. Durably
-    // enqueue it for retry (flushed on init + app-foreground in data-store).
-    // The optimistic UI already reflects this edit, so returning normally keeps
-    // the screen correct while the queue guarantees the write isn't lost.
-    if (__DEV__) console.warn("[entries] Save failed, queued for retry");
-    await enqueuePendingWrite(userId, { kind: "entry", payload: entry });
+    throw new Error(`Failed to save entry: ${error.message}`);
   }
 
   // Update caches
@@ -218,52 +263,74 @@ export async function saveEntry(entry: DailyEntry): Promise<void> {
 /**
  * Delete one specific entry id (within a day). If the day becomes empty,
  * deletes the entire row.
+ *
+ * Throws on failure exactly like `saveEntry`, so a delete that can't reach the
+ * server is queued by the caller and replayed later (D6: it used to ignore the
+ * error entirely, and the "deleted" entry reappeared on the next sync).
+ * Replays are safe: an already-deleted entry resolves as a no-op.
  */
 export async function deleteEntry(entryId: string, date: string): Promise<void> {
-  if (!keyring.isUnlocked()) throw new Error("Encryption is locked");
+  if (!keyring.isUnlocked()) {
+    throw new UnrecoverableWriteError("Encryption is locked");
+  }
   const userId = await requireUserId();
   const mk = keyring.getMasterKey();
   const dBucket = dayBucket(mk, date);
 
-  const { data: existing } = await supabase
+  const { data: existing, error: readErr } = await supabase
     .from("entries")
     .select("ciphertext, nonce")
     .eq("owner_id", userId)
     .eq("day_bucket", dBucket)
     .maybeSingle();
 
-  if (!existing) return;
+  if (readErr) {
+    throw new Error(`Failed to delete entry: ${readErr.message}`);
+  }
+
+  // Nothing on the server (already deleted, or never synced) — the local caches
+  // still have to lose it, and the delete is done.
+  if (!existing) {
+    removeEntryFromCache(entryId, date, userId);
+    return;
+  }
 
   const aad = AAD.entry(dBucket, userId);
-  const decrypted = decryptJson<EntryPayload>(
-    mk,
-    {
-      ciphertext: existing.ciphertext as string,
-      nonce: existing.nonce as string,
-    },
-    aad,
-  );
+  let decrypted: EntryPayload;
+  try {
+    decrypted = decryptJson<EntryPayload>(
+      mk,
+      {
+        ciphertext: existing.ciphertext as string,
+        nonce: existing.nonce as string,
+      },
+      aad,
+    );
+  } catch {
+    // Retrying can't fix a row we can't read — surface it as unrecoverable so
+    // it isn't queued forever. Never log the ciphertext.
+    throw new UnrecoverableWriteError("Could not read that day's entries");
+  }
   const remaining = decrypted.entries.filter((e) => e.id !== entryId);
 
   if (remaining.length === 0) {
-    await supabase
+    const { error } = await supabase
       .from("entries")
       .delete()
       .eq("owner_id", userId)
       .eq("day_bucket", dBucket);
+    if (error) throw new Error(`Failed to delete entry: ${error.message}`);
   } else {
     const blob = encryptJson(mk, { ...decrypted, entries: remaining }, aad);
-    await supabase
+    const { error } = await supabase
       .from("entries")
       .update({ ciphertext: blob.ciphertext, nonce: blob.nonce })
       .eq("owner_id", userId)
       .eq("day_bucket", dBucket);
+    if (error) throw new Error(`Failed to delete entry: ${error.message}`);
   }
 
-  // Invalidate caches for that month
-  const ym = date.slice(0, 7);
-  entriesMonthCache.delete(monthKey(userId, ym));
-  entriesDayCache.delete(dayKey(userId, date));
+  removeEntryFromCache(entryId, date, userId);
 }
 
 export async function getEntriesForDate(date: string): Promise<DailyEntry[]> {

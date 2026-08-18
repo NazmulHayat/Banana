@@ -137,7 +137,11 @@ export default function SignupScreen() {
             "This email is already registered. Try signing in instead.",
           );
         } else {
-          Alert.alert("Error", error.message);
+          if (__DEV__) console.warn("[signup] signUp failed:", error.message);
+          Alert.alert(
+            "Couldn't create your account",
+            "Something went wrong on our side. Check your connection and try again.",
+          );
         }
         setLoading(false);
         return;

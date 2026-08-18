@@ -17,6 +17,11 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+/** Let the screen transition settle before stealing focus. */
+const FOCUS_DELAY_MS = 100;
+/** Seconds before the code can be resent. */
+const RESEND_COOLDOWN_S = 60;
+
 export default function VerifyScreen() {
   const insets = useSafeAreaInsets();
   const { email, isNewUser } = useLocalSearchParams<{
@@ -26,11 +31,14 @@ export default function VerifyScreen() {
   }>();
   const [code, setCode] = useState("");
   const [loading, setLoading] = useState(false);
-  const [resendCooldown, setResendCooldown] = useState(60);
+  const [resendCooldown, setResendCooldown] = useState(RESEND_COOLDOWN_S);
   const inputRef = useRef<TextInput>(null);
 
   useEffect(() => {
-    setTimeout(() => inputRef.current?.focus(), 100);
+    // Focus after the screen transition settles — cleared on unmount so the
+    // callback can never fire against a dead ref.
+    const timer = setTimeout(() => inputRef.current?.focus(), FOCUS_DELAY_MS);
+    return () => clearTimeout(timer);
   }, []);
 
   useEffect(() => {
@@ -59,7 +67,11 @@ export default function VerifyScreen() {
       });
 
       if (error) {
-        Alert.alert("Verification failed", error.message);
+        if (__DEV__) console.warn("[verify] otp failed:", error.message);
+        Alert.alert(
+          "That code didn't work",
+          "Double-check the code from your email, or send yourself a new one.",
+        );
         setLoading(false);
         return;
       }
@@ -95,13 +107,17 @@ export default function VerifyScreen() {
         email: email!,
       });
       if (error) {
-        Alert.alert("Error", error.message);
+        if (__DEV__) console.warn("[verify] resend failed:", error.message);
+        Alert.alert(
+          "Couldn't resend the code",
+          "Give it a moment and try again.",
+        );
       } else {
         Alert.alert(
           "Code sent",
           "A new verification code has been sent to your email.",
         );
-        setResendCooldown(60);
+        setResendCooldown(RESEND_COOLDOWN_S);
       }
     } catch {
       Alert.alert("Error", "Failed to resend code.");

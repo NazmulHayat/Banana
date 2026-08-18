@@ -19,6 +19,7 @@ import {
   getPendingWrites,
   type PendingWrite,
   pendingWriteCount,
+  pendingWriteKey,
   removePendingWrite,
 } from "../lib/db/pending-writes";
 
@@ -101,8 +102,12 @@ test("enqueue→get round-trips all 3 kinds, order preserved, ids/queuedAt set",
 test("pendingWriteCount reflects queue length", async () => {
   await reset();
   assertEq(await pendingWriteCount(U), 0, "starts at 0");
+  // Two DIFFERENT keys (same habit, different days) → two queued items.
   await enqueuePendingWrite(U, { kind: "habitLog", payload: habitLog });
-  await enqueuePendingWrite(U, { kind: "habitLog", payload: habitLog });
+  await enqueuePendingWrite(U, {
+    kind: "habitLog",
+    payload: { ...habitLog, date: "2026-06-17" },
+  });
   assertEq(await pendingWriteCount(U), 2, "two after enqueues");
 });
 
@@ -219,6 +224,303 @@ test("flush never throws even if persisting the trimmed queue fails", async () =
   const res = await flushPendingWrites(U, async () => {});
   assertEq(res.flushed, 1, "still reports the flushed write");
   assertEq(res.remaining, 0, "no survivors");
+});
+
+// ---- coalescing by key (D7) ------------------------------------------------
+
+test("keys identify the target row, not the revision", async () => {
+  assertEq(pendingWriteKey({ kind: "entry", payload: entry }), "entry:e1", "entry key");
+  assertEq(
+    pendingWriteKey({ op: "delete", kind: "entry", payload: { id: "e1", date: entry.date } }),
+    "entry:e1",
+    "an entry delete shares the entry's key",
+  );
+  assertEq(pendingWriteKey({ kind: "habits", payload: habits }), "habits", "one habits key");
+  assertEq(
+    pendingWriteKey({ kind: "habitLog", payload: habitLog }),
+    "habitLog:h1:2026-06-16",
+    "habitLog key is habit + day",
+  );
+  assertEq(
+    pendingWriteKey({ op: "delete", kind: "habitLogs", payload: { habitId: "h1" } }),
+    "habitLogs:h1",
+    "habit-log purge key",
+  );
+});
+
+test("repeated writes to one key coalesce: 1 item, last payload wins", async () => {
+  await reset();
+  // Toggling one cell 4 times offline must leave ONE queued write, not four.
+  for (const completed of [true, false, true, false]) {
+    await enqueuePendingWrite(U, {
+      kind: "habitLog",
+      payload: { ...habitLog, completed },
+    });
+  }
+  const q = await getPendingWrites(U);
+  assertEq(q.length, 1, "coalesced to one");
+  assertTrue(q[0].kind === "habitLog", "still a habitLog");
+  assertEq(q[0].payload, { ...habitLog, completed: false }, "last write wins");
+
+  // Same for the whole-list habits write.
+  await enqueuePendingWrite(U, { kind: "habits", payload: habits });
+  await enqueuePendingWrite(U, {
+    kind: "habits",
+    payload: [...habits, { id: "h2", name: "Walk", createdAt: habits[0].createdAt }],
+  });
+  const q2 = await getPendingWrites(U);
+  assertEq(q2.length, 2, "one habitLog + one habits");
+  const habitsItem = q2.find((w) => w.key === "habits");
+  assertTrue(habitsItem?.kind === "habits", "habits item present");
+  assertEq(
+    habitsItem?.kind === "habits" ? habitsItem.payload.length : 0,
+    2,
+    "the newest list is the queued one",
+  );
+});
+
+test("coalescing keeps the slot + queuedAt, but takes a new id", async () => {
+  await reset();
+  await enqueuePendingWrite(U, { kind: "entry", payload: entry });
+  await enqueuePendingWrite(U, { kind: "habitLog", payload: habitLog });
+  const before = (await getPendingWrites(U))[0];
+
+  await enqueuePendingWrite(U, {
+    kind: "entry",
+    payload: { ...entry, text: "edited" },
+  });
+  const after = await getPendingWrites(U);
+  assertEq(after.length, 2, "still two items");
+  assertEq(after[0].key, "entry:e1", "replacement kept its oldest-first slot");
+  assertEq(
+    after[0].queuedAt,
+    before.queuedAt,
+    "queuedAt preserved so 'pending since' stays truthful",
+  );
+  assertTrue(after[0].id !== before.id, "new revision gets a new id");
+  assertTrue(
+    after[0].kind === "entry" &&
+      after[0].op === "save" &&
+      after[0].payload.text === "edited",
+    "newest text",
+  );
+});
+
+// ---- delete ops (D6) -------------------------------------------------------
+
+test("delete ops round-trip and replay through the executor", async () => {
+  await reset();
+  await enqueuePendingWrite(U, {
+    op: "delete",
+    kind: "entry",
+    payload: { id: "e1", date: entry.date },
+  });
+  await enqueuePendingWrite(U, {
+    op: "delete",
+    kind: "habitLogs",
+    payload: { habitId: "h1" },
+  });
+
+  const q = await getPendingWrites(U);
+  assertEq(q.length, 2, "two deletes queued");
+  assertEq(
+    q.map((w) => w.op),
+    ["delete", "delete"],
+    "both marked as deletes",
+  );
+
+  const seen: string[] = [];
+  const res = await flushPendingWrites(U, async (item) => {
+    seen.push(`${item.op}:${item.kind}`);
+  });
+  assertEq(seen, ["delete:entry", "delete:habitLogs"], "executor sees the op");
+  assertEq(res, { flushed: 2, remaining: 0 }, "both flushed");
+});
+
+test("a delete supersedes a pending save for the same key", async () => {
+  await reset();
+  await enqueuePendingWrite(U, { kind: "entry", payload: entry });
+  await enqueuePendingWrite(U, {
+    op: "delete",
+    kind: "entry",
+    payload: { id: entry.id, date: entry.date },
+  });
+  const q = await getPendingWrites(U);
+  assertEq(q.length, 1, "one item for that entry");
+  assertEq(q[0].op, "delete", "the delete won — the entry must not come back");
+});
+
+test("a save supersedes a pending delete for the same key", async () => {
+  await reset();
+  await enqueuePendingWrite(U, {
+    op: "delete",
+    kind: "entry",
+    payload: { id: entry.id, date: entry.date },
+  });
+  await enqueuePendingWrite(U, {
+    kind: "entry",
+    payload: { ...entry, text: "rewritten" },
+  });
+  const q = await getPendingWrites(U);
+  assertEq(q.length, 1, "one item for that entry");
+  assertEq(q[0].op, "save", "the re-save won");
+  assertTrue(
+    q[0].kind === "entry" && q[0].op === "save" && q[0].payload.text === "rewritten",
+    "with the new text",
+  );
+});
+
+// ---- D5 regression: a failed replay is RETRIED, not rewritten ---------------
+
+test("D5: a failed replay stays queued verbatim across repeated flushes", async () => {
+  await reset();
+  await enqueuePendingWrite(U, { kind: "entry", payload: entry });
+  await enqueuePendingWrite(U, { kind: "habitLog", payload: habitLog });
+  const before = await getPendingWrites(U);
+
+  // Still offline: every replay throws. Nothing may be removed, and — the bug —
+  // nothing may be re-appended with a fresh id/queuedAt either.
+  for (let i = 0; i < 3; i++) {
+    const res = await flushPendingWrites(U, async () => {
+      throw new Error("still offline");
+    });
+    assertEq(res, { flushed: 0, remaining: 2 }, `flush ${i + 1} kept both`);
+  }
+
+  const after = await getPendingWrites(U);
+  assertEq(after.length, 2, "queue did not grow or shrink");
+  assertEq(
+    after.map((w) => w.id),
+    before.map((w) => w.id),
+    "same ids — retried, not re-queued as new writes",
+  );
+  assertEq(
+    after.map((w) => w.queuedAt),
+    before.map((w) => w.queuedAt),
+    "queuedAt untouched, so the age of a stuck write is knowable",
+  );
+
+  // Network returns: the same items flush and the queue empties.
+  const ok = await flushPendingWrites(U, async () => {});
+  assertEq(ok, { flushed: 2, remaining: 0 }, "drains once the server answers");
+  assertEq(await pendingWriteCount(U), 0, "queue empty");
+});
+
+test("a write queued during a flush survives that flush", async () => {
+  await reset();
+  await enqueuePendingWrite(U, { kind: "entry", payload: entry });
+
+  const res = await flushPendingWrites(U, async () => {
+    // The user edits the same entry again while the replay is in flight.
+    await enqueuePendingWrite(U, {
+      kind: "entry",
+      payload: { ...entry, text: "edited mid-flush" },
+    });
+  });
+  assertEq(res.flushed, 1, "the replayed revision counted as flushed");
+  const left = await getPendingWrites(U);
+  assertEq(left.length, 1, "the newer revision is still queued");
+  assertTrue(
+    left[0].kind === "entry" &&
+      left[0].op === "save" &&
+      left[0].payload.text === "edited mid-flush",
+    "and it is the newer one",
+  );
+});
+
+test("overlapping flushes share one run (no double replay)", async () => {
+  await reset();
+  await enqueuePendingWrite(U, { kind: "habitLog", payload: habitLog });
+  let calls = 0;
+  const exec = async () => {
+    calls++;
+    await new Promise((r) => setTimeout(r, 5));
+  };
+  const [a, b] = await Promise.all([
+    flushPendingWrites(U, exec),
+    flushPendingWrites(U, exec),
+  ]);
+  assertEq(calls, 1, "executor ran once");
+  assertEq(a, b, "both callers got the same result");
+});
+
+// ---- old on-disk formats ---------------------------------------------------
+
+test("pre-coalescing rows on disk migrate instead of crashing", async () => {
+  await reset();
+  // Exactly what the shipped v1 queue wrote: no `op`, no `key`.
+  store.set(
+    "banana_pending_writes_v1:" + U,
+    JSON.stringify([
+      { id: "old-1", kind: "entry", payload: entry, queuedAt: "2026-06-16T10:00:00.000Z" },
+      { id: "old-2", kind: "habits", payload: habits, queuedAt: "2026-06-16T10:01:00.000Z" },
+      { id: "old-3", kind: "habitLog", payload: habitLog, queuedAt: "2026-06-16T10:02:00.000Z" },
+    ]),
+  );
+
+  const q = await getPendingWrites(U);
+  assertEq(q.length, 3, "all three old writes survive the upgrade");
+  assertEq(
+    q.map((w) => w.op),
+    ["save", "save", "save"],
+    "old rows default to save",
+  );
+  assertEq(
+    q.map((w) => w.key),
+    ["entry:e1", "habits", "habitLog:h1:2026-06-16"],
+    "keys derived from the payloads",
+  );
+  assertEq(
+    q.map((w) => w.id),
+    ["old-1", "old-2", "old-3"],
+    "ids and order preserved",
+  );
+  assertEq(q[0].queuedAt, "2026-06-16T10:00:00.000Z", "original age preserved");
+
+  // A new write to a migrated key coalesces with it rather than duplicating.
+  await enqueuePendingWrite(U, { kind: "habitLog", payload: { ...habitLog, completed: false } });
+  assertEq(await pendingWriteCount(U), 3, "still three");
+
+  // And they replay normally.
+  const res = await flushPendingWrites(U, async () => {});
+  assertEq(res, { flushed: 3, remaining: 0 }, "migrated rows flush");
+});
+
+test("garbage rows are dropped without taking the queue with them", async () => {
+  await reset();
+  store.set(
+    "banana_pending_writes_v1:" + U,
+    JSON.stringify([
+      null,
+      "nope",
+      { id: "x", kind: "entry" }, // no payload
+      { id: "y", kind: "wat", payload: { id: "z" } }, // unknown kind
+      { id: "z", kind: "habitLog", payload: { habitId: "h1" } }, // payload missing date
+      { id: "good", kind: "entry", payload: entry, queuedAt: "2026-06-16T10:00:00.000Z" },
+    ]),
+  );
+  const q = await getPendingWrites(U);
+  assertEq(q.length, 1, "only the readable write survives");
+  assertEq(q[0].id, "good", "and it's the right one");
+});
+
+test("duplicate keys already on disk collapse to the newest", async () => {
+  await reset();
+  store.set(
+    "banana_pending_writes_v1:" + U,
+    JSON.stringify([
+      { id: "a", kind: "habitLog", payload: habitLog, queuedAt: "2026-06-16T10:00:00.000Z" },
+      {
+        id: "b",
+        kind: "habitLog",
+        payload: { ...habitLog, completed: false },
+        queuedAt: "2026-06-16T10:05:00.000Z",
+      },
+    ]),
+  );
+  const q = await getPendingWrites(U);
+  assertEq(q.length, 1, "the old queue's duplicates collapse");
+  assertEq(q[0].id, "b", "newest wins");
 });
 
 (async () => {

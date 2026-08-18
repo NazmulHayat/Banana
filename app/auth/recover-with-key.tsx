@@ -114,30 +114,31 @@ export default function RecoverWithKeyScreen() {
           password: newPassword,
         });
         if (upErr) {
+          if (__DEV__) console.warn("[recover] password update:", upErr.message);
           Alert.alert(
-            "Couldn't update password",
-            "Your data is unlocked but Supabase couldn't save the new password: " +
-              upErr.message,
+            "Couldn't save your new password",
+            "Your journal is unlocked, but the new password didn't save. Check your connection and try again.",
           );
           setLoading(false);
           return;
         }
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        Alert.alert("Network error", msg);
+      } catch {
+        Alert.alert(
+          "Couldn't save your new password",
+          "Check your connection and try again — your journal is still unlocked.",
+        );
         setLoading(false);
         return;
       }
 
       try {
         await keyring.setPassword(userId, newPassword);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
+      } catch {
+        // Sign-in password moved but the wrap didn't. Signing in with the new
+        // password now offers to finish the handover using the old one.
         Alert.alert(
           "Almost done",
-          "Sign-in password is updated. Re-wrapping your encryption failed: " +
-            msg + ". Sign in with your new password and use Settings → Change " +
-            "Password to finish.",
+          "Your new password is saved, but we couldn't finish re-locking your journal with it. Sign in with your new password and we'll pick up where we left off.",
         );
         setLoading(false);
         return;
@@ -149,8 +150,11 @@ export default function RecoverWithKeyScreen() {
         [{ text: "Continue", onPress: () => router.replace("/(tabs)") }],
       );
     } catch (e) {
-      console.error("[recover] Unexpected:", e);
-      Alert.alert("Error", "Something went wrong. Try again.");
+      if (__DEV__) console.warn("[recover] unexpected error:", e);
+      Alert.alert(
+        "Something went wrong",
+        "We couldn't finish just now. Check your connection and try again.",
+      );
     } finally {
       setLoading(false);
     }

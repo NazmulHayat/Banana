@@ -1,180 +1,103 @@
-import { useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Animated, Dimensions } from 'react-native';
-import { router, Href } from 'expo-router';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { PaperBackground } from '@/components/ui/paper-background';
-import { Colors, Fonts } from '@/constants/theme';
+// Onboarding step 1 of 3 — the promise.
+//
+// States what the app is (private habits + journal) and waits. Nothing
+// auto-advances: the user leaves this screen by tapping Continue. The entrance
+// animation is decorative only, is held in one handle, and is stopped on
+// unmount so nothing runs against a dead screen.
 
-const { width } = Dimensions.get('window');
+import { PressableScale } from "@/components/ui/pressable-scale";
+import { PaperBackground } from "@/components/ui/paper-background";
+import { Motion } from "@/constants/motion";
+import { Colors, Fonts } from "@/constants/theme";
+import { Href, router } from "expo-router";
+import { useEffect, useRef } from "react";
+import { Animated, StyleSheet, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 export default function WelcomeScreen() {
   const insets = useSafeAreaInsets();
-  
-  // Animations
-  const fadeAnim = useRef(new Animated.Value(0)).current;
-  const slideAnim = useRef(new Animated.Value(30)).current;
-  const checkmarkScale = useRef(new Animated.Value(0)).current;
-  const lineWidth = useRef(new Animated.Value(0)).current;
-  const secondTextFade = useRef(new Animated.Value(0)).current;
-  const secondTextSlide = useRef(new Animated.Value(20)).current;
-  const buttonFade = useRef(new Animated.Value(0)).current;
-  const buttonSlide = useRef(new Animated.Value(20)).current;
+
+  const markScale = useRef(new Animated.Value(0.8)).current;
+  const fade = useRef(new Animated.Value(0)).current;
+  const rise = useRef(new Animated.Value(20)).current;
 
   useEffect(() => {
-    // Staggered entrance animation
-    Animated.sequence([
-      // First: checkmark pops in
-      Animated.spring(checkmarkScale, {
+    const entrance = Animated.parallel([
+      Animated.timing(markScale, {
         toValue: 1,
-        friction: 4,
-        tension: 100,
+        duration: Motion.slow,
         useNativeDriver: true,
       }),
-      // Then: main text fades in
-      Animated.parallel([
-        Animated.timing(fadeAnim, {
-          toValue: 1,
-          duration: 600,
-          useNativeDriver: true,
-        }),
-        Animated.timing(slideAnim, {
-          toValue: 0,
-          duration: 600,
-          useNativeDriver: true,
-        }),
-      ]),
-      // Line draws across
-      Animated.timing(lineWidth, {
+      Animated.timing(fade, {
         toValue: 1,
-        duration: 400,
-        useNativeDriver: false,
+        duration: Motion.slow,
+        useNativeDriver: true,
       }),
-      // Secondary text appears
-      Animated.parallel([
-        Animated.timing(secondTextFade, {
-          toValue: 1,
-          duration: 500,
-          useNativeDriver: true,
-        }),
-        Animated.timing(secondTextSlide, {
-          toValue: 0,
-          duration: 500,
-          useNativeDriver: true,
-        }),
-      ]),
-      // Button fades in
-      Animated.parallel([
-        Animated.timing(buttonFade, {
-          toValue: 1,
-          duration: 400,
-          useNativeDriver: true,
-        }),
-        Animated.timing(buttonSlide, {
-          toValue: 0,
-          duration: 400,
-          useNativeDriver: true,
-        }),
-      ]),
-    ]).start();
+      Animated.timing(rise, {
+        toValue: 0,
+        duration: Motion.slow,
+        useNativeDriver: true,
+      }),
+    ]);
+    entrance.start();
+    // Cleanup: the animation dies with the screen — no callback ever fires
+    // against an unmounted component.
+    return () => entrance.stop();
     // Animated.Value refs are stable across renders (useRef); listing them
-    // here satisfies exhaustive-deps without changing when this runs.
-  }, [
-    buttonFade,
-    buttonSlide,
-    checkmarkScale,
-    fadeAnim,
-    lineWidth,
-    secondTextFade,
-    secondTextSlide,
-    slideAnim,
-  ]);
-
-  const handleContinue = () => {
-    router.push('/onboarding/habits' as Href);
-  };
+    // satisfies exhaustive-deps without changing when this runs.
+  }, [fade, markScale, rise]);
 
   return (
     <PaperBackground>
       <View style={[styles.container, { paddingTop: insets.top + 60 }]}>
-        {/* Checkmark animation */}
         <Animated.View
-          style={[
-            styles.checkmarkContainer,
-            { transform: [{ scale: checkmarkScale }] },
-          ]}
+          style={[styles.markWrapper, { transform: [{ scale: markScale }] }]}
         >
-          <View style={styles.checkmark}>
-            <Text style={styles.checkmarkText}>✓</Text>
+          <View style={styles.mark}>
+            <Text style={styles.markText}>✓</Text>
           </View>
         </Animated.View>
 
-        {/* Main headline */}
         <Animated.View
           style={[
-            styles.headlineContainer,
-            {
-              opacity: fadeAnim,
-              transform: [{ translateY: slideAnim }],
-            },
+            styles.copy,
+            { opacity: fade, transform: [{ translateY: rise }] },
           ]}
         >
-          <Text style={styles.headline}>You&apos;ve already taken</Text>
-          <Text style={styles.headline}>your first step.</Text>
-        </Animated.View>
+          <Text style={styles.headline}>A private place</Text>
+          <Text style={styles.headline}>for your days.</Text>
 
-        {/* Animated line */}
-        <Animated.View
-          style={[
-            styles.line,
-            {
-              width: lineWidth.interpolate({
-                inputRange: [0, 1],
-                outputRange: [0, width * 0.5],
-              }),
-            },
-          ]}
-        />
+          <View style={styles.rule} />
 
-        {/* Secondary text */}
-        <Animated.View
-          style={[
-            styles.secondaryContainer,
-            {
-              opacity: secondTextFade,
-              transform: [{ translateY: secondTextSlide }],
-            },
-          ]}
-        >
-          <Text style={styles.secondary}>
-            Every journey starts with a single decision.
+          <Text style={styles.body}>
+            Track the habits that matter and keep a short daily journal.
           </Text>
-          <Text style={styles.secondary}>
-            Let&apos;s build something meaningful together.
+          <Text style={styles.body}>
+            Everything is encrypted on this device before it leaves — your
+            words and habits stay yours, even from us.
           </Text>
         </Animated.View>
 
-        {/* Continue button */}
-        <Animated.View
-          style={[
-            styles.buttonContainer,
-            {
-              opacity: buttonFade,
-              transform: [{ translateY: buttonSlide }],
-            },
-          ]}
-        >
-          <Animated.View style={styles.button}>
-            <Text style={styles.buttonText} onPress={handleContinue}>
-              Let&apos;s begin
-            </Text>
-          </Animated.View>
-        </Animated.View>
+        <View style={styles.footer}>
+          <PressableScale
+            style={styles.button}
+            onPress={() => router.push("/onboarding/habits" as Href)}
+          >
+            <Text style={styles.buttonText}>Let&apos;s begin</Text>
+          </PressableScale>
 
-        {/* Progress indicator */}
-        <View style={[styles.progressContainer, { paddingBottom: insets.bottom + 20 }]}>
-          <View style={[styles.progressDot, styles.progressDotActive]} />
-          <View style={styles.progressDot} />
-          <View style={styles.progressDot} />
+          <Text style={styles.stepLabel}>Step 1 of 3</Text>
+
+          <View
+            style={[
+              styles.progressContainer,
+              { paddingBottom: insets.bottom + 20 },
+            ]}
+          >
+            <View style={[styles.progressDot, styles.progressDotActive]} />
+            <View style={styles.progressDot} />
+            <View style={styles.progressDot} />
+          </View>
         </View>
       </View>
     </PaperBackground>
@@ -186,73 +109,75 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 32,
   },
-  checkmarkContainer: {
-    alignItems: 'center',
+  markWrapper: {
+    alignItems: "center",
     marginBottom: 40,
   },
-  checkmark: {
+  mark: {
     width: 80,
     height: 80,
     borderRadius: 40,
     backgroundColor: Colors.ink,
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: "center",
+    alignItems: "center",
   },
-  checkmarkText: {
+  markText: {
     fontSize: 40,
     color: Colors.paper,
-    fontWeight: '300',
+    fontFamily: Fonts.handwriting,
   },
-  headlineContainer: {
-    alignItems: 'center',
-    marginBottom: 24,
+  copy: {
+    alignItems: "center",
   },
   headline: {
     fontSize: 32,
-    fontWeight: '600',
     color: Colors.ink,
-    fontFamily: Fonts.handwriting,
-    textAlign: 'center',
+    fontFamily: Fonts.handwritingSemiBold,
+    textAlign: "center",
     lineHeight: 42,
   },
-  line: {
+  rule: {
     height: 2,
+    width: 120,
     backgroundColor: Colors.accent,
-    alignSelf: 'center',
-    marginBottom: 32,
     borderRadius: 1,
+    marginVertical: 24,
   },
-  secondaryContainer: {
-    alignItems: 'center',
-    marginBottom: 48,
-  },
-  secondary: {
-    fontSize: 18,
+  body: {
+    fontSize: 17,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
-    textAlign: 'center',
-    lineHeight: 28,
+    textAlign: "center",
+    lineHeight: 26,
+    marginBottom: 12,
   },
-  buttonContainer: {
-    alignItems: 'center',
-    marginTop: 'auto',
-    marginBottom: 40,
+  footer: {
+    marginTop: "auto",
   },
   button: {
     backgroundColor: Colors.ink,
     paddingVertical: 18,
     paddingHorizontal: 48,
     borderRadius: 30,
+    alignItems: "center",
+    alignSelf: "center",
   },
   buttonText: {
     fontSize: 18,
-    fontWeight: '600',
     color: Colors.paper,
+    fontFamily: Fonts.handwritingSemiBold,
+  },
+  stepLabel: {
+    fontSize: 13,
+    color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
+    textAlign: "center",
+    marginTop: 20,
+    marginBottom: 12,
   },
   progressContainer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
+    flexDirection: "row",
+    justifyContent: "center",
     gap: 8,
   },
   progressDot: {

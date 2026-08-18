@@ -8,14 +8,34 @@ interface HabitCellProps {
   completed: boolean;
   onPress: () => void;
   isCurrentDay?: boolean;
+  /** Rendered cell width — the grid widens columns when there are 1-3 habits. */
   size?: number;
+  /** Rendered cell height. Defaults to `size` (a square cell). */
+  height?: number;
+  /**
+   * Not tappable (a future day — you can't tick a habit before you've lived
+   * it). Renders muted so the dead control looks dead. Past days stay
+   * editable; back-filling is a core journal use.
+   */
+  disabled?: boolean;
+  /** Spoken label, e.g. "Exercise, March 4, completed". */
+  accessibilityLabel?: string;
 }
 
-export function HabitCell({ completed, onPress, isCurrentDay, size = 60 }: HabitCellProps) {
+export function HabitCell({
+  completed,
+  onPress,
+  isCurrentDay,
+  size = 60,
+  height = size,
+  disabled = false,
+  accessibilityLabel,
+}: HabitCellProps) {
   const scale = useRef(new Animated.Value(1)).current;
   const wasCompleted = useRef(completed);
 
   const handlePress = () => {
+    if (disabled) return;
     if (!wasCompleted.current) {
       // Toggling ON: selection haptic + spring punch
       void Haptics.selectionAsync();
@@ -37,15 +57,26 @@ export function HabitCell({ completed, onPress, isCurrentDay, size = 60 }: Habit
   // Create a dense crosshatch pattern using SVG patterns
   // This ensures uniform, complete coverage
   const patternSize = 6;
-  const uniqueId = `crosshatch-${size}`;
-  const uniqueId2 = `crosshatch2-${size}`;
+  const uniqueId = `crosshatch-${size}x${height}`;
+  const uniqueId2 = `crosshatch2-${size}x${height}`;
+  // The user space is 100 tall and as wide as the cell's aspect ratio, so a
+  // wide (adaptive) cell gets MORE hatch, not a stretched one — a square cell
+  // is still exactly the original 100x100 box.
+  const viewBoxWidth = height > 0 ? (size * 100) / height : 100;
 
   return (
-    <Pressable onPress={handlePress}>
+    <Pressable
+      onPress={handlePress}
+      disabled={disabled}
+      accessibilityRole="checkbox"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityState={{ checked: completed, disabled }}
+    >
       <Animated.View
         style={[
           styles.cell,
           isCurrentDay && styles.currentDay,
+          disabled && styles.disabled,
           { transform: [{ scale }] },
         ]}
       >
@@ -54,7 +85,7 @@ export function HabitCell({ completed, onPress, isCurrentDay, size = 60 }: Habit
             style={StyleSheet.absoluteFill}
             width="100%"
             height="100%"
-            viewBox="0 0 100 100"
+            viewBox={`0 0 ${viewBoxWidth} 100`}
             preserveAspectRatio="none"
           >
             <Defs>
@@ -119,5 +150,9 @@ const styles = StyleSheet.create({
     backgroundColor: `${Colors.accent}20`,
     borderColor: Colors.accent,
     borderWidth: 1.5,
+  },
+  // Future days: visibly inert, still legible as part of the grid.
+  disabled: {
+    opacity: 0.35,
   },
 });

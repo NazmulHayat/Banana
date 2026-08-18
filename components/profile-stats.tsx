@@ -2,7 +2,8 @@ import { PaperCard } from "@/components/ui/paper-card";
 import { PressableScale } from "@/components/ui/pressable-scale";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Colors, Fonts } from "@/constants/theme";
-import { DateFormats, type Habit } from "@/lib/db";
+import { todayKey } from "@/lib/dates";
+import { type Habit } from "@/lib/db";
 import {
   bestDayOfWeek,
   buildInsight,
@@ -52,14 +53,17 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
     );
   }
 
-  const today = DateFormats.formatDate(new Date());
+  const today = todayKey();
   const [ty, tm] = today.split("-").map(Number);
+  // Passing `habits` is what turns on eligibility windows, future-day clamping
+  // and orphan filtering in the engine (bug D13) — never omit it here.
+  const scope = { habits };
   const perHabit = computeAllHabitStats(habits, logs, today);
-  const overall = computeOverallStats(perHabit, logs);
+  const overall = computeOverallStats(perHabit, logs, today, habits);
 
-  const best = bestDayOfWeek(logs);
-  const weekend = weekendComparison(logs, today, 90);
-  const trend = monthOverMonthTrend(logs, today);
+  const best = bestDayOfWeek(logs, today, scope);
+  const weekend = weekendComparison(logs, today, 90, scope);
+  const trend = monthOverMonthTrend(logs, today, scope);
   const insight = buildInsight(
     {
       bestDow: best?.dow ?? null,
@@ -67,7 +71,7 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
       currentStreak: overall.bestCurrentStreak,
       longestStreak: overall.bestLongestStreak,
       trendDelta: trend.delta,
-      hadComeback: hadRecentComeback(logs, today),
+      hadComeback: hadRecentComeback(logs, today, scope),
     },
     ty * 12 + tm,
   );
@@ -83,6 +87,7 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
           </View>
           <Text style={styles.supporting}>
             {overall.totalCompletions} done · {overall.activeDays} active days
+            {overall.perfectDays > 0 ? ` · ${overall.perfectDays} perfect` : ""}
           </Text>
         </View>
         <Text style={styles.insight}>{insight}</Text>

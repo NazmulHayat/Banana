@@ -1,29 +1,32 @@
-import { HabitGrid } from "@/components/habit-grid";
+import {
+    ADAPTIVE_MAX_HABITS,
+    CELL_GAP,
+    computeColumnWidth,
+    HabitGrid,
+} from "@/components/habit-grid";
 import { HighlightInput } from "@/components/highlight-input";
+import { SyncStatus } from "@/components/sync-status";
 import { IconButton } from "@/components/ui/icon-button";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
 import { Colors, Fonts } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { useDataStore } from "@/lib/data-store";
+import type { DailyEntry, Habit, HabitLog, WriteOutcome } from "@/lib/db";
 import {
-    // Types
-    DailyEntry,
-    getEntriesForDate,
-    Habit,
-    HabitLog,
-    // Operations
-    saveEntry,
-    saveHabits,
-    toggleHabitLog,
-    upsertEntryInCache,
-} from "@/lib/db";
-import { DateFormats } from "@/lib/db/schema";
-import { uploadImage } from "@/lib/media";
+    isFutureDay,
+    monthKeyOfParts,
+    parseDayKey,
+    todayKey,
+} from "@/lib/dates";
+// Photo upload has no store action yet, so this is the one data call the screen
+// still makes directly. It's a single atomic primitive (upload-all-or-nothing)
+// rather than the old inline loop. Lead: ideal end-state is the store owning it,
+// e.g. `saveEntry(entry, localUris)`.
+import { discardEntryImages, uploadEntryImages } from "@/lib/media";
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-    Alert,
     Animated,
     RefreshControl,
     ScrollView,
@@ -34,12 +37,22 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+// ---------------------------------------------------------------------------
+// D15: this screen used to import `saveEntry` / `saveHabits` / `toggleHabitLog`
+// / `upsertEntryInCache` / `getEntriesForDate` straight from `@/lib/db` and run
+// them side-by-side with the store, so the two disagreed after any failure.
+// Everything now goes Screen → data-store → lib/db, like `feed.tsx` already did.
+//
+// The store's write actions never throw: they resolve to a `WriteOutcome`.
+// `queued` is durable (it replays on reconnect), so only `failed` rolls the
+// optimistic UI back or keeps the composer's text.
+// ---------------------------------------------------------------------------
+
 export default function TrackerScreen() {
   const insets = useSafeAreaInsets();
   const { session } = useAuth();
   const dataStore = useDataStore();
   const [currentDate, setCurrentDate] = useState(new Date());
-  const [todayEntryCount, setTodayEntryCount] = useState(0);
   const scrollY = useRef(new Animated.Value(0)).current;
   const scrollViewRef = useRef<ScrollView>(null);
   const habitGridHeaderRef = useRef<View>(null);
@@ -54,6 +67,8 @@ export default function TrackerScreen() {
 
   // Entry save state (upload + persist)
   const [savingEntry, setSavingEntry] = useState(false);
+  // Latched when a write comes back `failed` — drives the sync line's retry.
+  const [writeFailed, setWriteFailed] = useState(false);
   // Pull-to-refresh state
   const [refreshing, setRefreshing] = useState(false);
 
@@ -63,7 +78,18 @@ export default function TrackerScreen() {
     month: "long",
     year: "numeric",
   });
-  const monthKey = DateFormats.formatYearMonth(currentYear, currentMonth);
+  const monthKey = monthKeyOfParts(currentYear, currentMonth);
+
+  // Today's highlight count, derived from the store instead of a direct
+  // `getEntriesForDate` call (D15). "Today" is always in the real current
+  // month, which is not necessarily the month being browsed.
+  const todayDayKey = todayKey();
+  const todayParts = parseDayKey(todayDayKey);
+  const todayEntryCount = todayParts
+    ? dataStore
+        .getEntriesForMonth(todayParts.year, todayParts.month)
+        .filter((entry) => entry.date === todayDayKey).length
+    : 0;
 
   // Get logs for current month with progressive rendering
   const logsForMonth = dataStore.getLogsForMonth(currentYear, currentMonth);
@@ -138,11 +164,12 @@ export default function TrackerScreen() {
       await dataStore.refreshHabitLogs(currentYear, currentMonth);
     }
 
-    // Get count of entries for today (background)
-    const today = new Date().toISOString().split("T")[0];
-    void getEntriesForDate(today).then((todayEntries) => {
-      setTodayEntryCount(todayEntries.length);
-    });
+    // Today's highlight count is derived from store state, so it just needs the
+    // month that contains today to be loaded.
+    const parts = parseDayKey(todayKey());
+    if (parts) {
+      void dataStore.refreshEntries(parts.year, parts.month);
+    }
   }, [currentMonth, currentYear, session, dataStore]);
 
   // Reload data when screen comes into focus or month changes
@@ -172,20 +199,27 @@ export default function TrackerScreen() {
   const onRefresh = async () => {
     setRefreshing(true);
     try {
+      const parts = parseDayKey(todayKey());
       await Promise.all([
         dataStore.refreshHabits({ force: true }),
         dataStore.refreshHabitLogs(currentYear, currentMonth, { force: true }),
         dataStore.refreshEntries(currentYear, currentMonth, { force: true }),
+        // Browsing a past month must still refresh today's highlight count.
+        parts && parts.month !== currentMonth
+          ? dataStore.refreshEntries(parts.year, parts.month, { force: true })
+          : Promise.resolve(),
       ]);
-      const todayStr = new Date().toISOString().split("T")[0];
-      const todayEntries = await getEntriesForDate(todayStr);
-      setTodayEntryCount(todayEntries.length);
     } finally {
       setRefreshing(false);
     }
   };
 
   const handleToggleHabit = async (habitId: string, date: string) => {
+    // You can't tick a day you haven't lived yet (D14). The grid also renders
+    // future cells disabled — this is the belt to that braces. Past days stay
+    // editable on purpose: back-filling is a core journal use.
+    if (isFutureDay(date)) return;
+
     const existing = logs.find(
       (log) => log.habitId === habitId && log.date === date,
     );
@@ -199,77 +233,89 @@ export default function TrackerScreen() {
       completed: newCompleted,
     });
 
-    // Fire-and-correct network call
-    try {
-      await toggleHabitLog(habitId, date, currentCompleted);
-    } catch (error) {
-      console.error("[TrackerScreen] Failed to toggle habit log:", error);
-      // On failure, revert and resync from server
+    // Persist through the store (D15).
+    const outcome = await dataStore.toggleHabitLog(
+      habitId,
+      date,
+      currentCompleted,
+    );
+
+    // `queued` is durable — it replays on reconnect, so the optimistic tick
+    // stays. Only a hard failure rolls the UI back.
+    if (outcome.status === "failed") {
       dataStore.updateHabitLog({
         habitId,
         date,
         completed: currentCompleted,
       });
+      setWriteFailed(true);
       await dataStore.refreshHabitLogs(currentYear, currentMonth);
     }
   };
 
-  const handleSaveEntry = async (text: string, localUris: string[]) => {
-    if (!session) return;
+  const handleSaveEntry = async (
+    text: string,
+    localUris: string[],
+  ): Promise<WriteOutcome> => {
+    if (!session) {
+      return { status: "failed", reason: "You're signed out. Sign in to save." };
+    }
     const userId = session.user.id;
-    const today = new Date().toISOString().split("T")[0];
     const entryId =
       typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     setSavingEntry(true);
-
-    // Upload any picked images first — collect resulting object paths
-    const mediaPaths: string[] = [];
-    if (localUris.length > 0) {
-      try {
-        for (const uri of localUris) {
-          const path = await uploadImage(uri, entryId, userId);
-          mediaPaths.push(path);
-        }
-      } catch (err) {
-        console.error("[TrackerScreen] Image upload failed:", err);
-        const msg = err instanceof Error ? err.message : String(err);
-        Alert.alert(
-          "Upload failed",
-          msg + ". Your highlight wasn't saved — please try again.",
-        );
-        setSavingEntry(false);
-        return;
-      }
-    }
-
-    const newEntry: DailyEntry = {
-      id: entryId,
-      date: today,
-      text,
-      mediaPaths,
-      createdAt: new Date().toISOString(),
-    };
-
-    // Optimistic UI update — push into both the disk cache (for restore)
-    // and the React data store (so the Feed tab re-renders immediately).
-    setTodayEntryCount((count) => count + 1);
-    upsertEntryInCache(newEntry, userId);
-    dataStore.updateEntry(newEntry);
-
+    setWriteFailed(false);
     try {
-      await saveEntry(newEntry);
-      showSnackbar("Highlight saved");
-    } catch (error) {
-      console.error("[TrackerScreen] Failed to save entry:", error);
-      Alert.alert("Save failed", "Could not save entry. Please try again.");
-      const updatedEntries = await getEntriesForDate(today);
-      setTodayEntryCount(updatedEntries.length);
+      // Photos first, all-or-nothing (D8). uploadEntryImages rolls back every
+      // object it already stored if a later one fails, so a half-finished
+      // upload can no longer orphan images in the bucket.
+      const upload = await uploadEntryImages(localUris, entryId, userId);
+      if (upload.status === "failed") {
+        setWriteFailed(true);
+        return { status: "failed", reason: upload.reason };
+      }
+
+      const newEntry: DailyEntry = {
+        id: entryId,
+        // Read fresh, not from render scope — the app can be left open past
+        // midnight and the entry must land on the day it was written.
+        date: todayKey(),
+        text,
+        mediaPaths: upload.paths,
+        createdAt: new Date().toISOString(),
+      };
+
+      // The store does the optimistic update AND the persist, so the cache and
+      // React state can't drift apart the way they did when this screen wrote
+      // to both by hand.
+      const outcome = await dataStore.saveEntry(newEntry);
+
+      if (outcome.status === "failed") {
+        // The entry never landed, so its photos have nothing pointing at them.
+        // (A `queued` write still replays, so those photos must stay.)
+        await discardEntryImages(upload.paths);
+        setWriteFailed(true);
+        return outcome;
+      }
+
+      showSnackbar(
+        outcome.status === "queued"
+          ? "Saved — will sync when you're back online"
+          : "Highlight saved",
+      );
+      return outcome;
     } finally {
       setSavingEntry(false);
     }
+  };
+
+  // "Tap to retry" on the sync line: replay the durable queue now.
+  const handleRetrySync = async () => {
+    setWriteFailed(false);
+    await dataStore.flushPendingWrites();
   };
 
   const showSnackbar = (message: string) => {
@@ -311,15 +357,16 @@ export default function TrackerScreen() {
   // order, so the reordered array IS the new persisted order — same
   // optimistic-then-persist pattern as create/edit/delete above.
   const handleReorderHabits = async (newOrder: Habit[]) => {
+    const previousOrder = dataStore.habits;
     // Optimistic UI update via DataStore
     dataStore.updateHabits(newOrder);
 
-    try {
-      await saveHabits(newOrder);
-    } catch (error) {
-      console.error("[TrackerScreen] Failed to reorder habits:", error);
-      Alert.alert("Save failed", "Could not reorder habits. Please try again.");
-      // Re-sync state from server on failure
+    const outcome = await dataStore.saveHabits(newOrder);
+
+    if (outcome.status === "failed") {
+      // Put the old order back rather than leaving a reorder that never landed.
+      dataStore.updateHabits(previousOrder);
+      setWriteFailed(true);
       await dataStore.refreshHabits();
     }
   };
@@ -349,8 +396,13 @@ export default function TrackerScreen() {
     }
   };
 
-  const cellWidth = 62;
-  const totalHabitsWidth = habits.length * cellWidth;
+  // The sticky header mirrors the grid's columns, so it repeats the grid's
+  // width math on its own measured width (same 16pt margins + 62pt DAY column,
+  // so the two always agree). 1-3 habits fill the row and don't scroll.
+  const [stickyGridWidth, setStickyGridWidth] = useState(0);
+  const stickyColumnWidth = computeColumnWidth(stickyGridWidth, habits.length);
+  const totalHabitsWidth = habits.length * stickyColumnWidth;
+  const stickyScrollable = habits.length > ADAPTIVE_MAX_HABITS;
 
   return (
     <PaperBackground>
@@ -374,13 +426,26 @@ export default function TrackerScreen() {
           <View
             style={[styles.header, { paddingTop: Math.max(insets.top, 16) }]}
           >
-            <IconButton onPress={() => changeMonth(-1)}>
-              <IconSymbol name="chevron.left" size={22} color={Colors.ink} />
-            </IconButton>
+            {/* The a11y label lives on a grouping View because IconButton /
+                PressableScale don't forward accessibility props yet. */}
+            <View
+              accessible
+              accessibilityRole="button"
+              accessibilityLabel="Previous month"
+            >
+              <IconButton onPress={() => changeMonth(-1)}>
+                <IconSymbol name="chevron.left" size={22} color={Colors.ink} />
+              </IconButton>
+            </View>
             <TouchableOpacity
               onPress={jumpToToday}
               activeOpacity={0.7}
               style={styles.monthTextWrapper}
+              accessibilityRole="button"
+              accessibilityLabel={
+                isCurrentMonthView ? monthName : `${monthName}, jump to today`
+              }
+              accessibilityState={{ disabled: isCurrentMonthView }}
             >
               <Text style={styles.monthText}>{monthName}</Text>
               {!isCurrentMonthView && (
@@ -389,10 +454,25 @@ export default function TrackerScreen() {
                 </View>
               )}
             </TouchableOpacity>
-            <IconButton onPress={() => changeMonth(1)}>
-              <IconSymbol name="chevron.right" size={22} color={Colors.ink} />
-            </IconButton>
+            <View
+              accessible
+              accessibilityRole="button"
+              accessibilityLabel="Next month"
+            >
+              <IconButton onPress={() => changeMonth(1)}>
+                <IconSymbol name="chevron.right" size={22} color={Colors.ink} />
+              </IconButton>
+            </View>
           </View>
+
+          {/* One quiet line above the composer, right-aligned. Fixed height,
+              so switching states never nudges the card below it. */}
+          <SyncStatus
+            pendingCount={dataStore.pendingWriteCount}
+            syncing={savingEntry}
+            failed={writeFailed}
+            onRetry={() => void handleRetrySync()}
+          />
 
           <HighlightInput
             todayEntryCount={todayEntryCount}
@@ -440,17 +520,27 @@ export default function TrackerScreen() {
                 ref={stickyHeaderScrollRef}
                 horizontal
                 showsHorizontalScrollIndicator={false}
+                scrollEnabled={stickyScrollable}
+                onLayout={(event) =>
+                  setStickyGridWidth(event.nativeEvent.layout.width)
+                }
                 style={styles.stickyHabitsScroll}
                 contentContainerStyle={{ width: totalHabitsWidth }}
               >
                 <View style={styles.stickyHeaderRow}>
                   {habits.map((habit) => (
-                    <View key={habit.id} style={styles.stickyHabitCell}>
+                    <View
+                      key={habit.id}
+                      style={[
+                        styles.stickyHabitCell,
+                        { width: stickyColumnWidth - CELL_GAP },
+                      ]}
+                      accessibilityLabel={habit.name}
+                    >
                       <Text
                         style={styles.stickyHabitName}
                         numberOfLines={2}
-                        adjustsFontSizeToFit
-                        minimumFontScale={0.7}
+                        ellipsizeMode="tail"
                       >
                         {habit.name}
                       </Text>

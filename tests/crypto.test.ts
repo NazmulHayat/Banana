@@ -17,6 +17,7 @@ import {
   monthBucket,
 } from "../lib/crypto/buckets";
 import {
+  AAD,
   decryptBytes,
   decryptJson,
   encryptBytes,
@@ -344,6 +345,107 @@ test("change password: re-wrap with new KEK, old password no longer works", () =
   const oldKekRetry = deriveKek("OldPass1!", newSalt, DEFAULT_KDF_PARAMS);
   assertThrows(() =>
     aesDecrypt(oldKekRetry, wrappedNew.ciphertext, wrappedNew.nonce),
+  );
+});
+
+// ============================================================================
+suite("keyring invariants: password change + resumed setup");
+// ============================================================================
+// These mirror the exact wrap/unwrap math in lib/crypto/keyring.ts (AAD
+// included) without touching Supabase, so the guarantees the UI depends on are
+// checked offline.
+
+const TEST_USER = "11111111-2222-3333-4444-555555555555";
+const aadBytes = (s: string) => new TextEncoder().encode(s);
+
+test("changing the password leaves the recovery key working", () => {
+  const masterKey = generateMasterKey();
+  const recoveryKey = randomBytes(32);
+  const recoveryAad = aadBytes(AAD.wrapRecovery(TEST_USER));
+  const masterAad = aadBytes(AAD.wrapMaster(TEST_USER));
+
+  // Signup: master wrapped by both the password KEK and the recovery key.
+  const oldSalt = generateSalt();
+  const oldKek = deriveKek("OldPass1!", oldSalt, DEFAULT_KDF_PARAMS);
+  aesEncrypt(oldKek, masterKey, masterAad);
+  const wrappedByRecovery = aesEncrypt(recoveryKey, masterKey, recoveryAad);
+
+  // setPassword() only rewrites the password columns.
+  const newSalt = generateSalt();
+  const newKek = deriveKek("NewPass1!", newSalt, DEFAULT_KDF_PARAMS);
+  const rewrapped = aesEncrypt(newKek, masterKey, masterAad);
+
+  // New password opens the new wrap...
+  assertBytesEq(
+    aesDecrypt(newKek, rewrapped.ciphertext, rewrapped.nonce, masterAad),
+    masterKey,
+  );
+  // ...and the untouched recovery path still opens the same master key.
+  assertBytesEq(
+    aesDecrypt(
+      recoveryKey,
+      wrappedByRecovery.ciphertext,
+      wrappedByRecovery.nonce,
+      recoveryAad,
+    ),
+    masterKey,
+  );
+});
+
+test("setPassword verifies its own wrap before it replaces the old one", () => {
+  const masterKey = generateMasterKey();
+  const masterAad = aadBytes(AAD.wrapMaster(TEST_USER));
+  const kek = deriveKek("NewPass1!", generateSalt(), DEFAULT_KDF_PARAMS);
+  const { ciphertext, nonce } = aesEncrypt(kek, masterKey, masterAad);
+
+  // The pre-write check in setPassword: unwrap must return the same key.
+  assertBytesEq(aesDecrypt(kek, ciphertext, nonce, masterAad), masterKey);
+
+  // A corrupted wrap must not pass that check.
+  const tampered = new Uint8Array(ciphertext);
+  tampered[0] ^= 0xff;
+  assertThrows(() => aesDecrypt(kek, tampered, nonce, masterAad));
+});
+
+test("password wrap is bound to the user (no cross-account swap)", () => {
+  const masterKey = generateMasterKey();
+  const salt = generateSalt();
+  const kek = deriveKek("SamePass1!", salt, DEFAULT_KDF_PARAMS);
+  const wrapped = aesEncrypt(kek, masterKey, aadBytes(AAD.wrapMaster(TEST_USER)));
+
+  // Same password, same salt, different user id → AAD mismatch → refused.
+  assertThrows(() =>
+    aesDecrypt(
+      kek,
+      wrapped.ciphertext,
+      wrapped.nonce,
+      aadBytes(AAD.wrapMaster("99999999-2222-3333-4444-555555555555")),
+    ),
+  );
+});
+
+test("resumed setup: same password reopens the existing wrap, a different one can't", () => {
+  const masterKey = generateMasterKey();
+  const masterAad = aadBytes(AAD.wrapMaster(TEST_USER));
+  const salt = generateSalt();
+  const wrapped = aesEncrypt(
+    deriveKek("SignupPass1!", salt, DEFAULT_KDF_PARAMS),
+    masterKey,
+    masterAad,
+  );
+
+  // Retry after an interrupted signup: re-derive from the SAME password and
+  // the stored salt — the keyring resumes instead of being replaced.
+  const resumeKek = deriveKek("SignupPass1!", salt, DEFAULT_KDF_PARAMS);
+  assertBytesEq(
+    aesDecrypt(resumeKek, wrapped.ciphertext, wrapped.nonce, masterAad),
+    masterKey,
+  );
+
+  // A different password must fail rather than overwrite the existing wrap.
+  const wrongKek = deriveKek("OtherPass1!", salt, DEFAULT_KDF_PARAMS);
+  assertThrows(() =>
+    aesDecrypt(wrongKek, wrapped.ciphertext, wrapped.nonce, masterAad),
   );
 });
 

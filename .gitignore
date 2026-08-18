@@ -59,3 +59,8 @@ tasks.md
 
 # Static HTML design prototypes — kept on disk for reference, not shipped.
 design-demos/
+
+# Symlink forms (trailing-slash patterns above do not match symlinks —
+# worktree agents symlink these in, and they were once committed by accident)
+node_modules
+.expo

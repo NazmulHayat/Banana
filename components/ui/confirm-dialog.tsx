@@ -2,13 +2,16 @@ import { PaperCard } from "@/components/ui/paper-card";
 import { PressableScale } from "@/components/ui/pressable-scale";
 import { Colors, Fonts } from "@/constants/theme";
 import * as Haptics from "expo-haptics";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 
@@ -27,6 +30,12 @@ export interface ConfirmDialogProps {
   destructive?: boolean;
   /** When true, confirm shows a spinner + both buttons disable (async in progress). */
   loading?: boolean;
+  /**
+   * Type-to-confirm guard for the gravest actions (account deletion): the
+   * confirm button stays disabled until the user types this word. Matched
+   * case-insensitively after trimming. Omit for a normal confirm.
+   */
+  confirmPhrase?: string;
   /** Called when the user confirms. Parent owns the async work + the `loading` flag. */
   onConfirm: () => void;
   /** Called on cancel or backdrop press. */
@@ -46,9 +55,21 @@ export function ConfirmDialog({
   cancelLabel = "Cancel",
   destructive = true,
   loading = false,
+  confirmPhrase,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps): React.JSX.Element {
+  // Type-to-confirm text. Cleared every time the dialog closes so a re-open
+  // always starts from an unarmed confirm button.
+  const [typed, setTyped] = useState("");
+  useEffect(() => {
+    if (!visible) setTyped("");
+  }, [visible]);
+
+  const phraseSatisfied =
+    !confirmPhrase ||
+    typed.trim().toLocaleUpperCase() === confirmPhrase.toLocaleUpperCase();
+
   // Guard against a double-submit: a second tap can land before the parent's
   // `loading` flag propagates back as a prop, so we latch synchronously here.
   // Reset whenever the dialog closes or `loading` clears (e.g. a failed action
@@ -59,7 +80,7 @@ export function ConfirmDialog({
   }, [visible, loading]);
 
   const handleConfirm = () => {
-    if (loading || submittingRef.current) return;
+    if (loading || submittingRef.current || !phraseSatisfied) return;
     submittingRef.current = true;
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
     onConfirm();
@@ -79,49 +100,71 @@ export function ConfirmDialog({
       animationType="fade"
       onRequestClose={handleCancel}
     >
-      <Pressable style={styles.backdrop} onPress={handleCancel}>
-        {/* Inner Pressable swallows taps so pressing the card doesn't cancel. */}
-        <Pressable onPress={() => {}}>
-          <PaperCard style={styles.card}>
-            <Text style={styles.title}>{title}</Text>
-            {message ? <Text style={styles.message}>{message}</Text> : null}
+      <KeyboardAvoidingView
+        style={styles.fill}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <Pressable style={styles.backdrop} onPress={handleCancel}>
+          {/* Inner Pressable swallows taps so pressing the card doesn't cancel. */}
+          <Pressable onPress={() => {}}>
+            <PaperCard style={styles.card}>
+              <Text style={styles.title}>{title}</Text>
+              {message ? <Text style={styles.message}>{message}</Text> : null}
 
-            <View style={styles.buttonRow}>
-              <PressableScale
-                onPress={handleCancel}
-                disabled={loading}
-                style={[styles.button, styles.cancelButton]}
-              >
-                <Text style={[styles.cancelLabel, loading && styles.disabled]}>
-                  {cancelLabel}
-                </Text>
-              </PressableScale>
+              {confirmPhrase ? (
+                <TextInput
+                  style={styles.input}
+                  value={typed}
+                  onChangeText={setTyped}
+                  placeholder={confirmPhrase}
+                  placeholderTextColor={Colors.textSecondary}
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                  editable={!loading}
+                  accessibilityLabel={`Type ${confirmPhrase} to confirm`}
+                />
+              ) : null}
 
-              <PressableScale
-                onPress={handleConfirm}
-                disabled={loading}
-                style={[
-                  styles.button,
-                  styles.confirmButton,
-                  { backgroundColor: confirmColor, borderColor: confirmColor },
-                  loading && styles.disabled,
-                ]}
-              >
-                {loading ? (
-                  <ActivityIndicator color={Colors.card} />
-                ) : (
-                  <Text style={styles.confirmLabel}>{confirmLabel}</Text>
-                )}
-              </PressableScale>
-            </View>
-          </PaperCard>
+              <View style={styles.buttonRow}>
+                <PressableScale
+                  onPress={handleCancel}
+                  disabled={loading}
+                  style={[styles.button, styles.cancelButton]}
+                >
+                  <Text style={[styles.cancelLabel, loading && styles.disabled]}>
+                    {cancelLabel}
+                  </Text>
+                </PressableScale>
+
+                <PressableScale
+                  onPress={handleConfirm}
+                  disabled={loading || !phraseSatisfied}
+                  style={[
+                    styles.button,
+                    styles.confirmButton,
+                    { backgroundColor: confirmColor, borderColor: confirmColor },
+                    (loading || !phraseSatisfied) && styles.disabled,
+                  ]}
+                >
+                  {loading ? (
+                    <ActivityIndicator color={Colors.card} />
+                  ) : (
+                    <Text style={styles.confirmLabel}>{confirmLabel}</Text>
+                  )}
+                </PressableScale>
+              </View>
+            </PaperCard>
+          </Pressable>
         </Pressable>
-      </Pressable>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
+  fill: {
+    flex: 1,
+  },
   backdrop: {
     flex: 1,
     // Darker overlay alpha is acceptable for a modal scrim (established
@@ -146,6 +189,18 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     marginTop: 8,
     lineHeight: 22,
+  },
+  input: {
+    marginTop: 16,
+    height: 48,
+    borderWidth: 1.5,
+    borderColor: Colors.ink,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    fontFamily: Fonts.handwriting,
+    fontSize: 16,
+    color: Colors.ink,
+    backgroundColor: Colors.card,
   },
   buttonRow: {
     flexDirection: "row",

@@ -12,7 +12,7 @@ export default function HabitAnalysisScreen() {
   const insets = useSafeAreaInsets();
   const { habitId } = useLocalSearchParams<{ habitId: string }>();
   const { habits } = useDataStore();
-  const { logs, loading } = useRecentHabitLogs(12);
+  const { logs, loading, failed, reload } = useRecentHabitLogs(12);
 
   const habit = habits.find((h) => h.id === habitId);
 
@@ -23,7 +23,14 @@ export default function HabitAnalysisScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: insets.bottom + 60 }}
       >
-        <AnalysisContent habits={habits} logs={logs} habitId={habitId} loading={loading} />
+        <AnalysisContent
+          habits={habits}
+          logs={logs}
+          habitId={habitId}
+          loading={loading}
+          failedMonths={failed}
+          onRetry={reload}
+        />
       </ScrollView>
     </PaperBackground>
   );
