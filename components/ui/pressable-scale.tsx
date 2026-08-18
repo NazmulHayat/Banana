@@ -1,12 +1,28 @@
+import { Motion } from "@/constants/motion";
 import { useRef } from "react";
 import {
+  AccessibilityProps,
   Animated,
   Pressable,
   StyleProp,
   ViewStyle,
 } from "react-native";
 
-interface PressableScaleProps {
+/**
+ * The a11y props both primitives forward to their Pressable. Callers set these
+ * directly — never on a wrapping `<View accessible>`, which swallows the
+ * button role and the press state.
+ */
+export type A11yProps = Pick<
+  AccessibilityProps,
+  | "accessibilityLabel"
+  | "accessibilityHint"
+  | "accessibilityRole"
+  | "accessibilityState"
+  | "accessibilityValue"
+>;
+
+interface PressableScaleProps extends A11yProps {
   onPress: () => void;
   children: React.ReactNode;
   disabled?: boolean;
@@ -29,6 +45,11 @@ export function PressableScale({
   style,
   scaleTo = 0.97,
   hitSlop,
+  accessibilityLabel,
+  accessibilityHint,
+  accessibilityRole = "button",
+  accessibilityState,
+  accessibilityValue,
 }: PressableScaleProps) {
   const scale = useRef(new Animated.Value(1)).current;
 
@@ -36,8 +57,7 @@ export function PressableScale({
     Animated.spring(scale, {
       toValue,
       useNativeDriver: true,
-      friction: 6,
-      tension: 140,
+      ...Motion.springPress,
     }).start();
   };
 
@@ -48,6 +68,13 @@ export function PressableScale({
       onPressOut={() => springTo(1)}
       disabled={disabled}
       hitSlop={hitSlop}
+      accessibilityLabel={accessibilityLabel}
+      accessibilityHint={accessibilityHint}
+      accessibilityRole={accessibilityRole}
+      // Callers rarely repeat `disabled` — mirror it so the control never
+      // reads as tappable to VoiceOver while it's inert.
+      accessibilityState={{ disabled: !!disabled, ...accessibilityState }}
+      accessibilityValue={accessibilityValue}
     >
       <Animated.View style={[style, { transform: [{ scale }] }]}>
         {children}

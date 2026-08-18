@@ -1,7 +1,7 @@
 import { PaperCard } from "@/components/ui/paper-card";
 import { PressableScale } from "@/components/ui/pressable-scale";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Colors, Fonts } from "@/constants/theme";
+import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { todayKey } from "@/lib/dates";
 import { type Habit } from "@/lib/db";
 import {
@@ -77,7 +77,14 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
   );
 
   return (
-    <PressableScale scaleTo={0.98} onPress={() => router.push("/analysis")}>
+    <PressableScale
+      scaleTo={0.98}
+      onPress={() => router.push("/analysis")}
+      accessibilityLabel={`Your momentum. Best streak ${overall.bestCurrentStreak} day${
+        overall.bestCurrentStreak === 1 ? "" : "s"
+      }. ${insight}`}
+      accessibilityHint="Opens your full analysis"
+    >
       <PaperCard style={styles.card}>
         <Text style={styles.eyebrow}>your momentum</Text>
         <View style={styles.heroRow}>
@@ -148,7 +155,7 @@ const styles = StyleSheet.create({
     marginTop: 16,
     paddingTop: 14,
     borderTopWidth: 1,
-    borderTopColor: "rgba(26,26,26,0.09)",
+    borderTopColor: Hairline.strong,
   },
   cta: { fontSize: 15, color: Colors.ink, fontFamily: Fonts.handwritingSemiBold },
   arrow: { fontSize: 17, color: Colors.ink },

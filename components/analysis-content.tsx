@@ -7,7 +7,7 @@ import { JournalStatsCard } from "@/components/journal-stats-card";
 import { RecordsBoard } from "@/components/records-board";
 import { StatSparkline } from "@/components/stat-sparkline";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Colors, Fonts } from "@/constants/theme";
+import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { todayKey } from "@/lib/dates";
 import { type DailyEntry, type Habit, type HabitLog } from "@/lib/db";
 import { computeRecords } from "@/lib/gamification";
@@ -201,12 +201,27 @@ export function AnalysisContent({
       )}
 
       {/* ---- Free hero band (always visible) ---- */}
+      {/* Each stat is one VoiceOver stop — a label and a bare number read as
+          two unrelated fragments otherwise. */}
       <View style={styles.heroRow}>
-        <View>
+        <View
+          accessible
+          accessibilityLabel={`${habitId ? "Current" : "Best"} streak, ${currentStreak} day${
+            currentStreak === 1 ? "" : "s"
+          }`}
+        >
           <Text style={styles.heroLabel}>{habitId ? "current streak" : "best streak"}</Text>
           <Text style={styles.heroValue}>🔥 {currentStreak}</Text>
         </View>
-        <View style={styles.heroRight}>
+        <View
+          style={styles.heroRight}
+          accessible
+          accessibilityLabel={
+            month.days > 0
+              ? `This month, ${pct(month.rate)} percent`
+              : "This month, nothing to score yet"
+          }
+        >
           <Text style={styles.heroLabel}>this month</Text>
           <Text style={styles.heroValue}>{month.days > 0 ? `${pct(month.rate)}%` : "—"}</Text>
         </View>
@@ -227,8 +242,10 @@ export function AnalysisContent({
       {/* 1 — Consistency heatmap */}
       <View style={styles.section}>
         <View style={styles.sectionHead}>
-          <Text style={styles.sectionLabel}>Consistency</Text>
-          <View style={styles.segment}>
+          <Text style={styles.sectionLabel} accessibilityRole="header">
+            Consistency
+          </Text>
+          <View style={styles.segment} accessibilityRole="tablist">
             {RANGES.map((r) => {
               const on = r.days === rangeDays;
               return (
@@ -237,6 +254,12 @@ export function AnalysisContent({
                   onPress={() => setRangeDays(r.days)}
                   activeOpacity={0.7}
                   style={[styles.segItem, on && styles.segItemOn]}
+                  // The pill is ~25pt tall by design; hitSlop takes the target
+                  // to 44pt without changing the layout.
+                  hitSlop={{ top: 12, bottom: 12 }}
+                  accessibilityRole="tab"
+                  accessibilityLabel={`Show ${r.label.toLowerCase()}`}
+                  accessibilityState={{ selected: on }}
                 >
                   <Text style={[styles.segText, on && styles.segTextOn]}>{r.label}</Text>
                 </TouchableOpacity>
@@ -244,7 +267,11 @@ export function AnalysisContent({
             })}
           </View>
         </View>
-        <HabitHeatmap cells={cells} onDayPress={(c) => setSelectedDay(c.date)} />
+        <HabitHeatmap
+          cells={cells}
+          onDayPress={(c) => setSelectedDay(c.date)}
+          habitName={habits.find((h) => h.id === habitId)?.name}
+        />
         <Text style={styles.caption}>
           Each square is a day · darker is stronger · tap to look back
           {!habitId && overall && overall.perfectDays > 0
@@ -255,7 +282,9 @@ export function AnalysisContent({
 
       {/* 2 — Progress trend (same range as the heatmap) */}
       <View style={styles.section}>
-        <Text style={styles.sectionLabel}>Progress</Text>
+        <Text style={styles.sectionLabel} accessibilityRole="header">
+            Progress
+          </Text>
         <View style={styles.trendRow}>
           <Text style={styles.bigNum}>{month.days > 0 ? `${pct(month.rate)}%` : "—"}</Text>
           <Text style={[styles.delta, { color: trendUp ? Colors.success : Colors.danger }]}>
@@ -281,7 +310,9 @@ export function AnalysisContent({
 
       {/* 3 — Streak vs record */}
       <View style={styles.section}>
-        <Text style={styles.sectionLabel}>Your record</Text>
+        <Text style={styles.sectionLabel} accessibilityRole="header">
+            Your record
+          </Text>
         <Text style={styles.recordLine}>
           🔥 {currentStreak} now · longest <Text style={styles.bold}>{longestStreak}</Text>
           {toRecord > 0 ? ` · ${toRecord} to your record` : longestStreak > 0 ? " · at your best ever 🎉" : ""}
@@ -303,20 +334,26 @@ export function AnalysisContent({
 
       {/* FR-AN3 — consistency score, formula included */}
       <View style={styles.section}>
-        <Text style={styles.sectionLabel}>Consistency score</Text>
+        <Text style={styles.sectionLabel} accessibilityRole="header">
+            Consistency score
+          </Text>
         <ConsistencyScore result={consistency} />
       </View>
 
       {/* 4 — Written "your story" insight */}
       <View style={styles.section}>
-        <Text style={styles.sectionLabel}>Your story</Text>
+        <Text style={styles.sectionLabel} accessibilityRole="header">
+            Your story
+          </Text>
         <Text style={styles.insight}>{insight}</Text>
       </View>
 
       {/* FR-AN2 — habit comparison (overview only) */}
       {!habitId && (
         <View style={styles.section}>
-          <Text style={styles.sectionLabel}>By habit</Text>
+          <Text style={styles.sectionLabel} accessibilityRole="header">
+            By habit
+          </Text>
           <HabitComparison
             rows={comparison}
             onSelect={(id) => router.push(`/analysis/${id}` as Href)}
@@ -327,7 +364,9 @@ export function AnalysisContent({
       {/* FR-AN4 — correlations (overview only) */}
       {!habitId && (
         <View style={styles.section}>
-          <Text style={styles.sectionLabel}>What goes together</Text>
+          <Text style={styles.sectionLabel} accessibilityRole="header">
+            What goes together
+          </Text>
           <HabitCorrelations correlations={correlations} habits={habits} />
         </View>
       )}
@@ -335,7 +374,9 @@ export function AnalysisContent({
       {/* FR-AN1 — journal stats (overview only) */}
       {!habitId && (
         <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Your journal</Text>
+          <Text style={styles.sectionLabel} accessibilityRole="header">
+            Your journal
+          </Text>
           <JournalStatsCard stats={journal} loading={entriesLoading} />
         </View>
       )}
@@ -343,7 +384,9 @@ export function AnalysisContent({
       {/* FR-G2 — records board (overview only) */}
       {!habitId && (
         <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Records</Text>
+          <Text style={styles.sectionLabel} accessibilityRole="header">
+            Records
+          </Text>
           <Text style={styles.caption2}>
             Beaten or tied — never lost. Every one of these is you against you.
           </Text>
@@ -358,6 +401,9 @@ export function AnalysisContent({
           style={styles.section}
           activeOpacity={0.85}
           onPress={() => router.push("/analysis/stamps" as Href)}
+          accessibilityRole="button"
+          accessibilityLabel="Stamps"
+          accessibilityHint="Everything you've already done, kept permanently"
         >
           <View style={styles.stampsRow}>
             <View style={styles.stampsText}>
@@ -382,8 +428,6 @@ export function AnalysisContent({
   );
 }
 
-const HAIRLINE = "rgba(26,26,26,0.09)";
-
 const styles = StyleSheet.create({
   wrap: { paddingHorizontal: 22 },
   empty: {
@@ -401,7 +445,7 @@ const styles = StyleSheet.create({
   // offline / partial-load notice
   notice: {
     borderWidth: 1,
-    borderColor: HAIRLINE,
+    borderColor: Hairline.strong,
     borderRadius: 12,
     paddingVertical: 10,
     paddingHorizontal: 14,
@@ -442,7 +486,7 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   // sections
-  section: { paddingVertical: 18, borderTopWidth: 1, borderTopColor: HAIRLINE },
+  section: { paddingVertical: 18, borderTopWidth: 1, borderTopColor: Hairline.strong },
   sectionHead: {
     flexDirection: "row",
     alignItems: "center",
@@ -482,7 +526,7 @@ const styles = StyleSheet.create({
   // record
   recordLine: { fontSize: 15, color: Colors.ink, fontFamily: Fonts.handwriting, marginBottom: 10 },
   bold: { fontFamily: Fonts.handwritingSemiBold },
-  bar: { height: 10, borderRadius: 5, backgroundColor: "rgba(26,26,26,0.07)", overflow: "hidden" },
+  bar: { height: 10, borderRadius: 5, backgroundColor: Hairline.track, overflow: "hidden" },
   barFill: { height: "100%", backgroundColor: Colors.accent },
   milestones: { flexDirection: "row", gap: 16, marginTop: 10 },
   milestone: { fontSize: 13, color: Colors.textSecondary, fontFamily: Fonts.handwritingMedium },

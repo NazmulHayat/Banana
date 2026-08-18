@@ -22,8 +22,13 @@ import { useColorScheme } from "@/hooks/use-color-scheme";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { DataProvider } from "@/lib/data-store";
 import { OnboardingProvider, useOnboarding } from "@/lib/onboarding-context";
+import { configureReminders } from "@/lib/reminder";
 
 SplashScreen.preventAutoHideAsync();
+
+// How a local reminder behaves if it fires while the app is open. Local only —
+// there is no push server and no device token anywhere in this app.
+configureReminders();
 
 // Auth-group screens that should NOT auto-redirect to tabs even when a
 // session exists. These run post-signup or during password recovery and

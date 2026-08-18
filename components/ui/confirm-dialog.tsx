@@ -1,6 +1,6 @@
 import { PaperCard } from "@/components/ui/paper-card";
 import { PressableScale } from "@/components/ui/pressable-scale";
-import { Colors, Fonts } from "@/constants/theme";
+import { Colors, Fonts, Scrim } from "@/constants/theme";
 import * as Haptics from "expo-haptics";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -104,11 +104,21 @@ export function ConfirmDialog({
         style={styles.fill}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <Pressable style={styles.backdrop} onPress={handleCancel}>
+        {/* Trap VoiceOver on the dialog — a decision this size shouldn't be
+            swipe-past-able. */}
+        <Pressable
+          style={styles.backdrop}
+          onPress={handleCancel}
+          accessibilityViewIsModal
+          accessibilityRole="button"
+          accessibilityLabel="Dismiss"
+        >
           {/* Inner Pressable swallows taps so pressing the card doesn't cancel. */}
           <Pressable onPress={() => {}}>
             <PaperCard style={styles.card}>
-              <Text style={styles.title}>{title}</Text>
+              <Text style={styles.title} accessibilityRole="header">
+                {title}
+              </Text>
               {message ? <Text style={styles.message}>{message}</Text> : null}
 
               {confirmPhrase ? (
@@ -167,9 +177,7 @@ const styles = StyleSheet.create({
   },
   backdrop: {
     flex: 1,
-    // Darker overlay alpha is acceptable for a modal scrim (established
-    // rgba(26,26,26,…) ink-overlay convention).
-    backgroundColor: "rgba(26,26,26,0.45)",
+    backgroundColor: Scrim.modal,
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 32,

@@ -247,6 +247,9 @@ export default function OnboardingHabitsScreen() {
                     ]}
                     disabled={isBlocked}
                     onPress={() => toggleHabit(habit.name)}
+                    accessibilityRole="checkbox"
+                    accessibilityLabel={habit.name}
+                    accessibilityState={{ checked: isSelected }}
                   >
                     <Text style={styles.pillEmoji}>{habit.emoji}</Text>
                     <Text
@@ -281,6 +284,7 @@ export default function OnboardingHabitsScreen() {
                 onSubmitEditing={addCustomHabit}
                 returnKeyType="done"
                 editable={!atLimit}
+                accessibilityLabel="Your own habit"
               />
               <PressableScale
                 style={[
@@ -289,6 +293,7 @@ export default function OnboardingHabitsScreen() {
                 ]}
                 disabled={!customHabit.trim() || atLimit}
                 onPress={addCustomHabit}
+                accessibilityLabel="Add this habit"
               >
                 <IconSymbol name="plus" size={20} color={Colors.paper} />
               </PressableScale>

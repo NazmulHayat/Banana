@@ -1,5 +1,5 @@
 import { Skeleton } from "@/components/ui/skeleton";
-import { Colors, Fonts } from "@/constants/theme";
+import { Colors, Fonts, Hairline } from "@/constants/theme";
 import type { JournalStats } from "@/lib/journal-stats";
 import { StyleSheet, Text, View } from "react-native";
 
@@ -8,8 +8,6 @@ interface JournalStatsCardProps {
   stats: JournalStats | null;
   loading: boolean;
 }
-
-const HAIRLINE = "rgba(26,26,26,0.09)";
 
 /**
  * FR-AN1 — the journal half of the analysis: what you wrote, how long you kept
@@ -104,7 +102,7 @@ const styles = StyleSheet.create({
     marginTop: 12,
     paddingTop: 12,
     borderTopWidth: 1,
-    borderTopColor: HAIRLINE,
+    borderTopColor: Hairline.strong,
   },
   monthsLabel: {
     fontSize: 12,

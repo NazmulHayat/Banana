@@ -1,3 +1,4 @@
+import { Motion } from "@/constants/motion";
 import { Colors } from "@/constants/theme";
 import * as Haptics from "expo-haptics";
 import { useEffect, useRef, useState } from "react";
@@ -57,6 +58,23 @@ const BLINK_AT_MS = 6500;
 // down to the login screen.
 const EXIT_AT_MS = 11000;
 const EXIT_MS = 1700;
+// Storyboard beats. These are one-off cinematography, not part of the app's
+// UI motion scale, so they're named here instead of bloating `Motion`. The
+// beats that ARE shared with BrandMark (blink, float) come from `Motion`.
+const TICK_FADE_MS = 120;
+const TICK_WIPE_MS = 420;
+const TICK_PRESS_MS = 110;
+const TICK_SPRING = { damping: 13, stiffness: 190 };
+const EYE_TRAVEL_MS = 900;
+const MELT_MS = 600;
+const HATCH_CLEAR_DELAY_MS = 300;
+const SMILE_DRAW_MS = 680;
+const FLOURISH_MS = 420;
+const FLOURISH_DELAY_MS = 100;
+/** Skipped or Reduce-Motion exits: get out of the way, don't perform. */
+const SKIP_EXIT_MS = 480;
+const SKIP_HOLD_MS = 350;
+const REDUCED_HOLD_MS = 700;
 
 const EASE_OUT = Easing.bezier(0.22, 1, 0.36, 1);
 
@@ -99,22 +117,28 @@ export function AnimatedSplash({ onDone }: AnimatedSplashProps) {
     if (!floating) return;
     faceBob.value = withRepeat(
       withSequence(
-        withTiming(-4, { duration: 1600, easing: Easing.inOut(Easing.sin) }),
-        withTiming(4, { duration: 1600, easing: Easing.inOut(Easing.sin) }),
+        withTiming(-4, {
+          duration: Motion.float.bob,
+          easing: Easing.inOut(Easing.sin),
+        }),
+        withTiming(4, {
+          duration: Motion.float.bob,
+          easing: Easing.inOut(Easing.sin),
+        }),
       ),
       -1,
       true,
     );
     faceSway.value = withDelay(
-      400,
+      Motion.float.swayDelay,
       withRepeat(
         withSequence(
           withTiming(-1.4, {
-            duration: 2300,
+            duration: Motion.float.sway,
             easing: Easing.inOut(Easing.sin),
           }),
           withTiming(1.4, {
-            duration: 2300,
+            duration: Motion.float.sway,
             easing: Easing.inOut(Easing.sin),
           }),
         ),
@@ -138,7 +162,7 @@ export function AnimatedSplash({ onDone }: AnimatedSplashProps) {
     overlayY.value = withTiming(
       -height,
       {
-        duration: slow ? EXIT_MS : 480,
+        duration: slow ? EXIT_MS : SKIP_EXIT_MS,
         easing: slow ? Easing.inOut(Easing.sin) : Easing.inOut(Easing.cubic),
       },
       (done) => {
@@ -160,7 +184,7 @@ export function AnimatedSplash({ onDone }: AnimatedSplashProps) {
     if (finishedRef.current) return;
     clearTimers();
     showFinalFrame();
-    timeouts.current.push(setTimeout(() => finish(false), 350));
+    timeouts.current.push(setTimeout(() => finish(false), SKIP_HOLD_MS));
   };
 
   useEffect(() => {
@@ -174,7 +198,7 @@ export function AnimatedSplash({ onDone }: AnimatedSplashProps) {
 
     if (reduceMotion) {
       showFinalFrame();
-      timeouts.current.push(setTimeout(() => finish(false), 700));
+      timeouts.current.push(setTimeout(() => finish(false), REDUCED_HOLD_MS));
       return clearTimers;
     }
 
@@ -192,7 +216,7 @@ export function AnimatedSplash({ onDone }: AnimatedSplashProps) {
     timeouts.current.push(
       setTimeout(() => {
         smileProgress.value = withTiming(1, {
-          duration: 680,
+          duration: SMILE_DRAW_MS,
           easing: EASE_OUT,
         });
         void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -207,8 +231,8 @@ export function AnimatedSplash({ onDone }: AnimatedSplashProps) {
         void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
         // Pen flourish under the name once the last letter is inked
         flourishProgress.value = withDelay(
-          WORDMARK_TOTAL_MS + 100,
-          withTiming(1, { duration: 420, easing: EASE_OUT }),
+          WORDMARK_TOTAL_MS + FLOURISH_DELAY_MS,
+          withTiming(1, { duration: FLOURISH_MS, easing: EASE_OUT }),
         );
       }, BLINK_AT_MS),
     );
@@ -240,7 +264,15 @@ export function AnimatedSplash({ onDone }: AnimatedSplashProps) {
       style={[StyleSheet.absoluteFill, styles.overlay, overlayStyle]}
     >
       <PaperBackground>
-        <Pressable style={styles.fill} onPress={skip}>
+        {/* The splash is pure drawing — announce it as one thing, and say
+            it's skippable, since nothing else on screen is. */}
+        <Pressable
+          style={styles.fill}
+          onPress={skip}
+          accessibilityRole="button"
+          accessibilityLabel="Aight Bet"
+          accessibilityHint="Double tap to skip the intro"
+        >
           <View style={styles.center}>
             <Animated.View style={[styles.faceArea, faceStyle]}>
               {ROW_XS.map((x, i) => (
@@ -350,11 +382,11 @@ function RowBlock({
   // Tick: the crosshatch sweeps in like pen shading, with a soft press
   useEffect(() => {
     if (!ticked || instant) return;
-    hatchOpacity.value = withTiming(1, { duration: 120 });
-    hatchWipe.value = withTiming(0, { duration: 420, easing: EASE_OUT });
+    hatchOpacity.value = withTiming(1, { duration: TICK_FADE_MS });
+    hatchWipe.value = withTiming(0, { duration: TICK_WIPE_MS, easing: EASE_OUT });
     scale.value = withSequence(
-      withTiming(0.94, { duration: 110 }),
-      withSpring(1, { damping: 13, stiffness: 190 }),
+      withTiming(0.94, { duration: TICK_PRESS_MS }),
+      withSpring(1, TICK_SPRING),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticked]);
@@ -364,17 +396,17 @@ function RowBlock({
   useEffect(() => {
     if (!formed || instant) return;
     if (eye) {
-      tx.value = withTiming(eye.x, { duration: 900, easing: EASE_OUT });
-      ty.value = withTiming(eye.y, { duration: 900, easing: EASE_OUT });
-      rot.value = withTiming(eye.r, { duration: 900, easing: EASE_OUT });
+      tx.value = withTiming(eye.x, { duration: EYE_TRAVEL_MS, easing: EASE_OUT });
+      ty.value = withTiming(eye.y, { duration: EYE_TRAVEL_MS, easing: EASE_OUT });
+      rot.value = withTiming(eye.r, { duration: EYE_TRAVEL_MS, easing: EASE_OUT });
       hatchOpacity.value = withDelay(
-        300,
-        withTiming(0, { duration: 600, easing: EASE_OUT }),
+        HATCH_CLEAR_DELAY_MS,
+        withTiming(0, { duration: MELT_MS, easing: EASE_OUT }),
       );
     } else {
-      opacity.value = withTiming(0, { duration: 600, easing: EASE_OUT });
-      ty.value = withTiming(22, { duration: 600 });
-      scale.value = withTiming(0.9, { duration: 600 });
+      opacity.value = withTiming(0, { duration: MELT_MS, easing: EASE_OUT });
+      ty.value = withTiming(22, { duration: MELT_MS });
+      scale.value = withTiming(0.9, { duration: MELT_MS });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [formed]);
@@ -383,10 +415,16 @@ function RowBlock({
   useEffect(() => {
     if (!isEye || blinkCount === 0) return;
     blinkFill.value = withSequence(
-      withTiming(1, { duration: 80, easing: Easing.in(Easing.quad) }),
+      withTiming(1, {
+        duration: Motion.blink.shut,
+        easing: Easing.in(Easing.quad),
+      }),
       withDelay(
-        140,
-        withTiming(0, { duration: 210, easing: Easing.out(Easing.cubic) }),
+        Motion.blink.hold,
+        withTiming(0, {
+          duration: Motion.blink.open,
+          easing: Easing.out(Easing.cubic),
+        }),
       ),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -1,6 +1,6 @@
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
-import { Colors, Fonts } from "@/constants/theme";
+import { Colors, Fonts, Scrim } from "@/constants/theme";
 import { signupTransient } from "@/lib/auth/signup-transient";
 import { supabase } from "@/lib/supabase";
 import { router } from "expo-router";
@@ -272,6 +272,12 @@ export default function SignupScreen() {
               <TouchableOpacity
                 onPress={() => setShowPassword(!showPassword)}
                 style={styles.eyeButton}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  showPassword ? "Hide password" : "Show password"
+                }
+                accessibilityState={{ selected: showPassword }}
               >
                 <IconSymbol
                   name={showPassword ? "eye.slash" : "eye"}
@@ -447,7 +453,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 8,
-    backgroundColor: "rgba(255, 179, 128, 0.18)",
+    backgroundColor: Scrim.accent,
     borderRadius: 12,
     paddingVertical: 12,
     paddingHorizontal: 14,

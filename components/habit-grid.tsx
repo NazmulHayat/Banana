@@ -175,13 +175,25 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, o
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>HABITS</Text>
+        <Text style={styles.title} accessibilityRole="header">
+          HABITS
+        </Text>
         {reordering ? (
-          <TouchableOpacity onPress={() => setReordering(false)} activeOpacity={0.7}>
+          <TouchableOpacity
+            onPress={() => setReordering(false)}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Done reordering"
+          >
             <Text style={styles.done}>Done</Text>
           </TouchableOpacity>
         ) : (
-          <TouchableOpacity onPress={onEdit} activeOpacity={0.7}>
+          <TouchableOpacity
+            onPress={onEdit}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Edit habits"
+          >
             <Text style={styles.edit}>Edit</Text>
           </TouchableOpacity>
         )}
@@ -242,7 +254,8 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, o
           {/* Fixed day column */}
           <View style={styles.fixedDayColumn}>
             {Array.from({ length: daysInMonth }, (_, i) => i + 1).map((day) => (
-              <View key={day} style={styles.dayCell}>
+              // Group the two lines so VoiceOver reads "Mon 4", not two stops.
+              <View key={day} style={styles.dayCell} accessible>
                 <Text style={styles.dayName}>{getDayName(day)}</Text>
                 <Text style={styles.dayNumber}>{day}</Text>
               </View>
@@ -282,8 +295,14 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, o
                             size={cellSize}
                             height={CELL_HEIGHT}
                             disabled={future}
+                            // A future day isn't a miss — say "not yet" so
+                            // VoiceOver never reads an unlived day as a fail.
                             accessibilityLabel={`${habit.name}, ${dayLabel}, ${
-                              completed ? 'completed' : 'not completed'
+                              completed
+                                ? 'completed'
+                                : future
+                                  ? 'not yet'
+                                  : 'not completed'
                             }`}
                           />
                         </View>
@@ -322,6 +341,8 @@ function HabitHeaderName({ name, width, canReorder, onLongPress }: HabitHeaderNa
       // The header clamps long names to two lines; the full name still reads
       // out here and lives unabridged in the habit editor.
       accessibilityLabel={name}
+      accessibilityRole="header"
+      accessibilityHint={canReorder ? 'Long press to reorder habits' : undefined}
       onLongPress={() => {
         void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         onLongPress();

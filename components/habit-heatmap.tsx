@@ -1,6 +1,8 @@
 import { Motion } from "@/constants/motion";
-import { Colors } from "@/constants/theme";
+import { Colors, Hairline } from "@/constants/theme";
+import { fromDayKey } from "@/lib/dates";
 import type { HeatCell } from "@/lib/stats";
+import { useReduceMotion } from "@/lib/use-reduce-motion";
 import { useEffect, useRef, useState } from "react";
 import { Animated, type LayoutChangeEvent } from "react-native";
 import Svg, { Defs, Line, Pattern, Rect } from "react-native-svg";
@@ -14,6 +16,32 @@ interface HabitHeatmapProps {
   gap?: number;
   /** Tap a day — used for the journal-highlight sheet. */
   onDayPress?: (cell: HeatCell) => void;
+  /**
+   * Name of the single habit being shown, if any. Only used to make the
+   * spoken label say what it's actually about ("Exercise, March 4, done")
+   * — a square with no text needs the whole sentence.
+   */
+  habitName?: string;
+}
+
+const spokenDate = (key: string) =>
+  fromDayKey(key).toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+
+/**
+ * What one square means, said plainly. `level` carries a different meaning per
+ * mode (streak length for one habit, share-of-habits overall), so describe
+ * each honestly rather than inventing a number.
+ */
+function spokenState(cell: HeatCell, singleHabit: boolean): string {
+  if (!cell.eligible) return "before you started tracking";
+  if (cell.perfect) return "perfect day, everything done";
+  if (cell.level === 0) return singleHabit ? "not done" : "nothing marked";
+  if (singleHabit) return "done";
+  return cell.level === 3 ? "nearly all done" : cell.level === 2 ? "most done" : "a few done";
 }
 
 // Crosshatch density per level, reusing the HabitCell ink look. Empty days
@@ -21,10 +49,7 @@ interface HabitHeatmapProps {
 const levelOpacity = (l: number): number =>
   l === 1 ? 0.4 : l === 2 ? 0.7 : l === 3 ? 1 : 0;
 
-// Low-alpha ink hairlines — the one sanctioned literal (see frontend rules).
-// The fainter one marks days before any habit existed: not a miss, not yours.
-const HAIRLINE = "rgba(26,26,26,0.16)";
-const HAIRLINE_FAINT = "rgba(26,26,26,0.06)";
+// `Hairline.faint` marks days before any habit existed: not a miss, not yours.
 
 /**
  * A crosshatch consistency heatmap drawn as a single SVG (one node, not N).
@@ -33,18 +58,30 @@ const HAIRLINE_FAINT = "rgba(26,26,26,0.06)";
  * darkest mark on the grid. Fades in on mount. Pure presentation — feed it
  * cells from `lib/stats.heatmapCells`.
  */
-export function HabitHeatmap({ cells, rows = 7, gap = 4, onDayPress }: HabitHeatmapProps) {
+export function HabitHeatmap({
+  cells,
+  rows = 7,
+  gap = 4,
+  onDayPress,
+  habitName,
+}: HabitHeatmapProps) {
   const [width, setWidth] = useState(0);
+  const reduceMotion = useReduceMotion();
   const enter = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
+    // The entrance is decoration — with Reduce Motion on, just be there.
+    if (reduceMotion) {
+      enter.setValue(1);
+      return;
+    }
     enter.setValue(0);
     Animated.timing(enter, {
       toValue: 1,
       duration: Motion.slow,
       useNativeDriver: true,
     }).start();
-  }, [enter, cells.length]);
+  }, [enter, cells.length, reduceMotion]);
 
   const cols = Math.max(1, Math.ceil(cells.length / rows));
   const cell = width > 0 ? (width - gap * (cols - 1)) / cols : 0;
@@ -77,8 +114,18 @@ export function HabitHeatmap({ cells, rows = 7, gap = 4, onDayPress }: HabitHeat
             const stroke = c.inLongest
               ? Colors.accent
               : c.eligible
-                ? HAIRLINE
-                : HAIRLINE_FAINT;
+                ? Hairline.outline
+                : Hairline.faint;
+            // A square carries no text, so the label has to say the whole
+            // thing: which habit, which day, how it went.
+            const label = [
+              habitName,
+              spokenDate(c.date),
+              spokenState(c, !!habitName),
+              c.inLongest ? "part of your longest streak" : null,
+            ]
+              .filter(Boolean)
+              .join(", ");
             return (
               <Rect
                 key={c.date}
@@ -92,6 +139,13 @@ export function HabitHeatmap({ cells, rows = 7, gap = 4, onDayPress }: HabitHeat
                 stroke={stroke}
                 strokeWidth={c.inLongest ? 1.5 : 1}
                 onPress={onDayPress ? () => onDayPress(c) : undefined}
+                accessible
+                // react-native-svg only forwards `accessible` +
+                // `accessibilityLabel` to shapes — no role, no hint — so the
+                // affordance has to ride along inside the label.
+                accessibilityLabel={
+                  onDayPress ? `${label}. Double tap to look back` : label
+                }
               />
             );
           })}

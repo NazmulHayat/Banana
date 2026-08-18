@@ -1,4 +1,4 @@
-import { Colors, Fonts } from "@/constants/theme";
+import { Colors, Fonts, Hairline } from "@/constants/theme";
 import type { ConsistencyResult } from "@/lib/stats";
 import { StyleSheet, Text, View } from "react-native";
 
@@ -6,8 +6,6 @@ interface ConsistencyScoreProps {
   /** Result from `lib/stats.consistencyScore`. */
   result: ConsistencyResult;
 }
-
-const TRACK = "rgba(26,26,26,0.07)";
 
 /**
  * FR-AN3 — a 0-100 consistency score with its formula spelled out underneath.
@@ -54,7 +52,7 @@ const styles = StyleSheet.create({
   track: {
     height: 10,
     borderRadius: 5,
-    backgroundColor: TRACK,
+    backgroundColor: Hairline.track,
     overflow: "hidden",
     marginTop: 8,
   },

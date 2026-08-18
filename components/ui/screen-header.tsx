@@ -20,10 +20,14 @@ export function ScreenHeader({ title, right }: ScreenHeaderProps) {
         activeOpacity={0.6}
         hitSlop={10}
         style={styles.back}
+        accessibilityRole="button"
+        accessibilityLabel="Back"
+        accessibilityHint={`Leaves ${title}`}
       >
         <IconSymbol name="chevron.left" size={24} color={Colors.ink} />
       </TouchableOpacity>
-      <Text style={styles.title} numberOfLines={1}>
+      {/* The title is the first thing VoiceOver should land on after Back. */}
+      <Text style={styles.title} numberOfLines={1} accessibilityRole="header">
         {title}
       </Text>
       <View style={styles.right}>{right}</View>

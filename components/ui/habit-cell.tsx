@@ -1,3 +1,4 @@
+import { Motion } from '@/constants/motion';
 import { Colors } from '@/constants/theme';
 import * as Haptics from 'expo-haptics';
 import { useRef } from 'react';
@@ -40,11 +41,11 @@ export function HabitCell({
       // Toggling ON: selection haptic + spring punch
       void Haptics.selectionAsync();
       scale.setValue(0.85);
+      // The one place a bouncy spring belongs: the tick landing is the reward.
       Animated.spring(scale, {
         toValue: 1,
         useNativeDriver: true,
-        friction: 5,
-        tension: 100,
+        ...Motion.springBouncy,
       }).start();
     } else {
       // Toggling OFF: subtle tick

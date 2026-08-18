@@ -1,4 +1,6 @@
+import { Motion } from "@/constants/motion";
 import { Colors } from "@/constants/theme";
+import { useReduceMotion } from "@/lib/use-reduce-motion";
 import { useEffect, useRef } from "react";
 import { StyleSheet, View } from "react-native";
 import Animated, {
@@ -59,12 +61,21 @@ const eyeStyles = StyleSheet.create({
   },
 });
 
+// Blink cadence — character beats, not UI timing, so they live here rather
+// than in the Motion scale. The blink itself uses `Motion.blink`.
+const DOUBLE_BLINK_GAP_MS = 480;
+const BLINK_MIN_GAP_MS = 2400;
+const BLINK_JITTER_MS = 2800;
+
 // Cartoon blink: snap shut, hold a beat, ease back open
 function blinkOnce(eye: SharedValue<number>) {
   "worklet";
   eye.value = withSequence(
-    withTiming(1, { duration: 80, easing: Easing.in(Easing.quad) }),
-    withDelay(140, withTiming(0, { duration: 210, easing: Easing.out(Easing.cubic) })),
+    withTiming(1, { duration: Motion.blink.shut, easing: Easing.in(Easing.quad) }),
+    withDelay(
+      Motion.blink.hold,
+      withTiming(0, { duration: Motion.blink.open, easing: Easing.out(Easing.cubic) }),
+    ),
   );
 }
 
@@ -83,9 +94,12 @@ export function BrandMark({
   const faceBob = useSharedValue(0);
   const faceSway = useSharedValue(0);
   const timer = useRef<ReturnType<typeof setTimeout>[]>([]);
+  // The mark is decoration — with Reduce Motion on it simply sits there,
+  // eyes open, and reads exactly the same.
+  const reduceMotion = useReduceMotion();
 
   useEffect(() => {
-    if (!blink) return;
+    if (!blink || reduceMotion) return;
 
     const fireBlink = () => {
       const wink = Math.random() < 0.15;
@@ -100,7 +114,7 @@ export function BrandMark({
             setTimeout(() => {
               blinkOnce(leftFill);
               blinkOnce(rightFill);
-            }, 480),
+            }, DOUBLE_BLINK_GAP_MS),
           );
         }
       }
@@ -113,7 +127,7 @@ export function BrandMark({
             fireBlink();
             schedule();
           },
-          2400 + Math.random() * 2800,
+          BLINK_MIN_GAP_MS + Math.random() * BLINK_JITTER_MS,
         ),
       );
     };
@@ -124,29 +138,29 @@ export function BrandMark({
       timer.current = [];
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [blink]);
+  }, [blink, reduceMotion]);
 
   // The whole face hovers: slow bob + a whisper of sway
   useEffect(() => {
-    if (!float) return;
+    if (!float || reduceMotion) return;
     faceBob.value = withRepeat(
       withSequence(
-        withTiming(-4, { duration: 1600, easing: Easing.inOut(Easing.sin) }),
-        withTiming(4, { duration: 1600, easing: Easing.inOut(Easing.sin) }),
+        withTiming(-4, { duration: Motion.float.bob, easing: Easing.inOut(Easing.sin) }),
+        withTiming(4, { duration: Motion.float.bob, easing: Easing.inOut(Easing.sin) }),
       ),
       -1,
       true,
     );
     faceSway.value = withDelay(
-      400,
+      Motion.float.swayDelay,
       withRepeat(
         withSequence(
           withTiming(-1.4, {
-            duration: 2300,
+            duration: Motion.float.sway,
             easing: Easing.inOut(Easing.sin),
           }),
           withTiming(1.4, {
-            duration: 2300,
+            duration: Motion.float.sway,
             easing: Easing.inOut(Easing.sin),
           }),
         ),
@@ -155,7 +169,7 @@ export function BrandMark({
       ),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [float]);
+  }, [float, reduceMotion]);
 
   const faceStyle = useAnimatedStyle(() => ({
     transform: [

@@ -9,6 +9,7 @@ import { SyncStatus } from "@/components/sync-status";
 import { IconButton } from "@/components/ui/icon-button";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
+import { Motion } from "@/constants/motion";
 import { Colors, Fonts } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { useDataStore } from "@/lib/data-store";
@@ -146,7 +147,7 @@ export default function TrackerScreen() {
         // Light fade animation (<150ms as requested)
         Animated.timing(anim, {
           toValue: 1,
-          duration: 120,
+          duration: Motion.quick,
           useNativeDriver: true,
         }).start();
       }
@@ -326,19 +327,18 @@ export default function TrackerScreen() {
     Animated.spring(snackbarAnim, {
       toValue: 1,
       useNativeDriver: true,
-      friction: 7,
-      tension: 120,
+      ...Motion.spring,
     }).start();
     snackbarTimer.current = setTimeout(() => {
       hideSnackbar();
-    }, 2400);
+    }, Motion.snackbar);
   };
 
   const hideSnackbar = () => {
     // Exit faster than enter so dismissal feels responsive
     Animated.timing(snackbarAnim, {
       toValue: 0,
-      duration: 120,
+      duration: Motion.quick,
       useNativeDriver: true,
     }).start(() => {
       setSnackbar({ visible: false, message: "" });
@@ -426,21 +426,18 @@ export default function TrackerScreen() {
           <View
             style={[styles.header, { paddingTop: Math.max(insets.top, 16) }]}
           >
-            {/* The a11y label lives on a grouping View because IconButton /
-                PressableScale don't forward accessibility props yet. */}
-            <View
-              accessible
-              accessibilityRole="button"
+            <IconButton
+              onPress={() => changeMonth(-1)}
               accessibilityLabel="Previous month"
             >
-              <IconButton onPress={() => changeMonth(-1)}>
-                <IconSymbol name="chevron.left" size={22} color={Colors.ink} />
-              </IconButton>
-            </View>
+              <IconSymbol name="chevron.left" size={22} color={Colors.ink} />
+            </IconButton>
             <TouchableOpacity
               onPress={jumpToToday}
               activeOpacity={0.7}
               style={styles.monthTextWrapper}
+              // Vertical only — the chevrons sit right beside it.
+              hitSlop={{ top: 10, bottom: 10 }}
               accessibilityRole="button"
               accessibilityLabel={
                 isCurrentMonthView ? monthName : `${monthName}, jump to today`
@@ -454,15 +451,12 @@ export default function TrackerScreen() {
                 </View>
               )}
             </TouchableOpacity>
-            <View
-              accessible
-              accessibilityRole="button"
+            <IconButton
+              onPress={() => changeMonth(1)}
               accessibilityLabel="Next month"
             >
-              <IconButton onPress={() => changeMonth(1)}>
-                <IconSymbol name="chevron.right" size={22} color={Colors.ink} />
-              </IconButton>
-            </View>
+              <IconSymbol name="chevron.right" size={22} color={Colors.ink} />
+            </IconButton>
           </View>
 
           {/* One quiet line above the composer, right-aligned. Fixed height,

@@ -5,16 +5,17 @@ import { PaperBackground } from "@/components/ui/paper-background";
 import { PaperCard } from "@/components/ui/paper-card";
 import { PressableScale } from "@/components/ui/pressable-scale";
 import { SectionTitle, SettingsRow } from "@/components/ui/settings-row";
-import { Colors, Fonts } from "@/constants/theme";
+import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { purgeLocalUserData } from "@/lib/auth/local-purge";
 import { useDataStore } from "@/lib/data-store";
 import { clearUserMedia } from "@/lib/media";
 import { useOnboarding } from "@/lib/onboarding-context";
+import { formatReminderTime, loadReminder, syncReminder } from "@/lib/reminder";
 import { supabase } from "@/lib/supabase";
 import Constants from "expo-constants";
-import { Href, router } from "expo-router";
-import { useMemo, useState } from "react";
+import { Href, router, useFocusEffect } from "expo-router";
+import { useCallback, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -52,6 +53,32 @@ export default function ProfileScreen() {
   const username = dataStore.profile?.username ?? null;
   const habits = dataStore.habits;
   const loading = !dataStore.habitsReady && !dataStore.profileReady;
+
+  // The reminder lives entirely on-device, so the row's subtitle reads the
+  // local preference rather than anything from the store. Coming back here is
+  // also the moment to reconcile: if the last habit was just deleted, a
+  // scheduled reminder has nothing left to point at and gets cancelled.
+  const habitsReady = dataStore.habitsReady;
+  const hasHabits = habits.length > 0;
+  const [reminderSubtitle, setReminderSubtitle] = useState("Off");
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      void (async () => {
+        const pref = await loadReminder();
+        if (cancelled) return;
+        setReminderSubtitle(
+          pref.enabled
+            ? `Every day at ${formatReminderTime(pref.hour, pref.minute)}`
+            : "Off",
+        );
+        if (habitsReady) await syncReminder(pref, hasHabits);
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }, [habitsReady, hasHabits]),
+  );
 
   const avatarInitial = (username ?? user?.email ?? "·").charAt(0).toUpperCase();
   const joinedLabel = useMemo(() => {
@@ -159,7 +186,9 @@ export default function ProfileScreen() {
         }
       >
         <View style={[styles.header, { paddingTop: Math.max(insets.top, 16) }]}>
-          <Text style={styles.title}>Profile</Text>
+          <Text style={styles.title} accessibilityRole="header">
+            Profile
+          </Text>
         </View>
 
         {/* Identity (display only) */}
@@ -196,6 +225,13 @@ export default function ProfileScreen() {
               title="Habits"
               subtitle={`${habits.length} habit${habits.length === 1 ? "" : "s"}`}
               onPress={() => router.push("/habits" as Href)}
+            />
+            <View style={styles.rowDivider} />
+            <SettingsRow
+              icon="bell"
+              title="Daily reminder"
+              subtitle={reminderSubtitle}
+              onPress={() => router.push("/reminder" as Href)}
             />
             <View style={styles.rowDivider} />
             <SettingsRow
@@ -322,7 +358,7 @@ const styles = StyleSheet.create({
   rowGroup: { paddingVertical: 4, paddingHorizontal: 18 },
   rowDivider: {
     height: StyleSheet.hairlineWidth,
-    backgroundColor: "rgba(26, 26, 26, 0.08)",
+    backgroundColor: Hairline.base,
     marginLeft: 38,
   },
   versionRow: { alignItems: "center", paddingVertical: 16 },

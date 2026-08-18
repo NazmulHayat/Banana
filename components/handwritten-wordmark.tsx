@@ -23,11 +23,13 @@ const AnimatedPath = Animated.createAnimatedComponent(Path);
 const TRACE_MS = WORDMARK_LETTERS.map((l) =>
   Math.min(520, Math.max(230, l.length * 0.4)),
 );
+/** Breath between "Aight" and "Bet" — the pen lifting off the page. */
+const WORD_GAP_MS = 220;
 const DELAYS_MS: number[] = [];
 {
   let t = 0;
   WORDMARK_LETTERS.forEach((l, i) => {
-    if (l.char === "B") t += 220; // word gap
+    if (l.char === "B") t += WORD_GAP_MS; // word gap
     DELAYS_MS.push(t);
     t += TRACE_MS[i] * 0.6;
   });

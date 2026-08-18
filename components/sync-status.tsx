@@ -70,9 +70,10 @@ export function SyncStatus({
 
 const styles = StyleSheet.create({
   row: {
-    // Fixed height + a single line keeps every state the same size, so the
-    // composer below never jumps when the status changes.
-    height: 18,
+    // A floor rather than a fixed height: every state is still the same size
+    // at normal text sizes (so the composer below never jumps), but at large
+    // Dynamic Type the line grows instead of being clipped.
+    minHeight: 18,
     justifyContent: "center",
     alignItems: "flex-end",
     marginHorizontal: 16,

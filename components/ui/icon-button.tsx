@@ -1,23 +1,24 @@
+import { Motion } from "@/constants/motion";
+import { Hairline } from "@/constants/theme";
 import { useRef } from "react";
-import {
-  Animated,
-  Pressable,
-  StyleSheet,
-  ViewStyle,
-} from "react-native";
+import { Animated, Pressable, StyleSheet, ViewStyle } from "react-native";
+import type { A11yProps } from "./pressable-scale";
 
-interface IconButtonProps {
+interface IconButtonProps extends A11yProps {
   onPress: () => void;
   children: React.ReactNode;
   disabled?: boolean;
   style?: ViewStyle | ViewStyle[];
-  /** Diameter of the round button. Defaults to 44. */
+  /** Diameter of the round button. Defaults to 44 — the minimum touch target. */
   size?: number;
 }
 
 /**
  * Round 44pt+ touch target with a spring scale-down on press.
  * Used for chevrons in month navigation and other icon-only actions.
+ *
+ * Icon-only means there is no text for VoiceOver to read, so
+ * `accessibilityLabel` is effectively required at every call site.
  */
 export function IconButton({
   onPress,
@@ -25,34 +26,34 @@ export function IconButton({
   disabled,
   style,
   size = 44,
+  accessibilityLabel,
+  accessibilityHint,
+  accessibilityRole = "button",
+  accessibilityState,
+  accessibilityValue,
 }: IconButtonProps) {
   const scale = useRef(new Animated.Value(1)).current;
 
-  const handlePressIn = () => {
+  const springTo = (toValue: number) => {
     Animated.spring(scale, {
-      toValue: 0.92,
+      toValue,
       useNativeDriver: true,
-      friction: 6,
-      tension: 140,
-    }).start();
-  };
-
-  const handlePressOut = () => {
-    Animated.spring(scale, {
-      toValue: 1,
-      useNativeDriver: true,
-      friction: 6,
-      tension: 140,
+      ...Motion.springPress,
     }).start();
   };
 
   return (
     <Pressable
       onPress={onPress}
-      onPressIn={handlePressIn}
-      onPressOut={handlePressOut}
+      onPressIn={() => springTo(0.92)}
+      onPressOut={() => springTo(1)}
       disabled={disabled}
       hitSlop={6}
+      accessibilityLabel={accessibilityLabel}
+      accessibilityHint={accessibilityHint}
+      accessibilityRole={accessibilityRole}
+      accessibilityState={{ disabled: !!disabled, ...accessibilityState }}
+      accessibilityValue={accessibilityValue}
       style={({ pressed }) => [
         styles.button,
         {
@@ -60,9 +61,7 @@ export function IconButton({
           height: size,
           borderRadius: size / 2,
           opacity: disabled ? 0.35 : 1,
-          backgroundColor: pressed
-            ? "rgba(26, 26, 26, 0.06)"
-            : "transparent",
+          backgroundColor: pressed ? Hairline.faint : "transparent",
         },
         style,
       ]}
