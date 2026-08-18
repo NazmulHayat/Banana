@@ -131,9 +131,11 @@ export default function SecurityScreen() {
       // reset if it succeeds and the next step fails), THEN re-wrap encryption.
       const { error: upErr } = await supabase.auth.updateUser({ password: newPassword });
       if (upErr) {
+        // Never surface a raw Supabase message — see CLAUDE.md (security).
+        if (__DEV__) console.warn("[security] password update failed:", upErr.message);
         Alert.alert(
           "Password change failed",
-          "Supabase could not update your password: " + upErr.message,
+          "We couldn't update your password just now. Check your connection and try again.",
         );
         setChangePasswordLoading(false);
         return;
