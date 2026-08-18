@@ -1,3 +1,4 @@
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { PaperBackground } from "@/components/ui/paper-background";
 import { PaperCard } from "@/components/ui/paper-card";
 import { ScreenHeader } from "@/components/ui/screen-header";
@@ -37,6 +38,8 @@ export default function SecurityScreen() {
   const [recoveryKey, setRecoveryKey] = useState("");
   const [recoveryLoading, setRecoveryLoading] = useState(false);
   const [recoveryError, setRecoveryError] = useState("");
+  const [showRegenerateConfirm, setShowRegenerateConfirm] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
 
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
   const [oldPassword, setOldPassword] = useState("");
@@ -81,28 +84,21 @@ export default function SecurityScreen() {
     Alert.alert("Copied", "Recovery key copied to clipboard.");
   };
 
-  const handleRegenerateRecoveryKey = () => {
-    Alert.alert(
-      "Regenerate recovery key?",
-      "Your old recovery key will stop working immediately. Make sure to save the new one.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Regenerate",
-          style: "destructive",
-          onPress: async () => {
-            if (!user) return;
-            try {
-              const newKey = await keyring.regenerateRecoveryKey(user.id);
-              setRecoveryKey(newKey);
-            } catch (e) {
-              const msg = e instanceof Error ? e.message : String(e);
-              Alert.alert("Failed", msg);
-            }
-          },
-        },
-      ],
-    );
+  // Destructive confirmation → ConfirmDialog (haptics + double-submit latch),
+  // not a native Alert. Regenerating invalidates the old key immediately.
+  const handleConfirmRegenerate = async () => {
+    if (!user) return;
+    setRegenerating(true);
+    try {
+      const newKey = await keyring.regenerateRecoveryKey(user.id);
+      setRecoveryKey(newKey);
+      setShowRegenerateConfirm(false);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      Alert.alert("Failed", msg);
+    } finally {
+      setRegenerating(false);
+    }
   };
 
   const handleChangePassword = async () => {
@@ -271,14 +267,28 @@ export default function SecurityScreen() {
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.regenerateButton}
-                  onPress={handleRegenerateRecoveryKey}
+                  onPress={() => setShowRegenerateConfirm(true)}
                   activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel="Regenerate recovery key"
                 >
                   <Text style={styles.regenerateButtonText}>Regenerate Recovery Key</Text>
                 </TouchableOpacity>
               </>
             )}
           </ScrollView>
+
+          {/* Nested inside the recovery sheet so it presents above it — the
+              new key is revealed in this same sheet. */}
+          <ConfirmDialog
+            visible={showRegenerateConfirm}
+            title="Regenerate recovery key?"
+            message="Your old recovery key stops working immediately. Save the new one somewhere safe."
+            confirmLabel="Regenerate"
+            loading={regenerating}
+            onConfirm={handleConfirmRegenerate}
+            onCancel={() => setShowRegenerateConfirm(false)}
+          />
         </KeyboardAvoidingView>
       </Modal>
 

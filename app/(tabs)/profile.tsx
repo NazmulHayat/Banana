@@ -45,6 +45,8 @@ export default function ProfileScreen() {
 
   const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
 
   const username = dataStore.profile?.username ?? null;
   const habits = dataStore.habits;
@@ -79,60 +81,31 @@ export default function ProfileScreen() {
   };
 
   // ============ ACCOUNT: DELETE ACCOUNT ============
-  const handleDeleteAccount = () => {
-    Alert.alert(
-      "Delete your account?",
-      "This permanently deletes your account, all journal entries, habits, and encryption keys. This cannot be undone.",
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "Delete Permanently", style: "destructive", onPress: () => confirmDeleteAccount() },
-      ],
-    );
-  };
-
-  const confirmDeleteAccount = () => {
-    Alert.alert("One more time", "Type the word DELETE on the next screen to confirm.", [
-      { text: "Cancel", style: "cancel" },
-      { text: "I understand", onPress: () => promptDeleteConfirmation() },
-    ]);
-  };
-
-  const promptDeleteConfirmation = () => {
-    Alert.prompt(
-      "Type DELETE to confirm",
-      "This is your final confirmation.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async (value?: string) => {
-            if ((value ?? "").trim().toUpperCase() !== "DELETE") {
-              Alert.alert("Confirmation failed", "You didn't type DELETE.");
-              return;
-            }
-            try {
-              // Supabase blocks direct DELETE from storage.objects in
-              // SECURITY DEFINER, so clean up media client-side BEFORE the RPC
-              // that drops the auth.users row.
-              if (user?.id) {
-                await clearUserMedia(user.id);
-              }
-              const { error } = await supabase.rpc("delete_my_account");
-              if (error) {
-                Alert.alert("Delete failed", error.message);
-                return;
-              }
-              await signOut();
-            } catch (e) {
-              const msg = e instanceof Error ? e.message : String(e);
-              Alert.alert("Error", msg);
-            }
-          },
-        },
-      ],
-      "plain-text",
-    );
+  // One paper dialog with a type-DELETE guard replaces the old three-step
+  // native Alert → Alert → Alert.prompt chain. The safety (you must type the
+  // word) and the order of operations below are unchanged.
+  const handleConfirmDeleteAccount = async () => {
+    setDeletingAccount(true);
+    try {
+      // Supabase blocks direct DELETE from storage.objects in SECURITY
+      // DEFINER, so clean up media client-side BEFORE the RPC that drops the
+      // auth.users row.
+      if (user?.id) {
+        await clearUserMedia(user.id);
+      }
+      const { error } = await supabase.rpc("delete_my_account");
+      if (error) {
+        Alert.alert("Delete failed", error.message);
+        return;
+      }
+      await signOut();
+      setShowDeleteConfirm(false);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      Alert.alert("Error", msg);
+    } finally {
+      setDeletingAccount(false);
+    }
   };
 
   const handleConfirmSignOut = async () => {
@@ -238,7 +211,13 @@ export default function ProfileScreen() {
             <Text style={styles.signOutText}>Sign out</Text>
           </PressableScale>
 
-          <TouchableOpacity style={styles.deleteButton} onPress={handleDeleteAccount} activeOpacity={0.7}>
+          <TouchableOpacity
+            style={styles.deleteButton}
+            onPress={() => setShowDeleteConfirm(true)}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Delete account"
+          >
             <Text style={styles.deleteText}>Delete Account</Text>
           </TouchableOpacity>
         </View>
@@ -272,6 +251,17 @@ export default function ProfileScreen() {
         loading={signingOut}
         onConfirm={handleConfirmSignOut}
         onCancel={() => setShowSignOutConfirm(false)}
+      />
+
+      <ConfirmDialog
+        visible={showDeleteConfirm}
+        title="Delete your account?"
+        message="This permanently deletes your account, every journal entry, your habits, and your encryption keys. It cannot be undone. Type DELETE to confirm."
+        confirmLabel="Delete forever"
+        confirmPhrase="DELETE"
+        loading={deletingAccount}
+        onConfirm={handleConfirmDeleteAccount}
+        onCancel={() => setShowDeleteConfirm(false)}
       />
     </PaperBackground>
   );

@@ -1,4 +1,9 @@
-import { HabitGrid } from "@/components/habit-grid";
+import {
+    ADAPTIVE_MAX_HABITS,
+    CELL_GAP,
+    computeColumnWidth,
+    HabitGrid,
+} from "@/components/habit-grid";
 import { HighlightInput } from "@/components/highlight-input";
 import { IconButton } from "@/components/ui/icon-button";
 import { IconSymbol } from "@/components/ui/icon-symbol";
@@ -18,7 +23,7 @@ import {
     toggleHabitLog,
     upsertEntryInCache,
 } from "@/lib/db";
-import { monthKeyOfParts, todayKey } from "@/lib/dates";
+import { isFutureDay, monthKeyOfParts, todayKey } from "@/lib/dates";
 import { uploadImage } from "@/lib/media";
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -186,6 +191,11 @@ export default function TrackerScreen() {
   };
 
   const handleToggleHabit = async (habitId: string, date: string) => {
+    // You can't tick a day you haven't lived yet (D14). The grid also renders
+    // future cells disabled — this is the belt to that braces. Past days stay
+    // editable on purpose: back-filling is a core journal use.
+    if (isFutureDay(date)) return;
+
     const existing = logs.find(
       (log) => log.habitId === habitId && log.date === date,
     );
@@ -349,8 +359,13 @@ export default function TrackerScreen() {
     }
   };
 
-  const cellWidth = 62;
-  const totalHabitsWidth = habits.length * cellWidth;
+  // The sticky header mirrors the grid's columns, so it repeats the grid's
+  // width math on its own measured width (same 16pt margins + 62pt DAY column,
+  // so the two always agree). 1-3 habits fill the row and don't scroll.
+  const [stickyGridWidth, setStickyGridWidth] = useState(0);
+  const stickyColumnWidth = computeColumnWidth(stickyGridWidth, habits.length);
+  const totalHabitsWidth = habits.length * stickyColumnWidth;
+  const stickyScrollable = habits.length > ADAPTIVE_MAX_HABITS;
 
   return (
     <PaperBackground>
@@ -374,13 +389,26 @@ export default function TrackerScreen() {
           <View
             style={[styles.header, { paddingTop: Math.max(insets.top, 16) }]}
           >
-            <IconButton onPress={() => changeMonth(-1)}>
-              <IconSymbol name="chevron.left" size={22} color={Colors.ink} />
-            </IconButton>
+            {/* The a11y label lives on a grouping View because IconButton /
+                PressableScale don't forward accessibility props yet. */}
+            <View
+              accessible
+              accessibilityRole="button"
+              accessibilityLabel="Previous month"
+            >
+              <IconButton onPress={() => changeMonth(-1)}>
+                <IconSymbol name="chevron.left" size={22} color={Colors.ink} />
+              </IconButton>
+            </View>
             <TouchableOpacity
               onPress={jumpToToday}
               activeOpacity={0.7}
               style={styles.monthTextWrapper}
+              accessibilityRole="button"
+              accessibilityLabel={
+                isCurrentMonthView ? monthName : `${monthName}, jump to today`
+              }
+              accessibilityState={{ disabled: isCurrentMonthView }}
             >
               <Text style={styles.monthText}>{monthName}</Text>
               {!isCurrentMonthView && (
@@ -389,9 +417,15 @@ export default function TrackerScreen() {
                 </View>
               )}
             </TouchableOpacity>
-            <IconButton onPress={() => changeMonth(1)}>
-              <IconSymbol name="chevron.right" size={22} color={Colors.ink} />
-            </IconButton>
+            <View
+              accessible
+              accessibilityRole="button"
+              accessibilityLabel="Next month"
+            >
+              <IconButton onPress={() => changeMonth(1)}>
+                <IconSymbol name="chevron.right" size={22} color={Colors.ink} />
+              </IconButton>
+            </View>
           </View>
 
           <HighlightInput
@@ -440,17 +474,27 @@ export default function TrackerScreen() {
                 ref={stickyHeaderScrollRef}
                 horizontal
                 showsHorizontalScrollIndicator={false}
+                scrollEnabled={stickyScrollable}
+                onLayout={(event) =>
+                  setStickyGridWidth(event.nativeEvent.layout.width)
+                }
                 style={styles.stickyHabitsScroll}
                 contentContainerStyle={{ width: totalHabitsWidth }}
               >
                 <View style={styles.stickyHeaderRow}>
                   {habits.map((habit) => (
-                    <View key={habit.id} style={styles.stickyHabitCell}>
+                    <View
+                      key={habit.id}
+                      style={[
+                        styles.stickyHabitCell,
+                        { width: stickyColumnWidth - CELL_GAP },
+                      ]}
+                      accessibilityLabel={habit.name}
+                    >
                       <Text
                         style={styles.stickyHabitName}
                         numberOfLines={2}
-                        adjustsFontSizeToFit
-                        minimumFontScale={0.7}
+                        ellipsizeMode="tail"
                       >
                         {habit.name}
                       </Text>

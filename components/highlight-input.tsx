@@ -264,39 +264,54 @@ export function HighlightInput({
               <View style={styles.popoverArrow} />
             </Animated.View>
           )}
-          <PressableScale
-            style={[
-              styles.mediaButton,
-              (pickedUris.length >= MAX_IMAGES || saving) &&
-                styles.mediaButtonDisabled,
-            ]}
-            onPress={handleAddPhoto}
-            disabled={pickedUris.length >= MAX_IMAGES || saving}
+          {/* The a11y label sits on a grouping View because PressableScale
+              doesn't forward accessibility props yet. */}
+          <View
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel={
+              pickerOpen
+                ? "Close photo picker"
+                : `Add photo, ${pickedUris.length} of ${MAX_IMAGES} attached`
+            }
+            accessibilityState={{
+              disabled: pickedUris.length >= MAX_IMAGES || !!saving,
+            }}
           >
-            <View style={styles.mediaButtonContent}>
-              <IconSymbol
-                name={pickerOpen ? "xmark" : "camera.fill"}
-                size={18}
-                color={
-                  pickedUris.length >= MAX_IMAGES || saving
-                    ? Colors.textSecondary
-                    : Colors.ink
-                }
-              />
-              <Text
-                style={[
-                  styles.mediaButtonText,
-                  (pickedUris.length >= MAX_IMAGES || saving) &&
-                    styles.mediaButtonTextDisabled,
-                ]}
-              >
-                {pickerOpen ? "Close" : "Add Photo"}
-                {!pickerOpen && pickedUris.length > 0
-                  ? ` (${pickedUris.length}/${MAX_IMAGES})`
-                  : ""}
-              </Text>
-            </View>
-          </PressableScale>
+            <PressableScale
+              style={[
+                styles.mediaButton,
+                (pickedUris.length >= MAX_IMAGES || saving) &&
+                  styles.mediaButtonDisabled,
+              ]}
+              onPress={handleAddPhoto}
+              disabled={pickedUris.length >= MAX_IMAGES || saving}
+            >
+              <View style={styles.mediaButtonContent}>
+                <IconSymbol
+                  name={pickerOpen ? "xmark" : "camera.fill"}
+                  size={18}
+                  color={
+                    pickedUris.length >= MAX_IMAGES || saving
+                      ? Colors.textSecondary
+                      : Colors.ink
+                  }
+                />
+                <Text
+                  style={[
+                    styles.mediaButtonText,
+                    (pickedUris.length >= MAX_IMAGES || saving) &&
+                      styles.mediaButtonTextDisabled,
+                  ]}
+                >
+                  {pickerOpen ? "Close" : "Add Photo"}
+                  {!pickerOpen && pickedUris.length > 0
+                    ? ` (${pickedUris.length}/${MAX_IMAGES})`
+                    : ""}
+                </Text>
+              </View>
+            </PressableScale>
+          </View>
         </View>
         <PressableScale
           style={[
@@ -331,6 +346,12 @@ export function HighlightInput({
           </View>
         </PressableScale>
       </View>
+      {/* Photos are NOT end-to-end encrypted in v1 (private Storage bucket
+          only) — disclosed plainly, right where photos get attached. */}
+      <Text style={styles.privacyNote}>
+        Your words and habits are end-to-end encrypted. Photos are stored
+        privately, but not encrypted yet.
+      </Text>
     </PaperCard>
   );
 }
@@ -362,6 +383,13 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+  },
+  privacyNote: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    lineHeight: 16,
+    marginTop: 12,
   },
   mediaPreviewContainer: {
     flexDirection: "row",
