@@ -6,7 +6,7 @@
 
 **Aight Bet is a private, end-to-end-encrypted habit tracker and daily journal — a calm place to commit to who you're becoming, where everything you write is yours alone.**
 
-The name says it: *"aight, bet"* — a quiet agreement with yourself. You make the bet, you show up, the app remembers. No streaks-as-anxiety, no social pressure, no company reading your diary.
+The name says it: *"aight, bet"* — a quiet agreement with yourself. You make the bet, you show up, the app remembers. Streaks punish you for stopping; stamps reward you for having done it. No social pressure, no company reading your diary.
 
 ## What it is
 
@@ -22,7 +22,7 @@ The aesthetic is deliberate: warm paper, a dot grid, near-black ink, a single so
 ## Who it's for
 
 - **The private journaler** who wants to write honestly and refuses to put their inner life in a cloud that mines it. Privacy isn't a feature to them; it's the precondition.
-- **The habit-builder burned out on gamification** — tired of apps that turn self-improvement into a slot machine of streaks, badges, and guilt. They want a quiet, honest record, not a dopamine casino.
+- **The habit-builder burned out on punitive gamification** — tired of apps that turn self-improvement into a slot machine where one missed day wipes the board. They'll happily collect stamps and beat their own records; what they won't accept is being punished for stopping.
 - **The reflective doer** who believes habits and journaling belong together: what you *do* and what you *notice* are two halves of the same daily check-in.
 - **Younger, design-literate users** who recognize the voice ("aight, bet") and expect an app that looks and feels intentional, not corporate.
 
@@ -43,10 +43,11 @@ Everything in the product serves this loop. Anything that doesn't make showing u
 ## Principles
 
 1. **Privacy is the product.** Zero-knowledge is non-negotiable. If a feature requires the server to read user content, it must be on-device or explicit opt-in — never silent.
-2. **Calm over engagement.** No dark patterns, no guilt mechanics, no manufactured urgency. Streaks motivate; they don't punish.
-3. **Tactile and personal.** It should feel like *your* notebook. Design fidelity is a core value, not polish.
-4. **Honest by default.** Plain language, clear disclosures (e.g. photos aren't E2E-encrypted in v1, and we say so).
-5. **Daily, not addictive.** Success = you opened it on day 3 because you wanted to, not because we nagged you.
+2. **Calm over engagement.** No dark patterns, no guilt mechanics, no manufactured urgency.
+3. **Gamify against your past self — permanently, never punitively.** Streaks punish you for stopping; stamps reward you for having done it. Every mechanic is additive-only: a stamp earned is never revoked, a record is beaten or tied but never taken away. **Nothing can ever be lost.**
+4. **Tactile and personal.** It should feel like *your* notebook. Design fidelity is a core value, not polish.
+5. **Honest by default.** Plain language, clear disclosures (e.g. photos aren't E2E-encrypted in v1, and we say so).
+6. **Daily, not addictive.** Success = you opened it on day 3 because you wanted to, not because we nagged you.
 
 ---
 
@@ -55,7 +56,7 @@ Everything in the product serves this loop. Anything that doesn't make showing u
 Grouped by horizon. **Only `tasks.md` authorizes building any of this** — this section is the dream, not a to-do list. Current shipping scope lives in tasks.md's Functional/Non-Functional Requirements.
 
 ## Now — v1 (shipping to App Store 1.0)
-Email auth + recovery key · E2E-encrypted habits/logs/entries · habit grid · create/rename/delete/**reorder** habits · daily highlights with photos · month-browsable feed · **stats** (streaks + totals) · **edit/delete** entries · **habit reminders** · **streak celebrations** · onboarding · profile + change password. *(See tasks.md FR/NFR for the authoritative list.)*
+Email auth + recovery key · E2E-encrypted habits/logs/entries · habit grid · create/rename/delete/**reorder** habits · daily highlights with photos · month-browsable feed · **edit/delete** entries · **habit reminders** · onboarding · profile + change password. Plus the full **insights surface, free** — calendar heatmap, progress trends, streak-vs-record, per-habit deep-dive, journal stats, habit comparison, consistency score, correlations — and **calm gamification**: perfect days, a personal-records board, and permanent stamps. *(See tasks.md FR/NFR for the authoritative list.)*
 
 ## Next — post-launch, feedback-ranked
 - **Per-image E2E encryption** — completes the zero-knowledge promise (schema already exists).
@@ -65,11 +66,7 @@ Email auth + recovery key · E2E-encrypted habits/logs/entries · habit grid · 
 
 ## Later — the ambitious vision
 
-### 📊 Analytics & insights
-A real **insights surface** beyond streaks: completion rate over time, best/worst days, consistency trends, correlations you'd actually want ("you write longer entries on days you exercise"). Calm, honest analytics — *reflective, never shaming.*
-
-### 🔎 Individual-habit deep-dive
-Tap into a single habit and get its own world: a **calendar heatmap**, current vs. longest streak, completion percentage by week/month, momentum over time, and the journal highlights logged on days you completed it. Turn one habit into a story you can read.
+*(Analytics & insights and the individual-habit deep-dive graduated out of this section — they ship free in 1.0, above. Still ahead: mood tracking, and a weekly "chapter" recap of your month in habits and highlights.)*
 
 ### 🤖 AI suggestions & reflection (privacy-first)
 The big one — and the hardest, *because* we're zero-knowledge:

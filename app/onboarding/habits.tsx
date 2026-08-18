@@ -21,7 +21,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-const { width, height } = Dimensions.get("window");
+const { width } = Dimensions.get("window");
 
 // Calculate cell size to fill screen width (6 columns: 1 day + 5 habits)
 const GRID_PADDING = 8; // horizontal padding on each side
@@ -104,6 +104,107 @@ export default function HabitsScreen() {
   ).current;
 
   useEffect(() => {
+    // startDemoScroll / transitionToSelect / showSelectionUI are defined
+    // inline (rather than as component-level functions) so this effect has
+    // no external function deps to track — it only ever runs once on mount,
+    // driving the whole demo -> transition -> selection animation chain.
+    function showSelectionUI() {
+      Animated.parallel([
+        Animated.timing(fadeAnim, {
+          toValue: 1,
+          duration: 600,
+          useNativeDriver: true,
+        }),
+        Animated.timing(slideAnim, {
+          toValue: 0,
+          duration: 600,
+          useNativeDriver: true,
+        }),
+      ]).start();
+
+      // Stagger suggestion pills
+      Animated.stagger(
+        60,
+        suggestionsStagger.map((anim) =>
+          Animated.spring(anim, {
+            toValue: 1,
+            friction: 6,
+            tension: 100,
+            useNativeDriver: true,
+          }),
+        ),
+      ).start();
+    }
+
+    function transitionToSelect() {
+      setStage("transition");
+
+      // Quick fade out demo - 400ms
+      Animated.timing(demoFade, {
+        toValue: 0,
+        duration: 400,
+        useNativeDriver: true,
+      }).start(() => {
+        // Show transition message
+        Animated.parallel([
+          Animated.timing(transitionFade, {
+            toValue: 1,
+            duration: 500,
+            useNativeDriver: true,
+          }),
+          Animated.timing(transitionSlide, {
+            toValue: 0,
+            duration: 500,
+            useNativeDriver: true,
+          }),
+        ]).start(() => {
+          // Wait 1.2 seconds on transition message, then move to selection
+          setTimeout(() => {
+            Animated.timing(transitionFade, {
+              toValue: 0,
+              duration: 350,
+              useNativeDriver: true,
+            }).start(() => {
+              setStage("select");
+              showSelectionUI();
+            });
+          }, 1200);
+        });
+      });
+    }
+
+    function startDemoScroll() {
+      // Short smooth scroll - just enough to show the concept
+      const scrollDuration = 3000;
+      const rowHeight = CALCULATED_CELL_SIZE + CELL_GAP;
+      // Only scroll through about 8-10 rows - just to show movement
+      const scrollDistance = rowHeight * 8;
+
+      let startTime: number;
+      const animateScroll = (timestamp: number) => {
+        if (!startTime) startTime = timestamp;
+        const progress = (timestamp - startTime) / scrollDuration;
+
+        if (progress < 1 && demoScrollRef.current) {
+          // Smooth ease-in-out for more natural feel
+          const easeProgress =
+            progress < 0.5
+              ? 2 * progress * progress
+              : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+          const scrollY = easeProgress * scrollDistance;
+          demoScrollRef.current.scrollTo({ y: scrollY, animated: false });
+          requestAnimationFrame(animateScroll);
+        } else {
+          // Demo complete - quick transition
+          setTimeout(() => {
+            transitionToSelect();
+          }, 500);
+        }
+      };
+
+      requestAnimationFrame(animateScroll);
+    }
+
     // Start with demo animation
     Animated.parallel([
       Animated.timing(demoFade, {
@@ -122,104 +223,17 @@ export default function HabitsScreen() {
         startDemoScroll();
       }, 600);
     });
-  }, []);
-
-  const startDemoScroll = () => {
-    // Short smooth scroll - just enough to show the concept
-    const scrollDuration = 3000;
-    const rowHeight = cellSize + CELL_GAP;
-    // Only scroll through about 8-10 rows - just to show movement
-    const scrollDistance = rowHeight * 8;
-
-    let startTime: number;
-    const animateScroll = (timestamp: number) => {
-      if (!startTime) startTime = timestamp;
-      const progress = (timestamp - startTime) / scrollDuration;
-
-      if (progress < 1 && demoScrollRef.current) {
-        // Smooth ease-in-out for more natural feel
-        const easeProgress =
-          progress < 0.5
-            ? 2 * progress * progress
-            : 1 - Math.pow(-2 * progress + 2, 2) / 2;
-        const scrollY = easeProgress * scrollDistance;
-        demoScrollRef.current.scrollTo({ y: scrollY, animated: false });
-        requestAnimationFrame(animateScroll);
-      } else {
-        // Demo complete - quick transition
-        setTimeout(() => {
-          transitionToSelect();
-        }, 500);
-      }
-    };
-
-    requestAnimationFrame(animateScroll);
-  };
-
-  const transitionToSelect = () => {
-    setStage("transition");
-
-    // Quick fade out demo - 400ms
-    Animated.timing(demoFade, {
-      toValue: 0,
-      duration: 400,
-      useNativeDriver: true,
-    }).start(() => {
-      // Show transition message
-      Animated.parallel([
-        Animated.timing(transitionFade, {
-          toValue: 1,
-          duration: 500,
-          useNativeDriver: true,
-        }),
-        Animated.timing(transitionSlide, {
-          toValue: 0,
-          duration: 500,
-          useNativeDriver: true,
-        }),
-      ]).start(() => {
-        // Wait 1.2 seconds on transition message, then move to selection
-        setTimeout(() => {
-          Animated.timing(transitionFade, {
-            toValue: 0,
-            duration: 350,
-            useNativeDriver: true,
-          }).start(() => {
-            setStage("select");
-            showSelectionUI();
-          });
-        }, 1200);
-      });
-    });
-  };
-
-  const showSelectionUI = () => {
-    Animated.parallel([
-      Animated.timing(fadeAnim, {
-        toValue: 1,
-        duration: 600,
-        useNativeDriver: true,
-      }),
-      Animated.timing(slideAnim, {
-        toValue: 0,
-        duration: 600,
-        useNativeDriver: true,
-      }),
-    ]).start();
-
-    // Stagger suggestion pills
-    Animated.stagger(
-      60,
-      suggestionsStagger.map((anim) =>
-        Animated.spring(anim, {
-          toValue: 1,
-          friction: 6,
-          tension: 100,
-          useNativeDriver: true,
-        }),
-      ),
-    ).start();
-  };
+    // Animated.Value refs are stable across renders (useRef); listing them
+    // here satisfies exhaustive-deps without changing when this runs.
+  }, [
+    demoFade,
+    demoTitleFade,
+    fadeAnim,
+    slideAnim,
+    suggestionsStagger,
+    transitionFade,
+    transitionSlide,
+  ]);
 
   useEffect(() => {
     // Show preview when habits are selected
@@ -238,7 +252,7 @@ export default function HabitsScreen() {
         }),
       ]).start();
     }
-  }, [selectedHabits, stage]);
+  }, [selectedHabits, stage, showPreview, previewFade, previewSlide]);
 
   const toggleHabit = (habitName: string) => {
     setSelectedHabits((prev) =>
@@ -440,7 +454,7 @@ export default function HabitsScreen() {
             ]}
           >
             <Text style={styles.transitionText}>You can build this too.</Text>
-            <Text style={styles.transitionSubtext}>Let's get started.</Text>
+            <Text style={styles.transitionSubtext}>Let&apos;s get started.</Text>
           </Animated.View>
         </View>
       </PaperBackground>

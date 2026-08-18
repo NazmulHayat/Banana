@@ -305,7 +305,7 @@ export default function SignupScreen() {
                 <Text style={styles.privacyBold}>
                   If you forget it, only your recovery key can restore access.
                 </Text>{" "}
-                We'll show it to you next.
+                We&apos;ll show it to you next.
               </Text>
             </View>
 

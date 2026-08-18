@@ -8,6 +8,16 @@ import {
   computeAllHabitStats,
   computeHabitStats,
   computeOverallStats,
+  completionRateForMonth,
+  monthOverMonthTrend,
+  monthlyRateSeries,
+  heatmapCells,
+  longestStreakRange,
+  daysToRecord,
+  bestDayOfWeek,
+  weekendComparison,
+  hadRecentComeback,
+  buildInsight,
 } from "../lib/stats";
 
 const TODAY = "2026-06-16";
@@ -18,6 +28,23 @@ function log(habitId: string, date: string, completed = true): HabitLog {
 
 function habit(id: string, name = id): Habit {
   return { id, name, createdAt: "2026-01-01" };
+}
+
+const p2 = (n: number): string => String(n).padStart(2, "0");
+
+// Completed logs for a habit over an inclusive day range within one month.
+function range(
+  habitId: string,
+  year: number,
+  month: number,
+  d1: number,
+  d2: number,
+): HabitLog[] {
+  const out: HabitLog[] = [];
+  for (let d = d1; d <= d2; d++) {
+    out.push(log(habitId, `${year}-${p2(month)}-${p2(d)}`));
+  }
+  return out;
 }
 
 test("empty logs -> all zeros", () => {
@@ -175,6 +202,136 @@ test("malformed/overflow dates are excluded everywhere", () => {
 
   const overall = computeOverallStats([s], logs);
   assertEq(overall.activeDays, 1);
+});
+
+// --- analytics dashboard math ---------------------------------------------
+
+test("completionRateForMonth: elapsed-day rate for current month", () => {
+  // June has 30 days; today is the 16th -> 16 elapsed days.
+  const logs = range("h1", 2026, 6, 1, 8); // 8 of 16 elapsed days
+  assertEq(completionRateForMonth(logs, 2026, 6, TODAY, "h1"), 0.5);
+});
+
+test("completionRateForMonth: full past month, future month is 0", () => {
+  const may = range("h1", 2026, 5, 1, 31); // every day of May
+  assertEq(completionRateForMonth(may, 2026, 5, TODAY, "h1"), 1);
+  // December is in the future relative to asOf -> 0
+  assertEq(completionRateForMonth(may, 2026, 12, TODAY, "h1"), 0);
+});
+
+test("monthOverMonthTrend: current vs previous month", () => {
+  const logs = range("h1", 2026, 6, 1, 16); // June fully done -> current 1.0
+  const t = monthOverMonthTrend(logs, TODAY, "h1");
+  assertEq(t.current, 1);
+  assertEq(t.previous, 0); // nothing in May
+  assertEq(t.delta, 100);
+});
+
+test("monthlyRateSeries: n points oldest->newest, ends on current month", () => {
+  const logs = range("h1", 2026, 6, 1, 16);
+  const series = monthlyRateSeries(logs, TODAY, 6, "h1");
+  assertEq(series.length, 6);
+  assertEq(series[5].label, "Jun");
+  assertEq(series[5].rate, 1);
+  assertEq(series[0].label, "Jan");
+});
+
+test("heatmapCells: per-habit length + streak-strength level + glow", () => {
+  const logs = range("h1", 2026, 6, 1, 16); // 16-day run ending today
+  const cells = heatmapCells(logs, TODAY, 30, { habitId: "h1" });
+  assertEq(cells.length, 30);
+  const last = cells[cells.length - 1];
+  assertEq(last.date, "2026-06-16");
+  assertEq(last.level, 3); // run >= 8
+  assertTrue(last.inLongest);
+});
+
+test("heatmapCells: overall level scales with habits completed that day", () => {
+  const logs = [log("h1", TODAY), log("h2", TODAY)];
+  const cells = heatmapCells(logs, TODAY, 7, { totalHabits: 2 });
+  assertEq(cells.length, 7);
+  assertEq(cells[cells.length - 1].level, 3); // 2/2 habits -> full
+});
+
+test("longestStreakRange: returns the longest run as dates", () => {
+  const logs = [
+    ...range("h2", 2026, 6, 1, 5), // run of 5
+    ...range("h2", 2026, 6, 10, 16), // run of 7 (the longest)
+  ];
+  const r = longestStreakRange(logs, "h2");
+  assertTrue(r !== null);
+  assertEq(r?.length, 7);
+  assertEq(r?.startDate, "2026-06-10");
+  assertEq(r?.endDate, "2026-06-16");
+});
+
+test("daysToRecord", () => {
+  assertEq(daysToRecord(12, 21), 9);
+  assertEq(daysToRecord(21, 21), 0); // at the record
+  assertEq(daysToRecord(0, 5), 0); // no current streak
+});
+
+test("bestDayOfWeek: picks the weekday with most completions", () => {
+  // 1st, 8th, 15th are the same weekday (7 days apart); 16th is one other.
+  const logs = [
+    log("h1", "2026-06-01"),
+    log("h1", "2026-06-08"),
+    log("h1", "2026-06-15"),
+    log("h1", "2026-06-16"),
+  ];
+  const best = bestDayOfWeek(logs, "h1");
+  assertEq(best?.count, 3);
+  assertEq(best?.dow, new Date(Date.UTC(2026, 5, 1)).getUTCDay());
+  assertEq(bestDayOfWeek([], "h1"), null);
+});
+
+test("weekendComparison: weekday-only logging -> weekendRate 0", () => {
+  // Build a 14-day window, complete only the weekdays in it.
+  const todayIdx = Math.floor(Date.parse(`${TODAY}T00:00:00Z`) / 86_400_000);
+  const logs: HabitLog[] = [];
+  for (let i = todayIdx - 13; i <= todayIdx; i++) {
+    const dow = new Date(i * 86_400_000).getUTCDay();
+    if (dow !== 0 && dow !== 6) {
+      const d = new Date(i * 86_400_000);
+      logs.push(log("h1", `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}`));
+    }
+  }
+  const c = weekendComparison(logs, TODAY, 14, "h1");
+  assertEq(c.weekdayRate, 1);
+  assertEq(c.weekendRate, 0);
+});
+
+test("hadRecentComeback: gap then fresh run is a comeback", () => {
+  const comeback = [
+    ...range("h1", 2026, 6, 1, 3), // earlier completions
+    // gap 4-13
+    ...range("h1", 2026, 6, 14, 16), // fresh run of 3 ending today
+  ];
+  assertTrue(hadRecentComeback(comeback, TODAY, "h1"));
+  // a clean continuous streak is not a comeback
+  assertEq(hadRecentComeback(range("h1", 2026, 6, 1, 16), TODAY, "h1"), false);
+});
+
+test("buildInsight: applicable lines, rotation, and fallback", () => {
+  const parts = {
+    bestDow: 2, // Tuesday
+    weekendDrop: true,
+    currentStreak: 0,
+    longestStreak: 0,
+    trendDelta: 0,
+    hadComeback: false,
+  };
+  assertEq(buildInsight(parts, 0), "You're most consistent on Tuesdays.");
+  assertTrue(buildInsight(parts, 1) !== buildInsight(parts, 0)); // rotates
+  const empty = {
+    bestDow: null,
+    weekendDrop: false,
+    currentStreak: 0,
+    longestStreak: 0,
+    trendDelta: 0,
+    hadComeback: false,
+  };
+  assertTrue(buildInsight(empty, 0).length > 0); // graceful fallback
 });
 
 (async () => {

@@ -27,7 +27,7 @@ export default function LoginScreen() {
           </View>
           <Text style={styles.title}>Aight Bet</Text>
           <Text style={styles.subtitle}>
-            Get your shit done!
+            A quiet place to keep your word.
           </Text>
 
           <View style={styles.buttonContainer}>

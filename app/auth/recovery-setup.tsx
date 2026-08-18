@@ -35,66 +35,69 @@ export default function RecoverySetupScreen() {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    void runSetup();
-  }, []);
-
-  async function runSetup() {
-    try {
-      const pending = signupTransient.consume();
-      if (!pending) {
-        setErrorMsg(
-          "Your signup session timed out. Please sign in to continue.",
-        );
-        setPhase("error");
-        return;
-      }
-
-      // Make sure we have a session (we should — signup created one or
-      // verify-OTP did)
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (!session) {
-        setErrorMsg("No active session. Please sign in.");
-        setPhase("error");
-        return;
-      }
-      const userId = session.user.id;
-
-      // Create the accounts row (username, owner = self)
-      const { error: accountErr } = await supabase.from("accounts").upsert(
-        {
-          id: userId,
-          username: pending.username,
-        },
-        { onConflict: "id" },
-      );
-      if (accountErr) {
-        if (accountErr.code === "23505") {
+    // Defined inline (rather than as a component-level function) so the
+    // effect has no external deps to track — it should only run once on
+    // mount.
+    async function runSetup() {
+      try {
+        const pending = signupTransient.consume();
+        if (!pending) {
           setErrorMsg(
-            "Someone took this username while you were signing up. Please pick another.",
+            "Your signup session timed out. Please sign in to continue.",
           );
-        } else {
-          setErrorMsg(`Could not create profile: ${accountErr.message}`);
+          setPhase("error");
+          return;
         }
-        setPhase("error");
-        return;
-      }
 
-      // Build the keyring (master key, wrap with password, wrap with recovery)
-      const { recoveryKey } = await keyring.setupNewUser(
-        userId,
-        pending.password,
-      );
-      markKeyringReady(true);
-      setRecoveryKey(recoveryKey);
-      setPhase("reveal");
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setErrorMsg(msg);
-      setPhase("error");
+        // Make sure we have a session (we should — signup created one or
+        // verify-OTP did)
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        if (!session) {
+          setErrorMsg("No active session. Please sign in.");
+          setPhase("error");
+          return;
+        }
+        const userId = session.user.id;
+
+        // Create the accounts row (username, owner = self)
+        const { error: accountErr } = await supabase.from("accounts").upsert(
+          {
+            id: userId,
+            username: pending.username,
+          },
+          { onConflict: "id" },
+        );
+        if (accountErr) {
+          if (accountErr.code === "23505") {
+            setErrorMsg(
+              "Someone took this username while you were signing up. Please pick another.",
+            );
+          } else {
+            setErrorMsg(`Could not create profile: ${accountErr.message}`);
+          }
+          setPhase("error");
+          return;
+        }
+
+        // Build the keyring (master key, wrap with password, wrap with recovery)
+        const { recoveryKey } = await keyring.setupNewUser(
+          userId,
+          pending.password,
+        );
+        markKeyringReady(true);
+        setRecoveryKey(recoveryKey);
+        setPhase("reveal");
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setErrorMsg(msg);
+        setPhase("error");
+      }
     }
-  }
+
+    void runSetup();
+  }, [markKeyringReady]);
 
   async function handleCopy() {
     await Clipboard.setStringAsync(recoveryKey);
@@ -136,7 +139,7 @@ export default function RecoverySetupScreen() {
             size={48}
             color={Colors.ink}
           />
-          <Text style={styles.errorTitle}>Setup couldn't complete</Text>
+          <Text style={styles.errorTitle}>Setup couldn&apos;t complete</Text>
           <Text style={styles.errorMsg}>{errorMsg}</Text>
           <TouchableOpacity
             style={styles.primaryButton}
@@ -167,7 +170,7 @@ export default function RecoverySetupScreen() {
         <Text style={styles.title}>Save your recovery key</Text>
         <Text style={styles.subtitle}>
           This is the ONLY way to recover your encrypted data if you forget
-          your password. We can't show it to you again on this screen.
+          your password. We can&apos;t show it to you again on this screen.
         </Text>
 
         <View style={styles.keyBox}>
@@ -209,7 +212,7 @@ export default function RecoverySetupScreen() {
             )}
           </View>
           <Text style={styles.checkboxLabel}>
-            I've saved my recovery key in a safe place
+            I&apos;ve saved my recovery key in a safe place
           </Text>
         </TouchableOpacity>
 

@@ -1,24 +1,15 @@
 import { HapticTab } from "@/components/haptic-tab";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { Colors, Fonts } from "@/constants/theme";
-import { useAuth } from "@/lib/auth-context";
-import { DataProvider } from "@/lib/data-store";
 import { BlurView } from "expo-blur";
 import { Tabs } from "expo-router";
 import { StyleSheet, View } from "react-native";
 
 export default function TabLayout() {
-  const { session } = useAuth();
-
-  // DataProvider handles all priority-based prefetching:
-  // P1: Habits (blocking for minimal UI)
-  // P2: Habit logs (progressive, non-blocking)
-  // P3: Entries + Profile (parallel with P2)
-  // P4: Adjacent months (background, lowest priority)
-
+  // DataProvider lives at the root layout so pushed pages (analysis, habits,
+  // security) share the same store. Its priority prefetching is unchanged.
   return (
-    <DataProvider session={session}>
-      <Tabs
+    <Tabs
         screenOptions={{
           tabBarActiveTintColor: Colors.ink,
           tabBarInactiveTintColor: Colors.textSecondary,
@@ -83,8 +74,7 @@ export default function TabLayout() {
             ),
           }}
         />
-      </Tabs>
-    </DataProvider>
+    </Tabs>
   );
 }
 

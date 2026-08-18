@@ -76,7 +76,18 @@ export default function WelcomeScreen() {
         }),
       ]),
     ]).start();
-  }, []);
+    // Animated.Value refs are stable across renders (useRef); listing them
+    // here satisfies exhaustive-deps without changing when this runs.
+  }, [
+    buttonFade,
+    buttonSlide,
+    checkmarkScale,
+    fadeAnim,
+    lineWidth,
+    secondTextFade,
+    secondTextSlide,
+    slideAnim,
+  ]);
 
   const handleContinue = () => {
     router.push('/onboarding/habits' as Href);
@@ -107,7 +118,7 @@ export default function WelcomeScreen() {
             },
           ]}
         >
-          <Text style={styles.headline}>You've already taken</Text>
+          <Text style={styles.headline}>You&apos;ve already taken</Text>
           <Text style={styles.headline}>your first step.</Text>
         </Animated.View>
 
@@ -138,7 +149,7 @@ export default function WelcomeScreen() {
             Every journey starts with a single decision.
           </Text>
           <Text style={styles.secondary}>
-            Let's build something meaningful together.
+            Let&apos;s build something meaningful together.
           </Text>
         </Animated.View>
 
@@ -154,7 +165,7 @@ export default function WelcomeScreen() {
         >
           <Animated.View style={styles.button}>
             <Text style={styles.buttonText} onPress={handleContinue}>
-              Let's begin
+              Let&apos;s begin
             </Text>
           </Animated.View>
         </Animated.View>

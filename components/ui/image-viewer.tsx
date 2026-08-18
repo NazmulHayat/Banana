@@ -64,7 +64,20 @@ export function ImageViewer({ uri, visible, onClose }: ImageViewerProps) {
       savedTranslateY.value = 0;
       setNaturalDim(null);
     }
-  }, [visible, uri, screenWidth, screenHeight]);
+    // useSharedValue refs are stable across renders; listing them here
+    // satisfies exhaustive-deps without changing when this runs.
+  }, [
+    visible,
+    uri,
+    screenWidth,
+    screenHeight,
+    scale,
+    savedScale,
+    translateX,
+    translateY,
+    savedTranslateX,
+    savedTranslateY,
+  ]);
 
   const pinch = Gesture.Pinch()
     .onUpdate((e) => {
