@@ -3,9 +3,11 @@ import { PaperBackground } from "@/components/ui/paper-background";
 import { Colors, Fonts, Scrim } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { keyring } from "@/lib/crypto";
+import { useDataStore } from "@/lib/data-store";
+import { useOnboarding } from "@/lib/onboarding-context";
 import { supabase } from "@/lib/supabase";
-import { router } from "expo-router";
-import { useState } from "react";
+import { Href, router } from "expo-router";
+import { useEffect, useRef, useState } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
@@ -21,7 +23,14 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 export default function SigninScreen() {
   const insets = useSafeAreaInsets();
-  const { markKeyringReady } = useAuth();
+  const { markKeyringReady, session } = useAuth();
+  const dataStore = useDataStore();
+  const {
+    completeOnboarding,
+    hasCompletedOnboardingFor,
+    holdForAccountCheck,
+    releaseAccountCheck,
+  } = useOnboarding();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -32,6 +41,76 @@ export default function SigninScreen() {
   const [previousPassword, setPreviousPassword] = useState("");
   const [repairing, setRepairing] = useState(false);
   const [repairError, setRepairError] = useState<string | null>(null);
+  // Signed in and unlocked; waiting on the "does this account already have
+  // data?" check below before we route anywhere.
+  const [pendingUserId, setPendingUserId] = useState<string | null>(null);
+  // The check runs once per sign-in, whatever the effect's deps do.
+  const checkStartedRef = useRef<string | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      // Never leave the routing gate held by a screen that's gone.
+      releaseAccountCheck();
+    };
+  }, [releaseAccountCheck]);
+
+  // An account that already has habits or entries has been through onboarding
+  // before — just not on this device. Sending it back through "pick your
+  // habits" and "write your first entry" asks for things it already has and
+  // creates a SECOND entry for today, so mark onboarding done and go straight
+  // in. The routing gate stays held until this lands, so nothing bounces the
+  // user to the welcome screen while we're still asking.
+  useEffect(() => {
+    const userId = pendingUserId;
+    if (!userId) return;
+    // The store reads for the session it was rendered with, so wait for the
+    // new session to reach it before asking.
+    if (session?.user.id !== userId) return;
+    if (checkStartedRef.current === userId) return;
+    checkStartedRef.current = userId;
+
+    void (async () => {
+      let hasContent = false;
+      try {
+        const habits = await dataStore.refreshHabits();
+        hasContent = habits.length > 0;
+        if (!hasContent) {
+          const now = new Date();
+          const entries = await dataStore.refreshEntries(
+            now.getFullYear(),
+            now.getMonth() + 1,
+          );
+          hasContent = entries.length > 0;
+        }
+      } catch (e) {
+        // Offline or unreadable: treat as a new account. Onboarding is
+        // skippable, so the cost is a few taps, never data.
+        if (__DEV__) console.warn("[signin] account check failed:", e);
+      }
+
+      if (hasContent) await completeOnboarding(userId);
+      const done = hasContent || (await hasCompletedOnboardingFor(userId));
+
+      if (!mountedRef.current) return;
+      setPendingUserId(null);
+      releaseAccountCheck();
+      router.replace(done ? "/(tabs)" : ("/onboarding/welcome" as Href));
+    })();
+  }, [
+    pendingUserId,
+    session,
+    dataStore,
+    completeOnboarding,
+    hasCompletedOnboardingFor,
+    releaseAccountCheck,
+  ]);
+
+  // Signing in, or checking the account right after — either way the form is
+  // working and must not accept a second tap.
+  const busy = loading || pendingUserId !== null;
 
   const validateEmail = (e: string): boolean =>
     /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
@@ -117,7 +196,12 @@ export default function SigninScreen() {
         return;
       }
 
-      router.replace("/(tabs)");
+      // Routing happens in the effect above, once we know whether this account
+      // is new to the app or only new to this phone. If that never resolves,
+      // the hold expires by itself and the usual routing gate takes over —
+      // nothing here can strand the user on this screen.
+      holdForAccountCheck();
+      setPendingUserId(data.session.user.id);
     } catch (e) {
       if (__DEV__) console.warn("[signin] unexpected error:", e);
       Alert.alert(
@@ -159,8 +243,19 @@ export default function SigninScreen() {
     markKeyringReady(true);
     setRepairing(false);
     setPreviousPassword("");
+    const repaired = repairUserId;
     setRepairUserId(null);
-    router.replace("/(tabs)");
+    // Same handover as a plain sign-in: check for existing data before the
+    // router can decide this account needs onboarding.
+    holdForAccountCheck();
+    setPendingUserId(repaired);
+  };
+
+  // This screen can be the first thing in the stack (deep link, or a replace
+  // from signup), so "Back" needs somewhere to land when there's no history.
+  const goBack = () => {
+    if (router.canGoBack()) router.back();
+    else router.replace("/auth/login");
   };
 
   const handleAbandonRepair = async () => {
@@ -182,8 +277,10 @@ export default function SigninScreen() {
         >
           <TouchableOpacity
             style={styles.backButton}
-            onPress={() => router.back()}
-            activeOpacity={0.7}
+            onPress={goBack}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Back"
           >
             <IconSymbol name="chevron.left" size={24} color={Colors.ink} />
             <Text style={styles.backText}>Back</Text>
@@ -240,13 +337,20 @@ export default function SigninScreen() {
             </View>
 
             <TouchableOpacity
-              style={[styles.button, loading && styles.buttonDisabled]}
+              style={[styles.button, busy && styles.buttonDisabled]}
               onPress={handleSignin}
-              disabled={loading}
-              activeOpacity={0.7}
+              disabled={busy}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel="Sign in"
+              accessibilityState={{ disabled: busy }}
             >
               <Text style={styles.buttonText}>
-                {loading ? "Signing in..." : "Sign In"}
+                {pendingUserId
+                  ? "Opening your journal..."
+                  : loading
+                    ? "Signing in..."
+                    : "Sign In"}
               </Text>
             </TouchableOpacity>
 
@@ -285,7 +389,12 @@ export default function SigninScreen() {
                   ]}
                   onPress={handleRepair}
                   disabled={repairing || !previousPassword}
-                  activeOpacity={0.7}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel="Unlock my journal"
+                  accessibilityState={{
+                    disabled: repairing || !previousPassword,
+                  }}
                 >
                   <Text style={styles.buttonText}>
                     {repairing ? "Unlocking..." : "Unlock my journal"}
@@ -295,8 +404,12 @@ export default function SigninScreen() {
                   style={styles.forgotButton}
                   onPress={() => router.push("/auth/recover-with-key")}
                   disabled={repairing}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel="Use my recovery key instead"
+                  accessibilityState={{ disabled: repairing }}
                 >
-                  <Text style={styles.forgotText}>
+                  <Text style={[styles.forgotText, repairing && styles.dim]}>
                     Use my recovery key instead
                   </Text>
                 </TouchableOpacity>
@@ -304,8 +417,14 @@ export default function SigninScreen() {
                   style={styles.forgotButton}
                   onPress={handleAbandonRepair}
                   disabled={repairing}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel"
+                  accessibilityState={{ disabled: repairing }}
                 >
-                  <Text style={styles.repairCancel}>Cancel</Text>
+                  <Text style={[styles.repairCancel, repairing && styles.dim]}>
+                    Cancel
+                  </Text>
                 </TouchableOpacity>
               </View>
             ) : null}
@@ -313,6 +432,9 @@ export default function SigninScreen() {
             <TouchableOpacity
               style={styles.forgotButton}
               onPress={() => router.push("/auth/forgot-password")}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel="Forgot password"
             >
               <Text style={styles.forgotText}>Forgot password?</Text>
             </TouchableOpacity>
@@ -320,7 +442,12 @@ export default function SigninScreen() {
 
           <View style={styles.signupContainer}>
             <Text style={styles.signupText}>Don&apos;t have an account? </Text>
-            <TouchableOpacity onPress={() => router.replace("/auth/signup")}>
+            <TouchableOpacity
+              onPress={() => router.replace("/auth/signup")}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel="Create account"
+            >
               <Text style={styles.signupLink}>Create Account</Text>
             </TouchableOpacity>
           </View>
@@ -404,6 +531,8 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   buttonDisabled: { opacity: 0.6 },
+  /** Disabled text links — dead-looking only when they really are dead. */
+  dim: { opacity: 0.4 },
   buttonText: {
     fontSize: 16,
     fontWeight: "600",

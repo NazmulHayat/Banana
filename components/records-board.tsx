@@ -5,6 +5,12 @@ import { StyleSheet, Text, View } from "react-native";
 interface RecordsBoardProps {
   /** Rows from `lib/gamification.computeRecords`. */
   records: PersonalRecord[];
+  /**
+   * What to say when there is nothing to board yet. The caller normally hides
+   * the whole section instead (progressive disclosure), but a board with no
+   * rows must still say something — never a blank frame.
+   */
+  emptyLabel?: string;
 }
 
 const TITLES: Record<RecordKey, string> = {
@@ -29,8 +35,18 @@ function format(value: number, unit: RecordUnit): string {
  * showing where you are against your own best. A record can be beaten or
  * tied; it is never lost, so there is no losing state in this component —
  * only "at your best" and "N to tie".
+ *
+ * Three states like everything else: empty (a calm line), and loaded. There is
+ * no loading state — the caller owns the skeleton, because it owns the fetch.
  */
-export function RecordsBoard({ records }: RecordsBoardProps) {
+export function RecordsBoard({
+  records,
+  emptyLabel = "No records yet — the first day you log sets all of them.",
+}: RecordsBoardProps) {
+  if (records.length === 0) {
+    return <Text style={styles.empty}>{emptyLabel}</Text>;
+  }
+
   return (
     <View>
       {records.map((r) => {
@@ -102,5 +118,11 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
     marginTop: 8,
+  },
+  empty: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    lineHeight: 21,
   },
 });

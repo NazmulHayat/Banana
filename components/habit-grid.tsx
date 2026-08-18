@@ -15,12 +15,21 @@ import Animated, {
 } from 'react-native-reanimated';
 import { HabitCell } from './ui/habit-cell';
 import { IconSymbol } from './ui/icon-symbol';
+import { Skeleton } from './ui/skeleton';
 
 // Column geometry — kept in sync with the styles below. One column is the
 // cell plus its 2pt right margin.
 export const CELL_GAP = 2;
 /** Every cell is 60pt tall so the habit rows line up with the DAY column. */
 export const CELL_HEIGHT = 60;
+/**
+ * Vertical distance from one day row to the next (cell + its 2pt gap). The
+ * screen uses this to scroll today's row into view without re-deriving the
+ * grid's geometry.
+ */
+export const ROW_PITCH = CELL_HEIGHT + CELL_GAP;
+/** Height of the header row above the day rows (the DAY / habit-name band). */
+export const HEADER_ROW_HEIGHT = CELL_HEIGHT;
 /** A fixed column (60pt cell + 2pt gap) — the 4-or-more-habits layout. */
 export const HABIT_COLUMN_WIDTH = 62;
 /** The pinned DAY column on the left, same width as a fixed habit column. */
@@ -50,6 +59,16 @@ interface HabitGridProps {
   logs: HabitLog[];
   currentMonth: number;
   currentYear: number;
+  /**
+   * Habits haven't resolved yet (cold start, empty memory cache). Renders the
+   * skeleton grid — NEVER the empty state, which read as "you have no habits"
+   * to users who have plenty (bug T2).
+   */
+  loading?: boolean;
+  /** The load failed. Renders a calm retry card instead of a false empty. */
+  error?: boolean;
+  /** Retry handler for the error card. Required for the retry to show. */
+  onRetry?: () => void;
   onToggle: (habitId: string, date: string) => void;
   onEdit: () => void;
   /** Persist a reordered habit list (optimistic update + save lives in the screen). */
@@ -60,7 +79,7 @@ interface HabitGridProps {
   stickyHeaderScrollRef?: React.RefObject<ScrollView | null>;
 }
 
-export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, onEdit, onReorder, onHeaderLayout, headerRef, onHorizontalScroll, stickyHeaderScrollRef }: HabitGridProps) {
+export function HabitGrid({ habits, logs, currentMonth, currentYear, loading, error, onRetry, onToggle, onEdit, onReorder, onHeaderLayout, headerRef, onHorizontalScroll, stickyHeaderScrollRef }: HabitGridProps) {
   const daysInMonth = daysInMonthOf(currentYear, currentMonth);
   const today = new Date();
   const isCurrentMonth = today.getMonth() + 1 === currentMonth && today.getFullYear() === currentYear;
@@ -146,6 +165,43 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, o
 
   const totalHabitsWidth = habits.length * columnWidth;
 
+  // Three states before the grid, in priority order. An existing user on a
+  // cold start must never see "Start tracking" flash before their habits
+  // arrive — that false empty was the worst frame in the app (bug T2).
+  if (habits.length === 0 && (loading || error)) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <Text style={styles.title} accessibilityRole="header">
+            HABITS
+          </Text>
+        </View>
+        {error ? (
+          <View style={styles.emptyCard} accessibilityLiveRegion="polite">
+            <Text style={styles.emptyTitle}>Couldn&apos;t load your habits</Text>
+            <Text style={styles.emptyHint}>
+              You&apos;re offline or the connection dropped. Nothing is lost —
+              try again in a moment.
+            </Text>
+            {onRetry && (
+              <TouchableOpacity
+                style={styles.emptyCta}
+                onPress={onRetry}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityLabel="Try loading habits again"
+              >
+                <Text style={styles.emptyCtaText}>Try again</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        ) : (
+          <GridSkeleton />
+        )}
+      </View>
+    );
+  }
+
   if (habits.length === 0) {
     return (
       <View style={styles.container}>
@@ -182,6 +238,8 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, o
           <TouchableOpacity
             onPress={() => setReordering(false)}
             activeOpacity={0.7}
+            // Bare text in a row: hitSlop is what brings it to the 44pt floor.
+            hitSlop={{ top: 12, bottom: 12, left: 16, right: 16 }}
             accessibilityRole="button"
             accessibilityLabel="Done reordering"
           >
@@ -191,6 +249,7 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, o
           <TouchableOpacity
             onPress={onEdit}
             activeOpacity={0.7}
+            hitSlop={{ top: 12, bottom: 12, left: 16, right: 16 }}
             accessibilityRole="button"
             accessibilityLabel="Edit habits"
           >
@@ -198,8 +257,15 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, o
           </TouchableOpacity>
         )}
       </View>
-      {reordering && (
+      {reordering ? (
         <Text style={styles.reorderHint}>Drag a habit to reorder · tap Done when finished</Text>
+      ) : (
+        // Reorder used to be reachable only by guessing that a habit name
+        // takes a long-press. One quiet line, only when reordering is
+        // actually possible.
+        canReorder && (
+          <Text style={styles.reorderHint}>Hold a habit name to reorder</Text>
+        )
       )}
       <View style={styles.gridWrapper}>
         {/* Header row container */}
@@ -315,6 +381,59 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, onToggle, o
           </ScrollView>
         </View>
       </View>
+    </View>
+  );
+}
+
+/** How many day rows the loading grid draws before it fades out at the bottom. */
+const SKELETON_ROWS = 6;
+/** Placeholder columns — matches the adaptive layout's most common width. */
+const SKELETON_COLUMNS = 3;
+
+/**
+ * The grid's loading state: the same DAY column + columns geometry, drawn as
+ * placeholders. It reads as "your habits are coming", where the empty state
+ * read as "you have none".
+ */
+function GridSkeleton() {
+  return (
+    <View
+      accessible
+      accessibilityLabel="Loading your habits"
+      accessibilityRole="progressbar"
+    >
+      <View style={styles.skeletonRow}>
+        <Skeleton
+          width={DAY_COLUMN_WIDTH - CELL_GAP}
+          height={CELL_HEIGHT}
+          borderRadius={4}
+        />
+        {Array.from({ length: SKELETON_COLUMNS }, (_, i) => (
+          <Skeleton
+            key={`head-${i}`}
+            width={HABIT_COLUMN_WIDTH - CELL_GAP}
+            height={CELL_HEIGHT}
+            borderRadius={4}
+          />
+        ))}
+      </View>
+      {Array.from({ length: SKELETON_ROWS }, (_, row) => (
+        <View key={row} style={styles.skeletonRow}>
+          <Skeleton
+            width={DAY_COLUMN_WIDTH - CELL_GAP}
+            height={CELL_HEIGHT}
+            borderRadius={4}
+          />
+          {Array.from({ length: SKELETON_COLUMNS }, (_, i) => (
+            <Skeleton
+              key={`${row}-${i}`}
+              width={HABIT_COLUMN_WIDTH - CELL_GAP}
+              height={CELL_HEIGHT}
+              borderRadius={4}
+            />
+          ))}
+        </View>
+      ))}
     </View>
   );
 }
@@ -522,6 +641,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: Colors.accent,
     fontFamily: Fonts.handwritingSemiBold,
+  },
+  skeletonRow: {
+    flexDirection: 'row',
+    gap: CELL_GAP,
+    marginBottom: CELL_GAP,
   },
   reorderHint: {
     fontSize: 12,

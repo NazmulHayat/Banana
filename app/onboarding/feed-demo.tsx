@@ -1,6 +1,8 @@
-// Onboarding step 3 of 3 — the first highlight. (Route name kept as
-// `feed-demo` so existing links and the generated route types stay valid; it
-// is no longer a demo.)
+// Onboarding step 3 of 3 — "One line about today".
+//
+// The file name is a leftover: renaming the route means regenerating the typed
+// route table, so the rename is queued rather than done here. Nothing on this
+// screen is a demo — the entry the user writes is their real first entry.
 //
 // The old version auto-advanced through the composer on a 600ms setTimeout and
 // sat on an Animated.delay(1000) before showing the feed, none of it cleared on
@@ -42,6 +44,7 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { OnboardingProgress } from "./_layout";
 
 const MAX_HIGHLIGHT_LENGTH = 500;
 
@@ -178,18 +181,19 @@ export default function FirstHighlightScreen() {
           </View>
 
           <View>
+            {/* "Start tracking" used to land on the Feed — saving your first
+                entry sent you away from the thing you'd just been set up to
+                do. Both ways out of this step now end on the tracker. */}
             <PressableScale
               style={styles.primaryButton}
-              onPress={() => finish("/(tabs)/feed" as Href)}
+              onPress={() => finish("/(tabs)" as Href)}
+              accessibilityRole="button"
+              accessibilityLabel="Start tracking"
             >
               <Text style={styles.primaryButtonText}>Start tracking</Text>
             </PressableScale>
 
-            <View style={styles.progressContainer}>
-              <View style={styles.progressDot} />
-              <View style={styles.progressDot} />
-              <View style={[styles.progressDot, styles.progressDotActive]} />
-            </View>
+            <OnboardingProgress step={3} />
           </View>
         </View>
       </PaperBackground>
@@ -260,6 +264,9 @@ export default function FirstHighlightScreen() {
               ]}
               disabled={!text.trim() || saving}
               onPress={handleSave}
+              accessibilityRole="button"
+              accessibilityLabel="Save my first entry"
+              accessibilityState={{ disabled: !text.trim() || saving }}
             >
               <Text style={styles.primaryButtonText}>
                 {saving ? "Saving…" : "Save my first entry"}
@@ -271,17 +278,16 @@ export default function FirstHighlightScreen() {
               onPress={() => finish("/(tabs)" as Href)}
               disabled={saving}
               activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel="Skip writing an entry for now"
+              accessibilityState={{ disabled: saving }}
             >
               <Text style={[styles.skipText, saving && styles.disabled]}>
                 Skip for now
               </Text>
             </TouchableOpacity>
 
-            <View style={styles.progressContainer}>
-              <View style={styles.progressDot} />
-              <View style={styles.progressDot} />
-              <View style={[styles.progressDot, styles.progressDotActive]} />
-            </View>
+            <OnboardingProgress step={3} />
           </Animated.View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -391,17 +397,4 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwriting,
     lineHeight: 28,
   },
-  progressContainer: {
-    flexDirection: "row",
-    justifyContent: "center",
-    gap: 8,
-    paddingTop: 12,
-  },
-  progressDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: Colors.shadow,
-  },
-  progressDotActive: { backgroundColor: Colors.ink, width: 24 },
 });

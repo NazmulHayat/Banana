@@ -1,7 +1,11 @@
-// Restore access to encrypted data using the recovery key.
-// Prereq: the user must have an active Supabase session (i.e. they reset
-// their Supabase password via email and signed in fresh, but the keyring
-// won't unlock with that new password).
+// Restore access to encrypted data using the recovery key: unlock the master
+// key with the recovery key, then set a new sign-in password and re-wrap.
+//
+// Prereq: an active session. Two ways to have one — signed in but with a
+// journal that won't open (the sign-in screen sends people here), or arriving
+// from a password-reset email via `reset-password`, which establishes the
+// session and hands over. Without one, the screen now offers both routes to
+// getting a session instead of dead-ending.
 
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
@@ -9,6 +13,7 @@ import { Colors, Fonts } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { keyring, normalizeRecoveryKey } from "@/lib/crypto";
 import { supabase } from "@/lib/supabase";
+import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 import { useEffect, useState } from "react";
 import {
@@ -144,6 +149,8 @@ export default function RecoverWithKeyScreen() {
         return;
       }
 
+      // The one confirmation that matters here: the password really changed.
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       Alert.alert(
         "All set",
         "Your data is unlocked and your new password is saved.",
@@ -179,18 +186,31 @@ export default function RecoverWithKeyScreen() {
             size={48}
             color={Colors.ink}
           />
-          <Text style={styles.errorTitle}>Sign in first</Text>
+          <Text style={styles.errorTitle}>Let&apos;s get you in first</Text>
           <Text style={styles.errorMsg}>
-            To use your recovery key, you need to be signed in. Use &quot;Reset by
-            email&quot; to get a new password, sign in, then return here.
+            Your recovery key unlocks your journal, but we need to know which
+            account it belongs to. Sign in — or, if you&apos;ve forgotten your
+            password, email yourself a reset link and open it on this phone.
+            You&apos;ll come straight back here.
           </Text>
           <TouchableOpacity
             style={styles.primaryButton}
-            onPress={() => router.replace("/auth/forgot-password")}
-            activeOpacity={0.7}
+            onPress={() => router.replace("/auth/signin")}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Go to sign in"
           >
-            <Text style={styles.primaryButtonText}>
-              Back to Recovery Options
+            <Text style={styles.primaryButtonText}>Go to sign in</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.secondaryButton}
+            onPress={() => router.replace("/auth/forgot-password")}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Email me a reset link"
+          >
+            <Text style={styles.secondaryButtonText}>
+              Email me a reset link
             </Text>
           </TouchableOpacity>
         </View>
@@ -213,8 +233,15 @@ export default function RecoverWithKeyScreen() {
         >
           <TouchableOpacity
             style={styles.backButton}
-            onPress={() => router.back()}
-            activeOpacity={0.7}
+            onPress={() => {
+              // Arriving from a reset link puts this screen at the root of the
+              // stack — "Back" must still land somewhere.
+              if (router.canGoBack()) router.back();
+              else router.replace("/auth/signin");
+            }}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Back"
           >
             <IconSymbol name="chevron.left" size={24} color={Colors.ink} />
             <Text style={styles.backText}>Back</Text>
@@ -265,7 +292,10 @@ export default function RecoverWithKeyScreen() {
             style={[styles.primaryButton, loading && styles.buttonDisabled]}
             onPress={handleRecover}
             disabled={loading}
-            activeOpacity={0.7}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Restore access"
+            accessibilityState={{ disabled: loading }}
           >
             <Text style={styles.primaryButtonText}>
               {loading ? "Restoring..." : "Restore Access"}
@@ -369,6 +399,18 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "600",
     color: Colors.paper,
+    fontFamily: Fonts.handwriting,
+  },
+  secondaryButton: {
+    width: "100%",
+    height: 48,
+    justifyContent: "center",
+    alignItems: "center",
+    marginTop: 4,
+  },
+  secondaryButtonText: {
+    fontSize: 15,
+    color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
   },
 });

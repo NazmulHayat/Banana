@@ -5,12 +5,13 @@ import { PaperBackground } from "@/components/ui/paper-background";
 import { PaperCard } from "@/components/ui/paper-card";
 import { PressableScale } from "@/components/ui/pressable-scale";
 import { ScreenHeader } from "@/components/ui/screen-header";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { useDataStore } from "@/lib/data-store";
 import type { Habit } from "@/lib/db";
+import * as Haptics from "expo-haptics";
 import { useState } from "react";
 import {
-  Alert,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -37,21 +38,26 @@ export default function HabitsScreen() {
   const [habitName, setHabitName] = useState("");
   const [pendingDelete, setPendingDelete] = useState<Habit | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // Failures speak inline, in the app's own voice — never a native Alert.
+  // `formError` lives in the sheet, `listError` on the list behind it.
+  const [formError, setFormError] = useState<string | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
 
   const openModal = (habit?: Habit) => {
     setEditingHabit(habit ?? null);
     setHabitName(habit?.name ?? "");
+    setFormError(null);
     setShowHabitModal(true);
   };
 
   const handleSaveHabit = async () => {
     const name = habitName.trim();
     if (!name) {
-      Alert.alert("Required", "Please enter a habit name.");
+      setFormError("Give it a name first.");
       return;
     }
     if (name.length > 20) {
-      Alert.alert("Too long", "Habit name must be 20 characters or less.");
+      setFormError("Twenty characters or fewer, please.");
       return;
     }
     let updated: Habit[];
@@ -68,11 +74,15 @@ export default function HabitsScreen() {
     setShowHabitModal(false);
     setEditingHabit(null);
     setHabitName("");
+    setFormError(null);
+    setListError(null);
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     // The store never throws — `queued` is durable and replays on reconnect,
     // so only `failed` puts the old list back.
     const outcome = await dataStore.saveHabits(updated);
     if (outcome.status === "failed") {
-      Alert.alert("Save failed", outcome.reason);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setListError(outcome.reason);
       await dataStore.refreshHabits();
     }
   };
@@ -83,6 +93,7 @@ export default function HabitsScreen() {
     // Close the edit sheet first — two stacked native modals fight over the
     // presentation on iOS.
     setShowHabitModal(false);
+    setListError(null);
     setPendingDelete(habit);
   };
 
@@ -95,7 +106,8 @@ export default function HabitsScreen() {
     try {
       const outcome = await dataStore.saveHabits(updated);
       if (outcome.status === "failed") {
-        Alert.alert("Delete failed", outcome.reason);
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        setListError(outcome.reason);
         await dataStore.refreshHabits();
       }
     } finally {
@@ -111,7 +123,21 @@ export default function HabitsScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: insets.bottom + 40 }}
       >
-        {habits.length > 0 ? (
+        {listError ? (
+          <Text style={styles.listError}>{listError}</Text>
+        ) : null}
+
+        {!dataStore.habitsReady && habits.length === 0 ? (
+          <View
+            style={styles.list}
+            accessibilityLabel="Loading your habits"
+          >
+            <Text style={styles.intro}>Fetching your habits…</Text>
+            <Skeleton width="100%" height={62} borderRadius={18} />
+            <Skeleton width="100%" height={62} borderRadius={18} />
+            <Skeleton width="100%" height={62} borderRadius={18} />
+          </View>
+        ) : habits.length > 0 ? (
           <>
             <Text style={styles.intro}>
               Tap a habit to rename it — or remove what you&apos;ve outgrown.
@@ -178,7 +204,13 @@ export default function HabitsScreen() {
           behavior={Platform.OS === "ios" ? "padding" : "height"}
         >
           <View style={styles.modalHeader}>
-            <TouchableOpacity onPress={() => setShowHabitModal(false)} hitSlop={8}>
+            <TouchableOpacity
+              onPress={() => setShowHabitModal(false)}
+              activeOpacity={0.85}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel"
+            >
               <Text style={styles.modalCancel}>Cancel</Text>
             </TouchableOpacity>
             <Text style={styles.modalTitle} accessibilityRole="header">{editingHabit ? "Edit habit" : "New habit"}</Text>
@@ -199,8 +231,13 @@ export default function HabitsScreen() {
               onSubmitEditing={handleSaveHabit}
             />
             <Text style={styles.charCount}>{habitName.length}/20</Text>
+            {formError ? <Text style={styles.formError}>{formError}</Text> : null}
 
-            <PressableScale style={styles.saveButton} onPress={handleSaveHabit}>
+            <PressableScale
+              style={styles.saveButton}
+              onPress={handleSaveHabit}
+              accessibilityLabel={editingHabit ? "Save changes" : "Add habit"}
+            >
               <Text style={styles.saveButtonText}>
                 {editingHabit ? "Save changes" : "Add habit"}
               </Text>
@@ -210,7 +247,9 @@ export default function HabitsScreen() {
               <TouchableOpacity
                 style={styles.deleteButton}
                 onPress={() => handleDeleteHabit(editingHabit)}
-                activeOpacity={0.7}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityLabel={`Delete habit ${editingHabit.name}`}
               >
                 <IconSymbol name="trash" size={16} color={Colors.danger} />
                 <Text style={styles.deleteButtonText}>Delete habit</Text>
@@ -247,6 +286,20 @@ const styles = StyleSheet.create({
     marginBottom: 18,
   },
   list: { gap: 12 },
+  listError: {
+    fontSize: 13,
+    color: Colors.danger,
+    fontFamily: Fonts.handwriting,
+    lineHeight: 19,
+    marginTop: 10,
+  },
+  formError: {
+    fontSize: 13,
+    color: Colors.danger,
+    fontFamily: Fonts.handwriting,
+    lineHeight: 19,
+    marginTop: 10,
+  },
   habitRow: {
     flexDirection: "row",
     alignItems: "center",

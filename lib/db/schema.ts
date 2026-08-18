@@ -1,78 +1,5 @@
 import { monthKeyOf, monthKeyOfParts, toDayKey } from "../dates";
 
-export const Tables = {
-  ACCOUNTS: "accounts",
-  PROFILES: "profiles",
-  ENTRIES: "entries",
-  ENTRY_MEDIA: "entry_media",
-  HABITS: "habits",
-  HABIT_LOGS: "habit_logs",
-} as const;
-
-export const AccountColumns = {
-  ID: "id",
-  USERNAME: "username",
-  EMAIL: "email",
-  CREATED_AT: "created_at",
-  UPDATED_AT: "updated_at",
-} as const;
-
-export const ProfileColumns = {
-  ID: "id",
-  WRAPPED_MASTER_KEY: "wrapped_master_key",
-  WRAPPED_MASTER_KEY_NONCE: "wrapped_master_key_nonce",
-  KDF_SALT: "kdf_salt",
-  KDF_PARAMS: "kdf_params",
-  CREATED_AT: "created_at",
-  UPDATED_AT: "updated_at",
-} as const;
-
-export const EntryColumns = {
-  ID: "id",
-  OWNER_ID: "owner_id",
-  DAY_BUCKET: "day_bucket",
-  MONTH_BUCKET: "month_bucket",
-  CIPHERTEXT: "ciphertext",
-  NONCE: "nonce",
-  VERSION: "version",
-  CREATED_AT: "created_at",
-  UPDATED_AT: "updated_at",
-} as const;
-
-export const EntryMediaColumns = {
-  ID: "id",
-  ENTRY_ID: "entry_id",
-  OWNER_ID: "owner_id",
-  OBJECT_PATH: "object_path",
-  CIPHERTEXT_META: "ciphertext_meta",
-  NONCE: "nonce",
-  VERSION: "version",
-  CREATED_AT: "created_at",
-  UPDATED_AT: "updated_at",
-} as const;
-
-export const HabitColumns = {
-  ID: "id",
-  OWNER_ID: "owner_id",
-  CIPHERTEXT: "ciphertext",
-  NONCE: "nonce",
-  VERSION: "version",
-  CREATED_AT: "created_at",
-  UPDATED_AT: "updated_at",
-} as const;
-
-export const HabitLogColumns = {
-  ID: "id",
-  OWNER_ID: "owner_id",
-  DAY_BUCKET: "day_bucket",
-  MONTH_BUCKET: "month_bucket",
-  CIPHERTEXT: "ciphertext",
-  NONCE: "nonce",
-  VERSION: "version",
-  CREATED_AT: "created_at",
-  UPDATED_AT: "updated_at",
-} as const;
-
 export const UsernameRules = {
   MIN_LENGTH: 3,
   MAX_LENGTH: 20,
@@ -120,5 +47,3 @@ export const DateFormats = {
     return monthKeyOfParts(year, month);
   },
 } as const;
-
-export const SCHEMA_VERSION = 1;

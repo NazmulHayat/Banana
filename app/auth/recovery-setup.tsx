@@ -1,6 +1,8 @@
 // Runs immediately after signup (or post-verify). Creates the accounts row,
-// sets up the encryption keyring, shows the user their recovery key once,
-// and requires explicit confirmation that they saved it.
+// sets up the encryption keyring, explains the recovery key BEFORE showing it,
+// reveals it once, and only lets the user leave after they've typed two groups
+// of it back — the reveal is genuinely one-time, so a checkbox alone was too
+// easy to tap past.
 //
 // Setup is resumable. It used to `consume()` the signup password before doing
 // any network work, so a dropped connection burned the only copy of it and
@@ -16,9 +18,10 @@ import { PaperBackground } from "@/components/ui/paper-background";
 import { Colors, Fonts, Scrim } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { signupTransient } from "@/lib/auth/signup-transient";
-import { keyring } from "@/lib/crypto";
+import { keyring, normalizeRecoveryKey } from "@/lib/crypto";
 import { supabase } from "@/lib/supabase";
 import * as Clipboard from "expo-clipboard";
+import * as Haptics from "expo-haptics";
 import { Href, router } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -33,7 +36,15 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-type Phase = "setting-up" | "reveal" | "need-password" | "error";
+type Phase =
+  | "setting-up"
+  /** What a recovery key is, said before we show one. */
+  | "primer"
+  | "reveal"
+  /** Type two groups back, so "I saved it" is a fact and not a tick-box. */
+  | "confirm"
+  | "need-password"
+  | "error";
 
 /** How long the "Copied!" confirmation stays up. */
 const COPIED_FEEDBACK_MS = 1800;
@@ -129,6 +140,10 @@ export default function RecoverySetupScreen() {
   const [confirmed, setConfirmed] = useState(false);
   const [copied, setCopied] = useState(false);
   const [typedPassword, setTypedPassword] = useState("");
+  // Which two groups of the key we ask for back, and what they typed.
+  const [askIndices, setAskIndices] = useState<[number, number] | null>(null);
+  const [answers, setAnswers] = useState<[string, string]>(["", ""]);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
   // Blocks a second run while one is in flight (double-tapped retry).
   const runningRef = useRef(false);
   const mountedRef = useRef(true);
@@ -140,7 +155,8 @@ export default function RecoverySetupScreen() {
     if (outcome.status === "done") {
       markKeyringReady(true);
       setRecoveryKey(outcome.recoveryKey);
-      setPhase("reveal");
+      // Explain first; the key itself is one tap away.
+      setPhase("primer");
       return;
     }
     if (outcome.status === "need-password") {
@@ -190,11 +206,14 @@ export default function RecoverySetupScreen() {
   async function handleCopy() {
     if (!recoveryKey) return;
     await Clipboard.setStringAsync(recoveryKey);
+    // The one moment in the app where "did that work?" really matters.
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setCopied(true);
     if (copiedTimer.current) clearTimeout(copiedTimer.current);
     copiedTimer.current = setTimeout(() => setCopied(false), COPIED_FEEDBACK_MS);
   }
 
+  /** Move to the check: pick one group from each half of the key. */
   function handleContinue() {
     if (!confirmed) {
       Alert.alert(
@@ -203,7 +222,40 @@ export default function RecoverySetupScreen() {
       );
       return;
     }
+    const groups = recoveryKey ? recoveryKey.split("-") : [];
+    if (groups.length < 2) {
+      // Nothing sensible to ask for — don't invent a hurdle.
+      finish();
+      return;
+    }
+    const mid = Math.floor(groups.length / 2);
+    const first = Math.floor(Math.random() * mid);
+    const second = mid + Math.floor(Math.random() * (groups.length - mid));
+    setAskIndices([first, second]);
+    setAnswers(["", ""]);
+    setConfirmError(null);
+    setPhase("confirm");
+  }
+
+  function finish() {
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     router.replace("/onboarding/welcome" as Href);
+  }
+
+  function handleConfirmCheck() {
+    const groups = recoveryKey ? recoveryKey.split("-") : [];
+    if (!askIndices) return;
+    const ok = askIndices.every(
+      (groupIndex, slot) =>
+        normalizeRecoveryKey(answers[slot]) === groups[groupIndex],
+    );
+    if (!ok) {
+      setConfirmError(
+        "That doesn't match. Check your saved copy — or look at the key again.",
+      );
+      return;
+    }
+    finish();
   }
 
   if (phase === "setting-up") {
@@ -290,12 +342,15 @@ export default function RecoverySetupScreen() {
           />
           <Text style={styles.errorTitle}>Setup couldn&apos;t complete</Text>
           <Text style={styles.errorMsg}>{errorMsg}</Text>
-          {/* Retry is safe: every step above is idempotent and your password
-              is still here. */}
+          {/* This screen is a `replace` target, so there is no back — say what
+              each way out actually does. Retry is safe: every step above is
+              idempotent and your password is still here. */}
           <TouchableOpacity
             style={styles.primaryButton}
             onPress={() => retrySetup()}
-            activeOpacity={0.7}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Try again"
           >
             <Text style={styles.primaryButtonText}>Try again</Text>
           </TouchableOpacity>
@@ -305,10 +360,18 @@ export default function RecoverySetupScreen() {
               await supabase.auth.signOut();
               router.replace("/auth/login");
             }}
-            activeOpacity={0.7}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Sign out and finish this later"
           >
-            <Text style={styles.secondaryButtonText}>Back to sign in</Text>
+            <Text style={styles.secondaryButtonText}>
+              Sign out and finish this later
+            </Text>
           </TouchableOpacity>
+          <Text style={styles.errorFootnote}>
+            Your account is already created. Signing in again brings you back
+            here to finish.
+          </Text>
         </View>
       </PaperBackground>
     );
@@ -333,11 +396,147 @@ export default function RecoverySetupScreen() {
           <TouchableOpacity
             style={styles.primaryButton}
             onPress={() => router.replace("/onboarding/welcome" as Href)}
-            activeOpacity={0.7}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Continue"
           >
             <Text style={styles.primaryButtonText}>Continue</Text>
           </TouchableOpacity>
         </View>
+      </PaperBackground>
+    );
+  }
+
+  // What the key is, and what happens if it's lost — said while there is still
+  // nothing secret on screen, so the user can go and open their password
+  // manager before the one-time reveal.
+  if (phase === "primer") {
+    return (
+      <PaperBackground>
+        <ScrollView
+          contentContainerStyle={[
+            styles.content,
+            { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 },
+          ]}
+        >
+          <View style={styles.iconCircle}>
+            <IconSymbol name="key.fill" size={32} color={Colors.paper} />
+          </View>
+          <Text style={styles.title}>Next: your recovery key</Text>
+          <Text style={styles.subtitle}>
+            Your journal is encrypted with your password, and we never hold a
+            copy of it. The recovery key is the spare.
+          </Text>
+
+          <View style={styles.tips}>
+            <Text style={styles.tipsItem}>
+              • It unlocks your journal if you ever forget your password.
+            </Text>
+            <Text style={styles.tipsItem}>
+              • We show it once, on the next screen. We can&apos;t show it again
+              or email it to you.
+            </Text>
+            <Text style={styles.tipsItem}>
+              • Lose your password and this key, and no one — including us — can
+              read your entries.
+            </Text>
+          </View>
+
+          <Text style={styles.primerHint}>
+            Have your password manager, notes app or a pen ready.
+          </Text>
+
+          <TouchableOpacity
+            style={styles.primaryButton}
+            onPress={() => setPhase("reveal")}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Show my recovery key"
+          >
+            <Text style={styles.primaryButtonText}>Show my recovery key</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      </PaperBackground>
+    );
+  }
+
+  // The check. Two groups, typed back — enough to prove the key was really
+  // saved, short enough not to be a wall.
+  if (phase === "confirm" && askIndices) {
+    const canSubmit = answers.every((a) => a.trim().length > 0);
+    return (
+      <PaperBackground>
+        <ScrollView
+          contentContainerStyle={[
+            styles.content,
+            { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 },
+          ]}
+          keyboardShouldPersistTaps="handled"
+        >
+          <View style={styles.iconCircle}>
+            <IconSymbol name="checkmark" size={32} color={Colors.paper} />
+          </View>
+          <Text style={styles.title}>Check your copy</Text>
+          <Text style={styles.subtitle}>
+            From the key you just saved, type these two groups back. Four
+            characters each.
+          </Text>
+
+          {askIndices.map((groupIndex, slot) => (
+            <View key={groupIndex} style={styles.confirmRow}>
+              <Text style={styles.confirmLabel}>Group {groupIndex + 1}</Text>
+              <TextInput
+                style={styles.confirmInput}
+                value={answers[slot]}
+                onChangeText={(value) => {
+                  setAnswers((prev) => {
+                    const next: [string, string] = [prev[0], prev[1]];
+                    next[slot] = value;
+                    return next;
+                  });
+                  setConfirmError(null);
+                }}
+                placeholder="XXXX"
+                placeholderTextColor={Colors.textSecondary}
+                autoCapitalize="characters"
+                autoCorrect={false}
+                maxLength={8}
+                accessibilityLabel={`Group ${groupIndex + 1} of your recovery key`}
+              />
+            </View>
+          ))}
+
+          {confirmError ? (
+            <Text style={styles.confirmError}>{confirmError}</Text>
+          ) : null}
+
+          <TouchableOpacity
+            style={[styles.primaryButton, !canSubmit && styles.buttonDisabled]}
+            onPress={handleConfirmCheck}
+            disabled={!canSubmit}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Confirm and continue"
+            accessibilityState={{ disabled: !canSubmit }}
+          >
+            <Text style={styles.primaryButtonText}>Confirm and continue</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.secondaryButton}
+            onPress={() => {
+              setConfirmError(null);
+              setPhase("reveal");
+            }}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Show me the key again"
+          >
+            <Text style={styles.secondaryButtonText}>
+              Show me the key again
+            </Text>
+          </TouchableOpacity>
+        </ScrollView>
       </PaperBackground>
     );
   }
@@ -355,8 +554,9 @@ export default function RecoverySetupScreen() {
         </View>
         <Text style={styles.title}>Save your recovery key</Text>
         <Text style={styles.subtitle}>
-          This is the ONLY way to recover your encrypted data if you forget
-          your password. We can&apos;t show it to you again on this screen.
+          This is the only way back into your encrypted journal if you forget
+          your password, and this is the only time we can show it. Save it now
+          — the next screen asks you to type two groups of it back.
         </Text>
 
         <View style={styles.keyBox}>
@@ -368,7 +568,11 @@ export default function RecoverySetupScreen() {
         <TouchableOpacity
           style={styles.copyButton}
           onPress={handleCopy}
-          activeOpacity={0.7}
+          activeOpacity={0.85}
+          accessibilityRole="button"
+          accessibilityLabel={
+            copied ? "Recovery key copied" : "Copy recovery key to clipboard"
+          }
         >
           <IconSymbol
             name={copied ? "checkmark" : "doc.on.doc"}
@@ -390,7 +594,10 @@ export default function RecoverySetupScreen() {
         <TouchableOpacity
           style={styles.checkboxRow}
           onPress={() => setConfirmed(!confirmed)}
-          activeOpacity={0.7}
+          activeOpacity={0.85}
+          accessibilityRole="checkbox"
+          accessibilityLabel="I've saved my recovery key in a safe place"
+          accessibilityState={{ checked: confirmed }}
         >
           <View style={[styles.checkbox, confirmed && styles.checkboxOn]}>
             {confirmed && (
@@ -406,7 +613,10 @@ export default function RecoverySetupScreen() {
           style={[styles.primaryButton, !confirmed && styles.buttonDisabled]}
           onPress={handleContinue}
           disabled={!confirmed}
-          activeOpacity={0.7}
+          activeOpacity={0.85}
+          accessibilityRole="button"
+          accessibilityLabel="Continue"
+          accessibilityState={{ disabled: !confirmed }}
         >
           <Text style={styles.primaryButtonText}>Continue</Text>
         </TouchableOpacity>
@@ -453,6 +663,53 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwriting,
     textAlign: "center",
     lineHeight: 20,
+  },
+  errorFootnote: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    textAlign: "center",
+    lineHeight: 18,
+    maxWidth: 320,
+  },
+  primerHint: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    textAlign: "center",
+    lineHeight: 20,
+    marginBottom: 24,
+  },
+  confirmRow: {
+    width: "100%",
+    marginBottom: 16,
+  },
+  confirmLabel: {
+    fontSize: 13,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingSemiBold,
+    marginBottom: 8,
+  },
+  confirmInput: {
+    width: "100%",
+    height: 52,
+    borderWidth: 1.5,
+    borderColor: Colors.ink,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    fontSize: 18,
+    fontFamily: Fonts.handwriting,
+    color: Colors.ink,
+    backgroundColor: Colors.card,
+    letterSpacing: 2,
+  },
+  confirmError: {
+    fontSize: 14,
+    lineHeight: 20,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    textAlign: "center",
+    marginBottom: 12,
   },
   content: {
     flexGrow: 1,

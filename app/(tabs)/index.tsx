@@ -3,6 +3,8 @@ import {
     CELL_GAP,
     computeColumnWidth,
     HabitGrid,
+    HEADER_ROW_HEIGHT,
+    ROW_PITCH,
 } from "@/components/habit-grid";
 import { HighlightInput } from "@/components/highlight-input";
 import { SyncStatus } from "@/components/sync-status";
@@ -15,11 +17,13 @@ import { useAuth } from "@/lib/auth-context";
 import { useDataStore } from "@/lib/data-store";
 import type { DailyEntry, Habit, HabitLog, WriteOutcome } from "@/lib/db";
 import {
+    fromDayKey,
     isFutureDay,
     monthKeyOfParts,
     parseDayKey,
     todayKey,
 } from "@/lib/dates";
+import { useReduceMotion } from "@/lib/use-reduce-motion";
 // Photo upload has no store action yet, so this is the one data call the screen
 // still makes directly. It's a single atomic primitive (upload-all-or-nothing)
 // rather than the old inline loop. Lead: ideal end-state is the store owning it,
@@ -40,7 +44,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 // ---------------------------------------------------------------------------
 // D15: this screen used to import `saveEntry` / `saveHabits` / `toggleHabitLog`
-// / `upsertEntryInCache` / `getEntriesForDate` straight from `@/lib/db` and run
+// / `upsertEntryInCache` / `the store's month cache` straight from `@/lib/db` and run
 // them side-by-side with the store, so the two disagreed after any failure.
 // Everything now goes Screen → data-store → lib/db, like `feed.tsx` already did.
 //
@@ -48,6 +52,12 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 // `queued` is durable (it replays on reconnect), so only `failed` rolls the
 // optimistic UI back or keeps the composer's text.
 // ---------------------------------------------------------------------------
+
+/**
+ * Day rows left visible above today when the grid auto-scrolls to it — enough
+ * of the last few days for context, not so much that today sits off-screen.
+ */
+const ROWS_OF_CONTEXT_ABOVE = 2;
 
 export default function TrackerScreen() {
   const insets = useSafeAreaInsets();
@@ -70,8 +80,18 @@ export default function TrackerScreen() {
   const [savingEntry, setSavingEntry] = useState(false);
   // Latched when a write comes back `failed` — drives the sync line's retry.
   const [writeFailed, setWriteFailed] = useState(false);
+  // Latched when a READ throws — drives the grid's error card (T2).
+  const [loadFailed, setLoadFailed] = useState(false);
   // Pull-to-refresh state
   const [refreshing, setRefreshing] = useState(false);
+  // Async loads resolve after a tab switch — never set state into a dead screen.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const currentMonth = currentDate.getMonth() + 1;
   const currentYear = currentDate.getFullYear();
@@ -82,10 +102,16 @@ export default function TrackerScreen() {
   const monthKey = monthKeyOfParts(currentYear, currentMonth);
 
   // Today's highlight count, derived from the store instead of a direct
-  // `getEntriesForDate` call (D15). "Today" is always in the real current
+  // `the store's month cache` call (D15). "Today" is always in the real current
   // month, which is not necessarily the month being browsed.
   const todayDayKey = todayKey();
   const todayParts = parseDayKey(todayDayKey);
+  // "Aug 18" — shown by the composer when the grid is browsing another month,
+  // so a highlight never lands on a day the user didn't expect.
+  const todayLabel = fromDayKey(todayDayKey).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
   const todayEntryCount = todayParts
     ? dataStore
         .getEntriesForMonth(todayParts.year, todayParts.month)
@@ -138,6 +164,12 @@ export default function TrackerScreen() {
     return [];
   }, [dataStore.habits, logs]);
 
+  // T2: the grid used to render its "Start tracking" empty state the instant
+  // it had no habits — including the frame before a returning user's habits
+  // arrived. Habits are only genuinely absent once the store says `ready`;
+  // until then this is a loading screen, not an empty one.
+  const habitsPending = !dataStore.habitsReady && habits.length === 0;
+
   // Animate new days as they stream in (progressive rendering)
   useEffect(() => {
     dataStore.habitLogsByDay.forEach((_, dateKey) => {
@@ -154,31 +186,54 @@ export default function TrackerScreen() {
     });
   }, [dataStore.habitLogsByDay]);
 
-  // Refresh data for current month when month changes
+  // ---------------------------------------------------------------------
+  // T3: this used to depend on the whole `dataStore` object. Every refresh
+  // re-created the store value → new `loadData` → the focus effect fired
+  // again → refresh → … a fetch loop that ran for as long as the Tracker was
+  // focused. Depend on the individual store callbacks instead: they're
+  // `useCallback([session])` inside the store, so they're stable across state
+  // changes. Nothing here reads `getLogsForMonth` either — the store's own
+  // in-memory tier already short-circuits a cached month, so calling refresh
+  // unconditionally is both cheaper and loop-free.
+  // ---------------------------------------------------------------------
+  const { refreshHabitLogs, refreshEntries, refreshHabits } = dataStore;
+
   const loadData = useCallback(async () => {
     if (!session) return;
-
-    // DataStore already handles initial load
-    // Only refresh if switching to a different month that's not cached
-    const monthLogs = dataStore.getLogsForMonth(currentYear, currentMonth);
-    if (monthLogs.length === 0) {
-      await dataStore.refreshHabitLogs(currentYear, currentMonth);
-    }
-
-    // Today's highlight count is derived from store state, so it just needs the
-    // month that contains today to be loaded.
+    // Today's highlight count is derived from store state, so it just needs
+    // the month that contains today to be loaded.
     const parts = parseDayKey(todayKey());
-    if (parts) {
-      void dataStore.refreshEntries(parts.year, parts.month);
+    try {
+      await Promise.all([
+        refreshHabitLogs(currentYear, currentMonth),
+        parts ? refreshEntries(parts.year, parts.month) : Promise.resolve(),
+      ]);
+      if (mountedRef.current) setLoadFailed(false);
+    } catch {
+      // Reads degrade to a calm retry card — never a raw error, never a crash.
+      if (mountedRef.current) setLoadFailed(true);
     }
-  }, [currentMonth, currentYear, session, dataStore]);
+  }, [currentMonth, currentYear, session, refreshHabitLogs, refreshEntries]);
 
   // Reload data when screen comes into focus or month changes
   useFocusEffect(
     useCallback(() => {
-      loadData();
+      void loadData();
     }, [loadData]),
   );
+
+  // Retry from the grid's error card: force both halves of the screen.
+  const handleRetryLoad = async () => {
+    setLoadFailed(false);
+    try {
+      await Promise.all([
+        refreshHabits({ force: true }),
+        refreshHabitLogs(currentYear, currentMonth, { force: true }),
+      ]);
+    } catch {
+      if (mountedRef.current) setLoadFailed(true);
+    }
+  };
 
   const changeMonth = (direction: number) => {
     setCurrentDate((prev) => {
@@ -196,6 +251,63 @@ export default function TrackerScreen() {
     if (isCurrentMonthView) return;
     setCurrentDate(new Date());
   };
+
+  // ---------------------------------------------------------------------
+  // T4: today's row sits up to ~1,700pt down a 31-row grid, and nothing ever
+  // scrolled to it — on the 28th you had to hunt past the composer for the
+  // row you came to tap. Once the grid has been measured, put today's row on
+  // screen with a couple of rows of context above it. Once per arrival at the
+  // current month (a ref guards it), so it never fights a user who scrolls.
+  // ---------------------------------------------------------------------
+  const reduceMotion = useReduceMotion();
+  const autoScrolledMonthRef = useRef<string | null>(null);
+  const autoScrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!isCurrentMonthView) {
+      // Left the current month — re-arm, so coming back scrolls again.
+      autoScrolledMonthRef.current = null;
+      return;
+    }
+    if (autoScrolledMonthRef.current === monthKey) return;
+    // headerStickyY is the measured top of the grid's header row; 0 means the
+    // grid hasn't laid out yet, so there is nothing to scroll to.
+    if (headerStickyY <= 0 || habits.length === 0) return;
+
+    const dayOfMonth = todayParts?.day ?? 1;
+    const y =
+      headerStickyY +
+      HEADER_ROW_HEIGHT +
+      (dayOfMonth - 1) * ROW_PITCH -
+      ROWS_OF_CONTEXT_ABOVE * ROW_PITCH;
+    autoScrolledMonthRef.current = monthKey;
+    if (y <= 0) return; // early in the month today is already on screen
+
+    // One frame of slack: the rows below the header may still be laying out
+    // when its measurement lands.
+    const scheduled = setTimeout(() => {
+      autoScrollTimer.current = null;
+      scrollViewRef.current?.scrollTo({ y, animated: !reduceMotion });
+    }, Motion.fast);
+    autoScrollTimer.current = scheduled;
+
+    return () => {
+      // Cancelled before it ran (a dep changed) — re-arm, or today's row would
+      // silently never be scrolled to.
+      if (autoScrollTimer.current === scheduled) {
+        clearTimeout(scheduled);
+        autoScrollTimer.current = null;
+        autoScrolledMonthRef.current = null;
+      }
+    };
+  }, [
+    isCurrentMonthView,
+    monthKey,
+    headerStickyY,
+    habits.length,
+    todayParts?.day,
+    reduceMotion,
+  ]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -470,6 +582,8 @@ export default function TrackerScreen() {
 
           <HighlightInput
             todayEntryCount={todayEntryCount}
+            todayLabel={todayLabel}
+            browsingOtherMonth={!isCurrentMonthView}
             onSave={handleSaveEntry}
             saving={savingEntry}
           />
@@ -479,6 +593,9 @@ export default function TrackerScreen() {
             logs={logs}
             currentMonth={currentMonth}
             currentYear={currentYear}
+            loading={habitsPending}
+            error={loadFailed}
+            onRetry={() => void handleRetryLoad()}
             onToggle={handleToggleHabit}
             onEdit={() => router.push("/habits")}
             onReorder={handleReorderHabits}

@@ -16,6 +16,8 @@ export default function AuthLayout() {
       <Stack.Screen name="verify" />
       <Stack.Screen name="recovery-setup" />
       <Stack.Screen name="forgot-password" />
+      {/* Where the password-reset email lands (deep link `aightbet://`). */}
+      <Stack.Screen name="reset-password" />
       <Stack.Screen name="recover-with-key" />
     </Stack>
   );

@@ -452,47 +452,82 @@ then persist — always in that order.
 
 ## 8. Status board
 
-Baseline measured at commit `a9d4360` (`chore/v1-baseline`):
-`npx tsc --noEmit` **clean** · `npm run lint` **16 errors** (all `react/no-unescaped-entities`) +
-**13 warnings** (7 `no-unused-vars`, 6 `exhaustive-deps`) · `crypto` 30/30 · `stats` 26/26 ·
-`pending-writes` 12/12 · `e2e` not yet run.
+Measured on `main` after the v1 hardening series (PRs #12, #18, #19):
+`npx tsc --noEmit` **clean** · `npm run lint` **0 problems** ·
+`crypto` 34/34 · `stats` 48/48 · `gamification` 21/21 · `pending-writes` 24/24 ·
+`dates` 23/23 · `db-cache` 12/12 · `db-writes` 13/13 — **175 tests** ·
+`e2e` 20/20 against live Supabase · Metro bundle resolves clean.
 
-**Built and shipping:** auth + recovery key · E2E entries/habits/habit-logs · habit grid ·
+Baseline before the series was 68 tests, 16 lint errors + 13 warnings.
+
+**Built and shipping:** auth + recovery key · E2E entries/habits/habit-logs · adaptive habit grid ·
 create/rename/delete/reorder habits · highlights with photos · month feed · edit/delete entry ·
-stats engine + profile stats · analytics surface (heatmap, trend sparkline, streak-vs-record,
-written insight, per-habit deep dive, day sheet) · pending-writes queue + flush · onboarding ·
-change password · account deletion RPC.
+stats engine + profile stats · free analytics (heatmap, trend, streak-vs-record, insight, per-habit
+deep dive, day sheet, journal stats, habit comparison, consistency score, correlations) ·
+calm gamification (perfect days, records board, permanent stamps) · durable pending-writes queue ·
+3-step onboarding · change password · account deletion · in-app legal screens · daily reminder ·
+62 accessibility labels.
 
-**Known defects.** All **open** unless noted. **PR 0 (`chore/v1-baseline`) housekeeping is in
-flight**: the working tree is checkpointed, lint is being driven to zero, dead code removed, config
-locked to iPhone/light, `PremiumLock` unwrapped, and this doc + the `tasks.md` / `PRODUCT.md`
-amendments written. D16 and D20 are addressed inside that PR.
+### Original defect table — all closed
 
-| # | Defect | Where | Status |
-|---|---|---|---|
-| D1 | Day keys built in **UTC** in some places, **local** in others — they disagree nightly | `lib/db/schema.ts:108` + `app/(tabs)/index.tsx:164,202,242` (UTC) vs `components/habit-grid.tsx:60,215` (local) | open |
-| D2 | AsyncStorage read tier is **dead** — `loadEntriesForMonthFromStorage`, `loadHabitsFromStorage`, `loadHabitLogsFromStorage` have **zero callers**. Offline reads fall through to network. | `lib/db/entries.ts:94`, `habits.ts:34`, `habit-logs.ts:59` | open |
-| D3 | Empty-but-loaded is treated as not-loaded — cache short-circuits require `cached.length > 0`, so an empty month refetches forever | `lib/data-store.tsx:189,227,290` | open |
-| D4 | No in-flight dedupe on `refreshHabits`/`refreshHabitLogs`/`refreshEntries`/`flushQueue` | `lib/data-store.tsx` | open |
-| D5 | Queue replay: db executors never throw, so a failed replay is counted flushed, removed, and re-appended with a new id + reset `queuedAt` | `lib/db/entries.ts:211`, `habits.ts:77,108`, `habit-logs.ts:163`; driver `lib/data-store.tsx:502-522` | open |
-| D6 | **Deletes are never queued** — `deleteEntry` swallows the Supabase error entirely | `lib/db/entries.ts:222-267` | open |
-| D7 | No coalescing — N toggles of one habit-log queue N items | `lib/db/pending-writes.ts:78` | open |
-| D8 | Photo upload has **no rollback**; `deleteImage` has zero call sites, so failed saves orphan objects | `app/(tabs)/index.tsx:250-266`, `lib/media/storage.ts:100` | open |
-| D9 | `clearUserMedia` doesn't paginate — two flat `list()` calls capped at `limit: 1000` | `lib/media/storage.ts:117-141` | open |
-| D10 | Account deletion proceeds even if media cleanup fails; local caches + queue + SecureStore not cleared on success | `app/(tabs)/profile.tsx:116-133` | open |
-| D11 | Habits have **no `position`** — order is implicit via row `created_at` | `lib/db/types.ts:45-49`, `habits.ts:89,147` | open |
-| D12 | Habit deletion (via replace-all `saveHabits`) leaves orphaned `habit_logs` | `lib/db/habits.ts:61` | open |
-| D13 | Stats ignore `Habit.createdAt`; future-dated logs inflate `totalCompletions`/`longestStreak`/`activeDays` | `lib/stats.ts:105,113,127-132` | open |
-| D14 | Future dates are tappable — no date guard anywhere | `components/habit-grid.tsx:214`, `components/ui/habit-cell.tsx:14`, `app/(tabs)/index.tsx:210` | open |
-| D15 | Tracker bypasses the store — imports `lib/db` + `lib/media` directly (layer violation) | `app/(tabs)/index.tsx:10-23,226,285,384` | open |
-| D16 | Tracker habit modal is **unreachable dead code** (~100 lines + 4 handlers + 4 state vars) | `app/(tabs)/index.tsx:587-691` | open — in PR 0 |
-| D17 | **Zero** accessibility props in the entire app; 14 icon-only touchables | app-wide | open |
-| D18 | 3 `ConfirmDialog` vs 70 `Alert.alert`; habit-delete regressed to a native alert | `app/habits/index.tsx:78` | open |
-| D19 | Onboarding runs ~5 `setTimeout`/`rAF` chains, **none cleared on unmount** | `app/onboarding/habits.tsx:121-205`, `feed-demo.tsx:62` | open |
-| D20 | Ship-blocking config: `supportsTablet: true`, `userInterfaceStyle: "automatic"`, `DEV_FORCE_INTRO = __DEV__ && true` | `app.json:9,11`, `app/_layout.tsx:41` | open — in PR 0 |
+| # | Defect | Closed in |
+|---|---|---|
+| D1 | Day keys built in UTC in some places, local in others — disagreed nightly | #18 — `lib/dates.ts` is now the only sanctioned constructor |
+| D2 | AsyncStorage read tier dead (`loadXFromStorage` had zero callers) | #18 |
+| D3 | Empty-but-loaded treated as not-loaded — empty months refetched forever | #18 |
+| D4 | No in-flight dedupe on the three refreshes or `flushQueue` | #18 |
+| D5 | Failed replays rewritten instead of retried, `queuedAt` reset | #18 — guard test: *"a failed replay stays queued verbatim"* |
+| D6 | Deletes never queued — `deleteEntry` swallowed the error | #18 |
+| D7 | No coalescing — N toggles queued N items | #18 — one item per key, `queuedAt` preserved |
+| D8 | Photo upload had no rollback; `deleteImage` had zero call sites | #18 |
+| D9 | `clearUserMedia` didn't paginate (capped at 1000) | #18 — returns `complete`/`partial`/`failed` |
+| D10 | Account deletion proceeded on failed media cleanup; local state kept | #18 + #18 `purgeLocalUserData` |
+| D11 | Habits had no `position` — reorder wasn't durable | #18 — `HabitPayload.position`, no migration |
+| D12 | Habit deletion left orphaned `habit_logs` | #18 |
+| D13 | Stats ignored `createdAt`; future logs inflated totals; deleted habits leaked | #18 — eligible habit-days |
+| D14 | Future dates were tappable | #18 |
+| D15 | Tracker bypassed the store (layer violation) | #18 |
+| D16 | Unreachable habit-modal dead code | #12 |
+| D17 | Zero accessibility props app-wide | #19 — primitives forward a11y, 62 labels |
+| D18 | 3 `ConfirmDialog` vs 70 `Alert.alert`; habit-delete on a native alert | #18 (partial), remainder in the UX pass |
+| D19 | Onboarding timers never cleared on unmount | #18 — zero timers left in `app/onboarding/` |
+| D20 | `supportsTablet: true`, `userInterfaceStyle: "automatic"`, `DEV_FORCE_INTRO` on | #12 |
 
-Line numbers are from `a9d4360` and drift as the fixes land — treat them as pointers, not
-addresses. **What gets fixed in which order is decided by `tasks.md`, not by this table.**
+### Also fixed, found during the work (not in the original table)
+
+- **Signup could permanently brick an account** — the password was consumed from transient storage
+  *before* the network call, so a dropped connection left an auth user with no keyring and no way
+  to create one. (#18)
+- **Password-change lockout window** — Supabase password updated but keyring re-wrap failed left
+  the wrap keyed to the old password; the in-app fix was unreachable behind `keyringReady`.
+  Now self-healing from sign-in. (#18)
+- **`getHabits()` short-circuited unconditionally** — `refreshHabits({force:true})` never refetched,
+  so pull-to-refresh silently did nothing for habits. (#18)
+- **`.gitignore` didn't match symlinks** — `node_modules/` / `.expo/` with trailing slashes; a
+  worktree agent's symlink got committed and destroyed the real directory. (#18)
+
+### Open — found by the post-merge UX and data-layer audits
+
+| # | Issue | Where |
+|---|---|---|
+| U1 | A failed read caches `[]` over good data — offline pull-to-refresh wipes the on-disk month and blanks the UI | `data-store.tsx` apply paths; `lib/db` reads degrade to `[]` |
+| U2 | Queue replay never updates React state — UI shows un-ticked while server/disk say ticked, for the rest of the session | `data-store.tsx` `flushQueue` executor |
+| U3 | Logout clears the queue but keeps optimistic values on disk → permanent silent divergence | `data-store.tsx` `clearAll` |
+| U4 | Self-sustaining fetch loop on Tracker and Feed (`loadData` depends on the whole store object) | `app/(tabs)/index.tsx`, `feed.tsx` |
+| U5 | `deleteHabitLogsForHabit` scans every log row and decrypts all of them; no `.range()`, so it can silently truncate at the PostgREST row cap | `lib/db/habit-logs.ts` |
+| U6 | 12-month analysis = 12 round trips + ~2,165 sync decrypts + 24 redundant `getSession()` | `lib/use-recent-logs.ts` |
+| U7 | Splash ran 12.7s on **every** launch | `components/animated-splash.tsx` — fixed on the UX branch |
+| U8 | Tracker had no loading state — existing users saw a false "add your first habit" | `app/(tabs)/index.tsx` — fixed on the UX branch |
+| U9 | Forgot-password is a dead end — no `redirectTo`, no deep-link handler | `app/auth/forgot-password.tsx` |
+| U10 | Onboarding completion is global, not per-user; second account on a device skips it | `lib/onboarding-context.tsx` |
+| U11 | Analysis entrance dead in 2 of 3 states (loading, 0 habits) | `components/profile-stats.tsx` |
+| U12 | `RecordsBoard` renders a blank frame when empty; new users see 5–7 "nothing here" panels | `components/records-board.tsx`, `analysis-content.tsx` |
+| U13 | `entry_media` table, its 3 indexes, trigger and policy are entirely unused by the client | `supabase/migrations/…initial_setup.sql` |
+| U14 | Two redundant indexes duplicate the unique constraints on the hottest write paths | `idx_entries_owner_day`, `idx_habit_logs_owner_day` |
+| U15 | `.claude/rules/backend.md` says decryption "becomes `Promise.all` at M2" — wrong, it's synchronous CPU on the JS thread | `.claude/rules/backend.md:34` |
+
+Line numbers drift as fixes land — treat them as pointers, not addresses.
+**What gets fixed in which order is decided by `tasks.md`, not by this table.**
 
 ---
 

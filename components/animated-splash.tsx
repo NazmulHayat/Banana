@@ -1,5 +1,6 @@
 import { Motion } from "@/constants/motion";
-import { Colors } from "@/constants/theme";
+import { Colors, Fonts } from "@/constants/theme";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Haptics from "expo-haptics";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -7,6 +8,7 @@ import {
   Dimensions,
   Pressable,
   StyleSheet,
+  Text,
   View,
 } from "react-native";
 import Animated, {
@@ -54,10 +56,11 @@ const TICK_AT_MS = [2000, 2400, 2800, 3200, 3600];
 const FORM_AT_MS = 4400;
 const SMILE_AT_MS = 5600;
 const BLINK_AT_MS = 6500;
-// Name finishes writing ~9s; hold a comfortable beat, then drift
-// down to the login screen.
-const EXIT_AT_MS = 11000;
-const EXIT_MS = 1700;
+// Name finishes writing ~9s; hold a short beat, then drift
+// down to the login screen. This plays ONCE per install (see
+// INTRO_SEEN_KEY) — every later launch gets the brief beat below.
+const EXIT_AT_MS = 9800;
+const EXIT_MS = 1400;
 // Storyboard beats. These are one-off cinematography, not part of the app's
 // UI motion scale, so they're named here instead of bloating `Motion`. The
 // beats that ARE shared with BrandMark (blink, float) come from `Motion`.
@@ -75,6 +78,14 @@ const FLOURISH_DELAY_MS = 100;
 const SKIP_EXIT_MS = 480;
 const SKIP_HOLD_MS = 350;
 const REDUCED_HOLD_MS = 700;
+/**
+ * Launch 2..n: a brand beat, not a film. Final frame, a held breath, gone —
+ * ~720ms door-to-door, so opening the app lands you in the app.
+ */
+const BRIEF_HOLD_MS = 400;
+const BRIEF_EXIT_MS = 320;
+/** When the "Tap to skip" line fades in during the one full showing. */
+const SKIP_HINT_AT_MS = 1200;
 
 const EASE_OUT = Easing.bezier(0.22, 1, 0.36, 1);
 
@@ -91,6 +102,22 @@ const SMILE_W = 80;
 // Underline flourish drawn after the name finishes writing
 const FLOURISH_DASH = 100;
 
+/**
+ * Device flag: has this install seen the full intro yet? A NEW `banana_*`
+ * suffix — the existing keys seal ciphertext and are never renamed. It holds
+ * nothing but the string "1", so it lives here rather than in `lib/` (no data,
+ * no crypto, no server — purely how long this screen performs for).
+ */
+const INTRO_SEEN_KEY = "banana_intro_seen_v1";
+
+/**
+ * How much intro to play:
+ * - `full`    first launch after install — the whole storyboard, once.
+ * - `brief`   every launch after that — final frame, a beat, gone (~720ms).
+ * - `reduced` Reduce Motion is on — final frame, no performance.
+ */
+type SplashMode = "full" | "brief" | "reduced";
+
 interface AnimatedSplashProps {
   /** Called once the splash has scrolled away. Unmount it then. */
   onDone: () => void;
@@ -102,11 +129,14 @@ export function AnimatedSplash({ onDone }: AnimatedSplashProps) {
   const [showName, setShowName] = useState(false);
   const [blinkCount, setBlinkCount] = useState(0);
   const [floating, setFloating] = useState(false);
-  const [reduceMotion, setReduceMotion] = useState<boolean | null>(null);
+  const [mode, setMode] = useState<SplashMode | null>(null);
   const timeouts = useRef<ReturnType<typeof setTimeout>[]>([]);
   const finishedRef = useRef(false);
+  // Already on disk — don't rewrite the flag on every launch.
+  const introSeenRef = useRef(false);
 
   const overlayY = useSharedValue(0);
+  const skipHintOpacity = useSharedValue(0);
   const smileProgress = useSharedValue(0);
   const flourishProgress = useSharedValue(0);
   const faceBob = useSharedValue(0);
@@ -154,16 +184,32 @@ export function AnimatedSplash({ onDone }: AnimatedSplashProps) {
     timeouts.current = [];
   };
 
-  const finish = (slow: boolean) => {
+  /**
+   * Leave. `slow` is the one cinematic exit (end of the full storyboard);
+   * everything else gets out of the way. `brief` is quicker still.
+   */
+  const finish = (kind: "slow" | "quick" | "brief") => {
     if (finishedRef.current) return;
     finishedRef.current = true;
     clearTimers();
+    // Whatever route we took — watched, skipped, or reduced — this install
+    // has now had its intro, so every later launch gets the brief beat.
+    if (!introSeenRef.current) {
+      introSeenRef.current = true;
+      void AsyncStorage.setItem(INTRO_SEEN_KEY, "1").catch(() => {});
+    }
     const height = Dimensions.get("window").height;
     overlayY.value = withTiming(
       -height,
       {
-        duration: slow ? EXIT_MS : SKIP_EXIT_MS,
-        easing: slow ? Easing.inOut(Easing.sin) : Easing.inOut(Easing.cubic),
+        duration:
+          kind === "slow"
+            ? EXIT_MS
+            : kind === "brief"
+              ? BRIEF_EXIT_MS
+              : SKIP_EXIT_MS,
+        easing:
+          kind === "slow" ? Easing.inOut(Easing.sin) : Easing.inOut(Easing.cubic),
       },
       (done) => {
         if (done) runOnJS(onDone)();
@@ -184,31 +230,49 @@ export function AnimatedSplash({ onDone }: AnimatedSplashProps) {
     if (finishedRef.current) return;
     clearTimers();
     showFinalFrame();
-    timeouts.current.push(setTimeout(() => finish(false), SKIP_HOLD_MS));
+    timeouts.current.push(setTimeout(() => finish("quick"), SKIP_HOLD_MS));
   };
 
+  // Resolve how much intro to play before rendering a single frame of it:
+  // Reduce Motion wins, then "have we already shown the full thing once?".
   useEffect(() => {
-    AccessibilityInfo.isReduceMotionEnabled()
-      .then((enabled) => setReduceMotion(!!enabled))
-      .catch(() => setReduceMotion(false));
+    let cancelled = false;
+    Promise.all([
+      AccessibilityInfo.isReduceMotionEnabled().catch(() => false),
+      AsyncStorage.getItem(INTRO_SEEN_KEY).catch(() => null),
+    ]).then(([reduce, seen]) => {
+      if (cancelled) return;
+      introSeenRef.current = seen !== null;
+      setMode(reduce ? "reduced" : seen ? "brief" : "full");
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
-    if (reduceMotion === null) return;
+    if (mode === null) return;
 
-    if (reduceMotion) {
+    if (mode !== "full") {
       showFinalFrame();
-      timeouts.current.push(setTimeout(() => finish(false), REDUCED_HOLD_MS));
+      timeouts.current.push(
+        setTimeout(
+          () => finish(mode === "brief" ? "brief" : "quick"),
+          mode === "brief" ? BRIEF_HOLD_MS : REDUCED_HOLD_MS,
+        ),
+      );
       return clearTimers;
     }
 
+    // The skip affordance used to be invisible — an 11s film you could only
+    // escape if you guessed the whole screen was tappable. Say so.
+    skipHintOpacity.value = withDelay(
+      SKIP_HINT_AT_MS,
+      withTiming(1, { duration: Motion.base, easing: EASE_OUT }),
+    );
+
     TICK_AT_MS.forEach((at, i) => {
-      timeouts.current.push(
-        setTimeout(() => {
-          setTickPhase(i + 1);
-          void Haptics.selectionAsync();
-        }, at),
-      );
+      timeouts.current.push(setTimeout(() => setTickPhase(i + 1), at));
     });
 
     timeouts.current.push(setTimeout(() => setFormed(true), FORM_AT_MS));
@@ -219,7 +283,6 @@ export function AnimatedSplash({ onDone }: AnimatedSplashProps) {
           duration: SMILE_DRAW_MS,
           easing: EASE_OUT,
         });
-        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       }, SMILE_AT_MS),
     );
 
@@ -228,6 +291,9 @@ export function AnimatedSplash({ onDone }: AnimatedSplashProps) {
         setBlinkCount((c) => c + 1);
         setShowName(true);
         setFloating(true);
+        // The single haptic of the whole intro: the face says hello. (It used
+        // to fire eight times — five ticks, the smile, the blink, plus the
+        // wordmark beat — which read as a stutter, not a greeting.)
         void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
         // Pen flourish under the name once the last letter is inked
         flourishProgress.value = withDelay(
@@ -237,14 +303,17 @@ export function AnimatedSplash({ onDone }: AnimatedSplashProps) {
       }, BLINK_AT_MS),
     );
 
-    timeouts.current.push(setTimeout(() => finish(true), EXIT_AT_MS));
+    timeouts.current.push(setTimeout(() => finish("slow"), EXIT_AT_MS));
 
     return clearTimers;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reduceMotion]);
+  }, [mode]);
 
   const overlayStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: overlayY.value }],
+  }));
+  const skipHintStyle = useAnimatedStyle(() => ({
+    opacity: skipHintOpacity.value,
   }));
   const faceStyle = useAnimatedStyle(() => ({
     transform: [
@@ -273,6 +342,14 @@ export function AnimatedSplash({ onDone }: AnimatedSplashProps) {
           accessibilityLabel="Aight Bet"
           accessibilityHint="Double tap to skip the intro"
         >
+          {mode === "full" && (
+            <Animated.View
+              style={[styles.skipHint, skipHintStyle]}
+              pointerEvents="none"
+            >
+              <Text style={styles.skipHintText}>Tap anywhere to skip</Text>
+            </Animated.View>
+          )}
           <View style={styles.center}>
             <Animated.View style={[styles.faceArea, faceStyle]}>
               {ROW_XS.map((x, i) => (
@@ -284,7 +361,7 @@ export function AnimatedSplash({ onDone }: AnimatedSplashProps) {
                   ticked={i < tickPhase}
                   formed={formed}
                   blinkCount={blinkCount}
-                  instant={reduceMotion === true}
+                  instant={mode !== null && mode !== "full"}
                 />
               ))}
               {/* Deep ink smile, drawn under the eyes */}
@@ -310,7 +387,7 @@ export function AnimatedSplash({ onDone }: AnimatedSplashProps) {
               {showName && (
                 <HandwrittenWordmark
                   width={230}
-                  instant={reduceMotion === true}
+                  instant={mode !== null && mode !== "full"}
                 />
               )}
               {showName && (
@@ -581,5 +658,18 @@ const styles = StyleSheet.create({
   },
   flourish: {
     marginTop: 4,
+  },
+  skipHint: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 56,
+    alignItems: "center",
+  },
+  skipHintText: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    letterSpacing: 0.3,
   },
 });

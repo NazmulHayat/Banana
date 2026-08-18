@@ -29,6 +29,12 @@ Object.assign(AsyncStorageReal, {
   async removeItem(key: string): Promise<void> {
     store.delete(key);
   },
+  async getAllKeys(): Promise<string[]> {
+    return [...store.keys()];
+  },
+  async multiRemove(keys: string[]): Promise<void> {
+    for (const key of keys) store.delete(key);
+  },
 });
 
 // ---- stub the modules the cache helpers never call -------------------------
@@ -232,6 +238,80 @@ test("corrupt storage degrades to null, never throws", async () => {
   resetAll();
   store.set(`banana_habit_logs_v2:${U}:2026-06`, "[[[");
   assertEq(await logsDb.loadHabitLogsFromStorage(YEAR, MONTH, U), null);
+});
+
+// ---------------------------------------------------------------------------
+// The optimistic-write helpers the data store calls. They used to run
+// INSIDE a setState updater, which StrictMode double-fires — and when the month
+// wasn't loaded they replaced the whole cached month with a one-item array,
+// hiding everything else in it. They are pure cache mutators now, and a month
+// that isn't cached is left alone.
+suite("optimistic cache writes never invent a month");
+
+const logB = { habitId: "h2", date: "2026-06-17", completed: true };
+const entryB = {
+  id: "e2",
+  date: "2026-06-17",
+  text: "second",
+  mediaPaths: [],
+  createdAt: "2026-06-17T09:00:00.000Z",
+};
+
+test("a log for an uncached month is a no-op, not a one-item month", async () => {
+  resetAll();
+  logsDb.upsertHabitLogInCache(U, logB);
+  await settle();
+  assertEq(
+    logsDb.getCachedHabitLogsForMonth(2026, 6, U),
+    null,
+    "still 'never resolved' — an optimistic tick can't fake a whole month",
+  );
+  assertTrue(!store.has(`banana_habit_logs_v2:${U}:2026-06`), "nothing on disk");
+});
+
+test("a log for a cached month updates both tiers in place", async () => {
+  resetAll();
+  logsDb.setCachedHabitLogsForMonth(YEAR, MONTH, U, [logA]);
+  await settle();
+
+  logsDb.upsertHabitLogInCache(U, { ...logA, completed: false });
+  await settle();
+  assertEq(
+    logsDb.getCachedHabitLogsForMonth(YEAR, MONTH, U),
+    [{ ...logA, completed: false }],
+    "the existing log flipped, no duplicate row",
+  );
+  assertEq(
+    JSON.parse(store.get(`banana_habit_logs_v2:${U}:2026-06`) as string),
+    [{ ...logA, completed: false }],
+    "written through to disk",
+  );
+});
+
+test("an entry for an uncached month is a no-op", async () => {
+  resetAll();
+  entriesDb.upsertEntryInCache(entryB, U);
+  await settle();
+  assertEq(entriesDb.getCachedEntriesForMonth(2026, 6, U), null, "no month invented");
+});
+
+test("removing an entry keeps the rest of the cached month", async () => {
+  resetAll();
+  entriesDb.setCachedEntriesForMonth(YEAR, MONTH, U, [entryA, entryB]);
+  await settle();
+
+  entriesDb.removeEntryFromCache(entryA.id, entryA.date, U);
+  await settle();
+  assertEq(
+    entriesDb.getCachedEntriesForMonth(YEAR, MONTH, U),
+    [entryB],
+    "an offline delete leaves a smaller month, not a hole",
+  );
+  assertEq(
+    JSON.parse(store.get(`banana_entries_v2:${U}:2026-06`) as string),
+    [entryB],
+    "and the same on disk",
+  );
 });
 
 (async () => {

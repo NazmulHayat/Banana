@@ -2,18 +2,19 @@
 // screens: N months of habit logs, and N months of journal entries. Both go
 // through the store (screens never touch lib/db), both degrade to whatever
 // months resolved, and both are cache-first unless forced.
+//
+// One window = ONE round trip. These used to call the store once per
+// month — twelve queries and twelve session reads for a single screen mount —
+// and their `failed` counter could never leave 0, because a failed read
+// resolved with `[]` instead of rejecting. The store now reports the months it
+// couldn't reach, so "showing what's saved on this device" is reachable.
 
 import { useDataStore } from "@/lib/data-store";
-import type { DailyEntry, HabitLog } from "@/lib/db";
-import { useEffect, useRef, useState } from "react";
+import type { DailyEntry, HabitLog, MonthRef } from "@/lib/db";
+import { useEffect, useState } from "react";
 
-interface Month {
-  year: number;
-  month: number;
-}
-
-// The last `monthsBack` months as {year, month}, newest first.
-function recentMonths(monthsBack: number): Month[] {
+// The last `monthsBack` months, newest first.
+function recentMonths(monthsBack: number): MonthRef[] {
   const now = new Date();
   return Array.from({ length: monthsBack }, (_, i) => {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
@@ -21,66 +22,46 @@ function recentMonths(monthsBack: number): Month[] {
   });
 }
 
-const monthId = (m: Month) => `${m.year}-${m.month}`;
-
 /**
- * Loads the last `monthsBack` months of habit logs from the store (one cached
- * call per month) and returns the merged array. `allSettled` so one bad month
- * never blanks the view: `failed` counts the months that didn't resolve, so a
- * screen can say "showing what's saved on this device" instead of pretending,
- * and `reload` retries them. Bump `refreshToken` to force a reload.
+ * Loads the last `monthsBack` months of habit logs and returns the merged
+ * array. `failed` counts the months the server couldn't be reached for, so a
+ * screen can say "showing what's saved on this device" instead of pretending;
+ * `reload` retries them (months that already resolved come back from the
+ * store's memory tier, so a retry costs one request, not twelve). Bump
+ * `refreshToken` to force a full reload.
  */
 export function useRecentHabitLogs(monthsBack = 12, refreshToken = 0) {
-  // Depend on the stable `refreshHabitLogs` callback, NOT the whole store
-  // object — the store's identity changes on every state update, and since
-  // refreshHabitLogs itself sets state, depending on the store would re-fire
-  // this effect forever ("Maximum update depth exceeded").
-  const { refreshHabitLogs } = useDataStore();
+  // Depend on the stable `refreshHabitLogWindow` callback, NOT the whole store
+  // object — the store's identity changes on every state update, and since the
+  // refresh itself sets state, depending on the store would re-fire this effect
+  // forever ("Maximum update depth exceeded").
+  const { refreshHabitLogWindow } = useDataStore();
   const [logs, setLogs] = useState<HabitLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(0);
   const [attempt, setAttempt] = useState(0);
-  // Which months didn't resolve last time. A retry re-forces only these —
-  // the other eleven are already in the store's memory tier and come back
-  // without a round-trip, so "try again" costs one request, not twelve.
-  const brokenRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       setLoading(true);
-      const months = recentMonths(monthsBack);
-      // Pull-to-refresh means "everything is stale"; a retry means "only what
-      // broke"; a first load means "cache is fine".
-      const forced =
-        refreshToken > 0
-          ? new Set(months.map(monthId))
-          : attempt > 0
-            ? brokenRef.current
-            : new Set<string>();
-      const settled = await Promise.allSettled(
-        months.map((m) =>
-          refreshHabitLogs(
-            m.year,
-            m.month,
-            forced.has(monthId(m)) ? { force: true } : undefined,
-          ),
-        ),
-      );
-      const broken = new Set(
-        months.filter((_, i) => settled[i].status === "rejected").map(monthId),
+      // Pull-to-refresh means "everything is stale". A retry (`attempt`) is
+      // cache-first: the months that resolved are already in memory, so only
+      // the broken ones actually hit the network.
+      const result = await refreshHabitLogWindow(
+        recentMonths(monthsBack),
+        refreshToken > 0 ? { force: true } : undefined,
       );
       if (cancelled) return;
-      brokenRef.current = broken;
-      setLogs(settled.flatMap((r) => (r.status === "fulfilled" ? r.value : [])));
-      setFailed(broken.size);
+      setLogs(result.data);
+      setFailed(result.failed);
       setLoading(false);
     };
     void load();
     return () => {
       cancelled = true;
     };
-  }, [refreshHabitLogs, monthsBack, refreshToken, attempt]);
+  }, [refreshHabitLogWindow, monthsBack, refreshToken, attempt]);
 
   return { logs, loading, failed, reload: () => setAttempt((a) => a + 1) };
 }
@@ -93,7 +74,7 @@ export function useRecentHabitLogs(monthsBack = 12, refreshToken = 0) {
  */
 export function useRecentEntries(monthsBack = 12, refreshToken = 0, enabled = true) {
   // Same reasoning as above: depend on the stable callback, never the store.
-  const { refreshEntries } = useDataStore();
+  const { refreshEntryWindow } = useDataStore();
   const [entries, setEntries] = useState<DailyEntry[]>([]);
   const [loading, setLoading] = useState(enabled);
   const [failed, setFailed] = useState(0);
@@ -108,20 +89,20 @@ export function useRecentEntries(monthsBack = 12, refreshToken = 0, enabled = tr
     let cancelled = false;
     const load = async () => {
       setLoading(true);
-      const opts = refreshToken > 0 ? { force: true } : undefined;
-      const settled = await Promise.allSettled(
-        recentMonths(monthsBack).map((m) => refreshEntries(m.year, m.month, opts)),
+      const result = await refreshEntryWindow(
+        recentMonths(monthsBack),
+        refreshToken > 0 ? { force: true } : undefined,
       );
       if (cancelled) return;
-      setEntries(settled.flatMap((r) => (r.status === "fulfilled" ? r.value : [])));
-      setFailed(settled.filter((r) => r.status === "rejected").length);
+      setEntries(result.data);
+      setFailed(result.failed);
       setLoading(false);
     };
     void load();
     return () => {
       cancelled = true;
     };
-  }, [refreshEntries, monthsBack, refreshToken, enabled]);
+  }, [refreshEntryWindow, monthsBack, refreshToken, enabled]);
 
   return { entries, loading, failed };
 }

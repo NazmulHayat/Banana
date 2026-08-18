@@ -9,9 +9,9 @@ import { useAuth } from "@/lib/auth-context";
 import { keyring } from "@/lib/crypto";
 import { supabase } from "@/lib/supabase";
 import * as Clipboard from "expo-clipboard";
+import * as Haptics from "expo-haptics";
 import { useState } from "react";
 import {
-  Alert,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -40,18 +40,35 @@ export default function SecurityScreen() {
   const [recoveryError, setRecoveryError] = useState("");
   const [showRegenerateConfirm, setShowRegenerateConfirm] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  // Everything this screen has to say, it says in the sheet the user is
+  // already looking at — no native Alerts, including on the happy paths.
+  const [keyNote, setKeyNote] = useState<string | null>(null);
+  const [keyError, setKeyError] = useState<string | null>(null);
 
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmNewPassword, setConfirmNewPassword] = useState("");
   const [changePasswordLoading, setChangePasswordLoading] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [passwordDone, setPasswordDone] = useState(false);
 
   const handleOpenRecoveryModal = () => {
     setRecoveryPassword("");
     setRecoveryKey("");
     setRecoveryError("");
+    setKeyNote(null);
+    setKeyError(null);
     setShowRecoveryModal(true);
+  };
+
+  const handleOpenChangePassword = () => {
+    setOldPassword("");
+    setNewPassword("");
+    setConfirmNewPassword("");
+    setPasswordError(null);
+    setPasswordDone(false);
+    setShowChangePasswordModal(true);
   };
 
   const handleRevealRecoveryKey = async () => {
@@ -81,7 +98,9 @@ export default function SecurityScreen() {
   const handleCopyRecovery = async () => {
     if (!recoveryKey) return;
     await Clipboard.setStringAsync(recoveryKey);
-    Alert.alert("Copied", "Recovery key copied to clipboard.");
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setKeyError(null);
+    setKeyNote("Copied to your clipboard. Paste it somewhere safe.");
   };
 
   // Destructive confirmation → ConfirmDialog (haptics + double-submit latch),
@@ -89,13 +108,21 @@ export default function SecurityScreen() {
   const handleConfirmRegenerate = async () => {
     if (!user) return;
     setRegenerating(true);
+    setKeyError(null);
+    setKeyNote(null);
     try {
       const newKey = await keyring.regenerateRecoveryKey(user.id);
       setRecoveryKey(newKey);
       setShowRegenerateConfirm(false);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setKeyNote("New key ready — the old one stopped working just now.");
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      Alert.alert("Failed", msg);
+      if (__DEV__) console.warn("[security] regenerate failed:", e);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setShowRegenerateConfirm(false);
+      setKeyError(
+        "We couldn't make a new key just now. Your existing key still works. Check your connection and try again.",
+      );
     } finally {
       setRegenerating(false);
     }
@@ -104,25 +131,26 @@ export default function SecurityScreen() {
   const handleChangePassword = async () => {
     if (!user) return;
     if (!oldPassword || !newPassword || !confirmNewPassword) {
-      Alert.alert("Required", "Please fill all fields.");
+      setPasswordError("Fill all three fields first.");
       return;
     }
     if (newPassword !== confirmNewPassword) {
-      Alert.alert("Passwords don't match", "New passwords must match.");
+      setPasswordError("The two new passwords don't match.");
       return;
     }
     if (newPassword.length < 8) {
-      Alert.alert("Too short", "New password must be at least 8 characters.");
+      setPasswordError("Your new password needs at least 8 characters.");
       return;
     }
     setChangePasswordLoading(true);
+    setPasswordError(null);
     try {
       // Verify old password by re-deriving the encryption KEK (also proves the
       // user can decrypt their data — stronger than Supabase signIn).
       try {
         await keyring.unlock(user.id, oldPassword);
       } catch {
-        Alert.alert("Incorrect password", "Your current password is wrong.");
+        setPasswordError("That current password isn't right.");
         setChangePasswordLoading(false);
         return;
       }
@@ -133,8 +161,7 @@ export default function SecurityScreen() {
       if (upErr) {
         // Never surface a raw Supabase message — see CLAUDE.md (security).
         if (__DEV__) console.warn("[security] password update failed:", upErr.message);
-        Alert.alert(
-          "Password change failed",
+        setPasswordError(
           "We couldn't update your password just now. Check your connection and try again.",
         );
         setChangePasswordLoading(false);
@@ -146,25 +173,28 @@ export default function SecurityScreen() {
       try {
         await keyring.setPassword(user.id, newPassword);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        Alert.alert(
-          "Almost done",
+        if (__DEV__) console.warn("[security] re-wrap failed:", e);
+        setPasswordError(
           "Your sign-in password was updated, but re-wrapping your encryption " +
-            "failed: " + msg + ". Sign in with your new password and try " +
-            "Change Password again.",
+            "didn't finish. Sign in with your new password and run Change " +
+            "Password once more.",
         );
         setChangePasswordLoading(false);
         return;
       }
 
-      setShowChangePasswordModal(false);
+      // Success stays in this sheet: a native "OK" alert over a page sheet is
+      // two dialog systems on one screen.
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setOldPassword("");
       setNewPassword("");
       setConfirmNewPassword("");
-      Alert.alert("Password changed", "Use your new password next time.");
+      setPasswordDone(true);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      Alert.alert("Error", msg);
+      if (__DEV__) console.warn("[security] change password threw:", e);
+      setPasswordError(
+        "Something went wrong, so we stopped. Nothing was changed. Try again in a moment.",
+      );
     } finally {
       setChangePasswordLoading(false);
     }
@@ -201,7 +231,7 @@ export default function SecurityScreen() {
             icon="lock.rotation"
             title="Change Password"
             subtitle="Re-encrypts your master key"
-            onPress={() => setShowChangePasswordModal(true)}
+            onPress={handleOpenChangePassword}
           />
         </PaperCard>
       </ScrollView>
@@ -219,7 +249,13 @@ export default function SecurityScreen() {
           behavior={Platform.OS === "ios" ? "padding" : "height"}
         >
           <View style={styles.modalHeader}>
-            <TouchableOpacity onPress={() => setShowRecoveryModal(false)}>
+            <TouchableOpacity
+              onPress={() => setShowRecoveryModal(false)}
+              activeOpacity={0.85}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Done, close recovery key"
+            >
               <Text style={styles.modalCancel}>Done</Text>
             </TouchableOpacity>
             <Text style={styles.modalTitle} accessibilityRole="header">Recovery Key</Text>
@@ -246,7 +282,10 @@ export default function SecurityScreen() {
                   style={[styles.saveButton, recoveryLoading && styles.buttonDisabled]}
                   onPress={handleRevealRecoveryKey}
                   disabled={recoveryLoading}
-                  activeOpacity={0.7}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel="Reveal recovery key"
+                  accessibilityState={{ disabled: recoveryLoading }}
                 >
                   <Text style={styles.saveButtonText}>
                     {recoveryLoading ? "Verifying..." : "Reveal Key"}
@@ -264,14 +303,22 @@ export default function SecurityScreen() {
                     {recoveryKey}
                   </Text>
                 </View>
-                <TouchableOpacity style={styles.copyButton} onPress={handleCopyRecovery} activeOpacity={0.7}>
+                {keyNote ? <Text style={styles.noteText}>{keyNote}</Text> : null}
+                {keyError ? <Text style={styles.errorText}>{keyError}</Text> : null}
+                <TouchableOpacity
+                  style={styles.copyButton}
+                  onPress={handleCopyRecovery}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel="Copy recovery key to clipboard"
+                >
                   <IconSymbol name="doc.on.doc" size={16} color={Colors.ink} />
                   <Text style={styles.copyButtonText}>Copy to Clipboard</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.regenerateButton}
                   onPress={() => setShowRegenerateConfirm(true)}
-                  activeOpacity={0.7}
+                  activeOpacity={0.85}
                   accessibilityRole="button"
                   accessibilityLabel="Regenerate recovery key"
                 >
@@ -308,56 +355,93 @@ export default function SecurityScreen() {
           behavior={Platform.OS === "ios" ? "padding" : "height"}
         >
           <View style={styles.modalHeader}>
-            <TouchableOpacity onPress={() => setShowChangePasswordModal(false)}>
-              <Text style={styles.modalCancel}>Cancel</Text>
+            <TouchableOpacity
+              onPress={() => setShowChangePasswordModal(false)}
+              activeOpacity={0.85}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel={passwordDone ? "Done" : "Cancel"}
+            >
+              <Text style={styles.modalCancel}>
+                {passwordDone ? "Done" : "Cancel"}
+              </Text>
             </TouchableOpacity>
             <Text style={styles.modalTitle} accessibilityRole="header">Change Password</Text>
             <View style={{ width: 60 }} />
           </View>
           <ScrollView style={styles.modalContent} keyboardShouldPersistTaps="handled">
-            <Text style={styles.modalDesc}>
-              Your encryption master key will be re-wrapped with the new password.
-            </Text>
-            <Text style={styles.formLabel}>Current Password</Text>
-            <TextInput
-              style={styles.modalInput}
-              value={oldPassword}
-              onChangeText={setOldPassword}
-              placeholder="Current password"
-              placeholderTextColor={Colors.textSecondary}
-              secureTextEntry
-              autoCapitalize="none"
-            />
-            <Text style={styles.formLabel}>New Password</Text>
-            <TextInput
-              style={styles.modalInput}
-              value={newPassword}
-              onChangeText={setNewPassword}
-              placeholder="At least 8 characters"
-              placeholderTextColor={Colors.textSecondary}
-              secureTextEntry
-              autoCapitalize="none"
-            />
-            <Text style={styles.formLabel}>Confirm New Password</Text>
-            <TextInput
-              style={styles.modalInput}
-              value={confirmNewPassword}
-              onChangeText={setConfirmNewPassword}
-              placeholder="Re-enter new password"
-              placeholderTextColor={Colors.textSecondary}
-              secureTextEntry
-              autoCapitalize="none"
-            />
-            <TouchableOpacity
-              style={[styles.saveButton, changePasswordLoading && styles.buttonDisabled]}
-              onPress={handleChangePassword}
-              disabled={changePasswordLoading}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.saveButtonText}>
-                {changePasswordLoading ? "Changing..." : "Change Password"}
-              </Text>
-            </TouchableOpacity>
+            {passwordDone ? (
+              <>
+                <Text style={styles.doneTitle} accessibilityRole="header">
+                  Password changed
+                </Text>
+                <Text style={styles.modalDesc}>
+                  Use the new one next time you sign in. Your encryption key was
+                  re-wrapped on this device — nothing readable ever left it.
+                </Text>
+                <TouchableOpacity
+                  style={styles.saveButton}
+                  onPress={() => setShowChangePasswordModal(false)}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel="Done"
+                >
+                  <Text style={styles.saveButtonText}>Done</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                <Text style={styles.modalDesc}>
+                  Your encryption master key will be re-wrapped with the new password.
+                </Text>
+                <Text style={styles.formLabel}>Current Password</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={oldPassword}
+                  onChangeText={setOldPassword}
+                  placeholder="Current password"
+                  placeholderTextColor={Colors.textSecondary}
+                  secureTextEntry
+                  autoCapitalize="none"
+                />
+                <Text style={styles.formLabel}>New Password</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={newPassword}
+                  onChangeText={setNewPassword}
+                  placeholder="At least 8 characters"
+                  placeholderTextColor={Colors.textSecondary}
+                  secureTextEntry
+                  autoCapitalize="none"
+                />
+                <Text style={styles.formLabel}>Confirm New Password</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={confirmNewPassword}
+                  onChangeText={setConfirmNewPassword}
+                  placeholder="Re-enter new password"
+                  placeholderTextColor={Colors.textSecondary}
+                  secureTextEntry
+                  autoCapitalize="none"
+                />
+                {passwordError ? (
+                  <Text style={styles.errorText}>{passwordError}</Text>
+                ) : null}
+                <TouchableOpacity
+                  style={[styles.saveButton, changePasswordLoading && styles.buttonDisabled]}
+                  onPress={handleChangePassword}
+                  disabled={changePasswordLoading}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel="Change password"
+                  accessibilityState={{ disabled: changePasswordLoading }}
+                >
+                  <Text style={styles.saveButtonText}>
+                    {changePasswordLoading ? "Changing..." : "Change Password"}
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
           </ScrollView>
         </KeyboardAvoidingView>
       </Modal>
@@ -419,7 +503,20 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.card,
     marginBottom: 8,
   },
-  errorText: { fontSize: 13, color: Colors.danger, fontFamily: Fonts.handwriting, marginBottom: 12 },
+  errorText: { fontSize: 13, color: Colors.danger, fontFamily: Fonts.handwriting, marginBottom: 12, lineHeight: 19 },
+  noteText: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    marginBottom: 12,
+    lineHeight: 19,
+  },
+  doneTitle: {
+    fontSize: 19,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingSemiBold,
+    marginBottom: 8,
+  },
   saveButton: {
     height: 52,
     backgroundColor: Colors.ink,

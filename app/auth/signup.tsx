@@ -190,8 +190,14 @@ export default function SignupScreen() {
         >
           <TouchableOpacity
             style={styles.backButton}
-            onPress={() => router.back()}
-            activeOpacity={0.7}
+            onPress={() => {
+              // Can be the first screen in the stack (replace from sign-in).
+              if (router.canGoBack()) router.back();
+              else router.replace("/auth/login");
+            }}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Back"
           >
             <IconSymbol name="chevron.left" size={24} color={Colors.ink} />
             <Text style={styles.backText}>Back</Text>
@@ -308,14 +314,21 @@ export default function SignupScreen() {
               <Text style={styles.error}>{passwordError}</Text>
             ) : null}
 
+            {/* Said here, before the account exists — the recovery key used to
+                be explained only after it had already been generated and
+                shown. */}
             <View style={styles.privacyCallout}>
               <IconSymbol name="lock.fill" size={16} color={Colors.ink} />
               <Text style={styles.privacyText}>
-                Your password encrypts your data.{" "}
+                Your password encrypts your journal on this phone. We never see
+                it, so we can&apos;t reset it for you.{" "}
                 <Text style={styles.privacyBold}>
-                  If you forget it, only your recovery key can restore access.
+                  That&apos;s why the next screen gives you a recovery key: one
+                  long code that can unlock your journal if you forget your
+                  password.
                 </Text>{" "}
-                We&apos;ll show it to you next.
+                It&apos;s shown once. Without it, a forgotten password means a
+                lost journal — so have somewhere safe ready to put it.
               </Text>
             </View>
 
@@ -323,7 +336,10 @@ export default function SignupScreen() {
               style={[styles.button, loading && styles.buttonDisabled]}
               onPress={handleSignup}
               disabled={loading || checkingUsername}
-              activeOpacity={0.7}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel="Create account"
+              accessibilityState={{ disabled: loading || checkingUsername }}
             >
               <Text style={styles.buttonText}>
                 {loading ? "Creating account..." : "Create Account"}
@@ -333,7 +349,12 @@ export default function SignupScreen() {
 
           <View style={styles.signinContainer}>
             <Text style={styles.signinText}>Already have an account? </Text>
-            <TouchableOpacity onPress={() => router.replace("/auth/signin")}>
+            <TouchableOpacity
+              onPress={() => router.replace("/auth/signin")}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel="Sign in"
+            >
               <Text style={styles.signinLink}>Sign In</Text>
             </TouchableOpacity>
           </View>
@@ -468,7 +489,8 @@ const styles = StyleSheet.create({
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
   },
-  privacyBold: { fontWeight: "700" },
+  // iOS can't synthesize weight for a custom font — use the loaded family.
+  privacyBold: { fontFamily: Fonts.handwritingSemiBold },
   button: {
     width: "100%",
     height: 52,

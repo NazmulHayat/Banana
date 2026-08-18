@@ -3,6 +3,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { IconButton } from "@/components/ui/icon-button";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
+import { PaperCard } from "@/components/ui/paper-card";
 import { PressableScale } from "@/components/ui/pressable-scale";
 import { SkeletonCard } from "@/components/ui/skeleton";
 import { Motion } from "@/constants/motion";
@@ -11,16 +12,20 @@ import { useAuth } from "@/lib/auth-context";
 import { useDataStore } from "@/lib/data-store";
 import { fromDayKey } from "@/lib/dates";
 import type { DailyEntry } from "@/lib/db";
+import * as Haptics from "expo-haptics";
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
 import {
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
+  TouchableOpacity,
   View,
 } from "react-native";
 import Animated, {
@@ -40,6 +45,9 @@ export default function FeedScreen() {
   const [currentDate, setCurrentDate] = useState(new Date());
   // +1 = moved to next month (content enters from the right), -1 = previous
   const [monthDirection, setMonthDirection] = useState(1);
+  // The month couldn't be read from the server. Kept separate from "empty" —
+  // a failed refresh used to be indistinguishable from a month with no entries.
+  const [loadFailed, setLoadFailed] = useState(false);
 
   // Edit (FR-E3): the entry being edited + its draft text + save in-flight.
   const [editingEntry, setEditingEntry] = useState<DailyEntry | null>(null);
@@ -93,8 +101,10 @@ export default function FeedScreen() {
     return groups;
   }, [entries]);
 
-  // Only show loading if no entries are ready AND still loading
-  const loading = !dataStore.entriesReady && entries.length === 0;
+  // Only show loading if no entries are ready AND still loading. A failed read
+  // leaves `entriesReady` false forever, so it must break the skeleton too.
+  const loading =
+    !dataStore.entriesReady && entries.length === 0 && !loadFailed;
 
   // Load entries for current month if not already cached
   const loadEntries = useCallback(async () => {
@@ -106,7 +116,15 @@ export default function FeedScreen() {
       currentMonth,
     );
     if (monthEntries.length === 0) {
-      await dataStore.refreshEntries(currentYear, currentMonth);
+      try {
+        await dataStore.refreshEntries(currentYear, currentMonth);
+        setLoadFailed(false);
+      } catch {
+        // Never a raw error string on screen — the panel below says it calmly.
+        setLoadFailed(true);
+      }
+    } else {
+      setLoadFailed(false);
     }
 
     // Prefetch adjacent months in background
@@ -117,8 +135,9 @@ export default function FeedScreen() {
 
     const prev = shiftMonth(currentYear, currentMonth, -1);
     const next = shiftMonth(currentYear, currentMonth, 1);
-    void dataStore.refreshEntries(prev.year, prev.month);
-    void dataStore.refreshEntries(next.year, next.month);
+    // Prefetches are best-effort: a failure here is not the user's problem.
+    void dataStore.refreshEntries(prev.year, prev.month).catch(() => {});
+    void dataStore.refreshEntries(next.year, next.month).catch(() => {});
   }, [currentMonth, currentYear, session, dataStore]);
 
   // Reload entries when screen comes into focus or month changes
@@ -134,18 +153,50 @@ export default function FeedScreen() {
       await dataStore.refreshEntries(currentYear, currentMonth, {
         force: true,
       });
+      setLoadFailed(false);
+    } catch {
+      setLoadFailed(true);
     } finally {
       setRefreshing(false);
     }
   };
 
+  const retryLoad = async () => {
+    void Haptics.selectionAsync();
+    setLoadFailed(false);
+    try {
+      await dataStore.refreshEntries(currentYear, currentMonth, {
+        force: true,
+      });
+    } catch {
+      setLoadFailed(true);
+    }
+  };
+
+  // --- Month navigation -----------------------------------------------------
+  // The feed can only look backwards: there are no entries in the future, and
+  // paging into it forever is just a way to get lost.
+  const today = new Date();
+  const isCurrentMonthView =
+    currentDate.getMonth() === today.getMonth() &&
+    currentDate.getFullYear() === today.getFullYear();
+
   const changeMonth = (direction: number) => {
+    if (direction > 0 && isCurrentMonthView) return;
+    void Haptics.selectionAsync();
     setMonthDirection(direction);
     setCurrentDate((prev) => {
       const newDate = new Date(prev);
       newDate.setMonth(prev.getMonth() + direction);
       return newDate;
     });
+  };
+
+  const jumpToToday = () => {
+    if (isCurrentMonthView) return;
+    void Haptics.selectionAsync();
+    setMonthDirection(1);
+    setCurrentDate(new Date());
   };
 
   const formatTime = (iso: string): string => {
@@ -200,10 +251,14 @@ export default function FeedScreen() {
     setEditSaving(false);
     if (outcome.status === "failed") {
       // Re-sync from the server so the optimistic edit doesn't stick.
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       setEditError(outcome.reason);
-      void dataStore.refreshEntries(currentYear, currentMonth, { force: true });
+      void dataStore
+        .refreshEntries(currentYear, currentMonth, { force: true })
+        .catch(() => {});
       return;
     }
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setEditingEntry(null);
     setEditText("");
   };
@@ -230,10 +285,14 @@ export default function FeedScreen() {
     const outcome = await dataStore.deleteEntry(entry);
     setDeleteLoading(false);
     if (outcome.status === "failed") {
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       setDeleteError(outcome.reason);
-      void dataStore.refreshEntries(currentYear, currentMonth, { force: true });
+      void dataStore
+        .refreshEntries(currentYear, currentMonth, { force: true })
+        .catch(() => {});
       return;
     }
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setDeletingEntry(null);
   };
 
@@ -258,6 +317,8 @@ export default function FeedScreen() {
           </View>
         </View>
 
+        {/* Same month control as the Tracker, including its Today shortcut —
+            eight taps to reach last spring is not navigation. */}
         <View style={styles.monthHeader}>
           <IconButton
             onPress={() => changeMonth(-1)}
@@ -265,12 +326,32 @@ export default function FeedScreen() {
           >
             <IconSymbol name="chevron.left" size={22} color={Colors.ink} />
           </IconButton>
-          <Text style={styles.monthText} accessibilityRole="header">
-            {monthName}
-          </Text>
+          <TouchableOpacity
+            onPress={jumpToToday}
+            activeOpacity={0.85}
+            style={styles.monthTextWrapper}
+            // Vertical only — the chevrons sit right beside it.
+            hitSlop={{ top: 10, bottom: 10 }}
+            accessibilityRole="button"
+            accessibilityLabel={
+              isCurrentMonthView ? monthName : `${monthName}, jump to today`
+            }
+            accessibilityState={{ disabled: isCurrentMonthView }}
+          >
+            <Text style={styles.monthText}>{monthName}</Text>
+            {!isCurrentMonthView && (
+              <View style={styles.todayPill}>
+                <Text style={styles.todayPillText}>Today</Text>
+              </View>
+            )}
+          </TouchableOpacity>
           <IconButton
             onPress={() => changeMonth(1)}
+            disabled={isCurrentMonthView}
             accessibilityLabel="Next month"
+            accessibilityHint={
+              isCurrentMonthView ? "You're on the current month" : undefined
+            }
           >
             <IconSymbol name="chevron.right" size={22} color={Colors.ink} />
           </IconButton>
@@ -284,11 +365,49 @@ export default function FeedScreen() {
           </Text>
         ) : null}
 
+        {/* Stale-but-present: show what we have, admit it may be behind. */}
+        {loadFailed && entries.length > 0 ? (
+          <TouchableOpacity
+            onPress={retryLoad}
+            activeOpacity={0.85}
+            style={styles.staleNotice}
+            accessibilityRole="button"
+            accessibilityLabel="Couldn't refresh this month. Tap to try again."
+          >
+            <Text style={styles.syncNote}>
+              Couldn&apos;t refresh — showing what&apos;s on this device · tap
+              to try again
+            </Text>
+          </TouchableOpacity>
+        ) : null}
+
         {loading ? (
           <View style={styles.entriesContainer}>
             <SkeletonCard height={140} style={styles.skeletonSpacing} />
             <SkeletonCard height={100} style={styles.skeletonSpacing} />
             <SkeletonCard height={180} style={styles.skeletonSpacing} />
+          </View>
+        ) : loadFailed && entries.length === 0 ? (
+          <View style={styles.emptyContainer}>
+            <View style={styles.emptyIconWrap}>
+              <IconSymbol
+                name="arrow.clockwise"
+                size={32}
+                color={Colors.ink}
+              />
+            </View>
+            <Text style={styles.emptyText}>Couldn&apos;t load this month</Text>
+            <Text style={styles.emptyHint}>
+              Your entries are safe — we just couldn&apos;t reach them from
+              here. Check your connection and try again.
+            </Text>
+            <PressableScale
+              style={styles.emptyCta}
+              onPress={retryLoad}
+              accessibilityLabel="Try again"
+            >
+              <Text style={styles.emptyCtaText}>Try again</Text>
+            </PressableScale>
           </View>
         ) : entries.length === 0 ? (
           <View style={styles.emptyContainer}>
@@ -299,13 +418,20 @@ export default function FeedScreen() {
                 color={Colors.ink}
               />
             </View>
-            <Text style={styles.emptyText}>Your feed is empty</Text>
+            <Text style={styles.emptyText}>
+              {isCurrentMonthView
+                ? "Your feed is empty"
+                : `Nothing written in ${monthName}`}
+            </Text>
             <Text style={styles.emptyHint}>
               Capture a highlight on the Tracker tab to start your journal.
             </Text>
             <PressableScale
               style={styles.emptyCta}
-              onPress={() => router.push("/(tabs)" as any)}
+              // navigate, not push: the Tracker is a sibling tab, not a page
+              // to stack on top of this one.
+              onPress={() => router.navigate("/(tabs)")}
+              accessibilityLabel="Go to Tracker"
             >
               <Text style={styles.emptyCtaText}>Go to Tracker</Text>
             </PressableScale>
@@ -366,65 +492,81 @@ export default function FeedScreen() {
         )}
       </ScrollView>
 
-      {/* Edit entry (FR-E3) — text only; existing photos are preserved. */}
+      {/* Edit entry (FR-E3) — text only; existing photos are preserved.
+          Same chrome as ConfirmDialog (scrim, PaperCard, button row) so the
+          screen doesn't run two different dialog looks. */}
       <Modal
         visible={editingEntry !== null}
         transparent
         animationType="fade"
         onRequestClose={closeEditor}
       >
-        <Pressable
-          style={styles.editBackdrop}
-          onPress={closeEditor}
-          accessibilityViewIsModal
-          accessibilityRole="button"
-          accessibilityLabel="Dismiss editor"
+        <KeyboardAvoidingView
+          style={styles.editFill}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
         >
-          {/* Swallow taps so pressing the card doesn't dismiss the editor. */}
-          <Pressable style={styles.editCardWrap} onPress={() => {}}>
-            <View style={styles.editCard}>
-              <Text style={styles.editTitle} accessibilityRole="header">
-                Edit highlight
-              </Text>
-              <TextInput
-                style={styles.editInput}
-                value={editText}
-                onChangeText={setEditText}
-                multiline
-                autoFocus
-                editable={!editSaving}
-                placeholder="Tell me something about today..."
-                placeholderTextColor={Colors.textSecondary}
-                accessibilityLabel="Highlight text"
-              />
-              {editError ? (
-                <Text style={styles.editErrorText}>{editError}</Text>
-              ) : null}
-              <View style={styles.editButtonRow}>
-                <PressableScale
-                  style={[styles.editButton, styles.editCancelButton]}
-                  onPress={closeEditor}
-                  disabled={editSaving}
-                >
-                  <Text style={styles.editCancelText}>Cancel</Text>
-                </PressableScale>
-                <PressableScale
-                  style={[
-                    styles.editButton,
-                    styles.editSaveButton,
-                    editSaving && styles.editButtonDisabled,
-                  ]}
-                  onPress={handleEditSave}
-                  disabled={editSaving}
-                >
-                  <Text style={styles.editSaveText}>
-                    {editSaving ? "Saving..." : "Save"}
-                  </Text>
-                </PressableScale>
-              </View>
-            </View>
+          <Pressable
+            style={styles.editBackdrop}
+            onPress={closeEditor}
+            accessibilityViewIsModal
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss editor"
+          >
+            {/* Swallow taps so pressing the card doesn't dismiss the editor. */}
+            <Pressable style={styles.editCardWrap} onPress={() => {}}>
+              <PaperCard>
+                <Text style={styles.editTitle} accessibilityRole="header">
+                  Edit highlight
+                </Text>
+                <TextInput
+                  style={styles.editInput}
+                  value={editText}
+                  onChangeText={setEditText}
+                  multiline
+                  autoFocus
+                  editable={!editSaving}
+                  placeholder="Tell me something about today..."
+                  placeholderTextColor={Colors.textSecondary}
+                  accessibilityLabel="Highlight text"
+                />
+                {editError ? (
+                  <Text style={styles.editErrorText}>{editError}</Text>
+                ) : null}
+                <View style={styles.editButtonRow}>
+                  <PressableScale
+                    style={[styles.editButton, styles.editCancelButton]}
+                    onPress={closeEditor}
+                    disabled={editSaving}
+                    accessibilityLabel="Cancel"
+                  >
+                    <Text
+                      style={[
+                        styles.editCancelText,
+                        editSaving && styles.editButtonDisabled,
+                      ]}
+                    >
+                      Cancel
+                    </Text>
+                  </PressableScale>
+                  <PressableScale
+                    style={[
+                      styles.editButton,
+                      styles.editSaveButton,
+                      editSaving && styles.editButtonDisabled,
+                    ]}
+                    onPress={handleEditSave}
+                    disabled={editSaving}
+                    accessibilityLabel={editSaving ? "Saving" : "Save"}
+                  >
+                    <Text style={styles.editSaveText}>
+                      {editSaving ? "Saving..." : "Save"}
+                    </Text>
+                  </PressableScale>
+                </View>
+              </PaperCard>
+            </Pressable>
           </Pressable>
-        </Pressable>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Delete entry (FR-E4). */}
@@ -481,11 +623,31 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     marginBottom: 8,
   },
+  monthTextWrapper: {
+    alignItems: "center",
+    paddingHorizontal: 4,
+  },
   monthText: {
     fontSize: 20,
     fontWeight: "600",
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
+  },
+  todayPill: {
+    marginTop: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 2,
+    borderRadius: 10,
+    backgroundColor: `${Colors.accent}33`,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.accent,
+  },
+  todayPillText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: Colors.ink,
+    fontFamily: Fonts.handwriting,
+    letterSpacing: 0.3,
   },
   entriesContainer: {
     paddingHorizontal: 20,
@@ -531,18 +693,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 32,
   },
-  loadingContainer: {
-    marginHorizontal: 16,
-    marginTop: 32,
-    alignItems: "center",
-    paddingVertical: 32,
-    gap: 12,
-  },
-  loadingText: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
-  },
   emptyIconWrap: {
     width: 80,
     height: 80,
@@ -558,6 +708,7 @@ const styles = StyleSheet.create({
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
     marginBottom: 6,
+    textAlign: "center",
   },
   emptyHint: {
     fontSize: 14,
@@ -580,6 +731,9 @@ const styles = StyleSheet.create({
     color: Colors.paper,
     fontFamily: Fonts.handwriting,
   },
+  editFill: {
+    flex: 1,
+  },
   editBackdrop: {
     flex: 1,
     backgroundColor: Scrim.modal,
@@ -590,11 +744,6 @@ const styles = StyleSheet.create({
   editCardWrap: {
     width: "100%",
     maxWidth: 360,
-  },
-  editCard: {
-    backgroundColor: Colors.card,
-    borderRadius: 18,
-    padding: 20,
   },
   editTitle: {
     fontFamily: Fonts.handwritingSemiBold,
@@ -618,6 +767,9 @@ const styles = StyleSheet.create({
     textAlign: "center",
     paddingHorizontal: 20,
     marginBottom: 12,
+  },
+  staleNotice: {
+    marginBottom: 4,
   },
   editErrorText: {
     fontFamily: Fonts.handwriting,

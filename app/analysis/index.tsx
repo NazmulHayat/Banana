@@ -9,7 +9,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 /** Overview analysis — the Tight 4 across all habits, with drill-in per habit. */
 export default function AnalysisScreen() {
   const insets = useSafeAreaInsets();
-  const { habits } = useDataStore();
+  const { habits, habitsReady } = useDataStore();
   const { logs, loading, failed, reload } = useRecentHabitLogs(12);
   // Entries power the journal half (FR-AN1); they load on their own clock so
   // the habit charts never wait on them.
@@ -27,7 +27,8 @@ export default function AnalysisScreen() {
           logs={logs}
           entries={entries}
           entriesLoading={entriesLoading}
-          loading={loading}
+          // Habits still loading would otherwise read as "you have none".
+          loading={loading || !habitsReady}
           failedMonths={failed + entriesFailed}
           onRetry={reload}
         />

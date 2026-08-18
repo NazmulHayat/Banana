@@ -12,21 +12,24 @@ import React, {
   useState,
 } from "react";
 import { AppState } from "react-native";
+import { toDayKey, todayKey } from "./dates";
 import {
   deleteEntry as dbDeleteEntry,
   getCachedEntriesForMonth,
-  getEntriesForMonth,
+  getEntriesForMonths,
   loadEntriesForMonthFromStorage,
+  removeEntryFromCache,
   saveEntry as dbSaveEntry,
-  setCachedEntriesForMonth,
+  upsertEntryInCache,
 } from "./db/entries";
 import {
   deleteHabitLogsForHabit as dbDeleteHabitLogsForHabit,
   getCachedHabitLogsForMonth,
-  getHabitLogsForMonthDirect,
+  getHabitLogsForMonths,
+  type HabitLogPurgeRange,
   loadHabitLogsFromStorage,
-  setCachedHabitLogsForMonth,
   upsertHabitLog as dbUpsertHabitLog,
+  upsertHabitLogInCache,
 } from "./db/habit-logs";
 import {
   getCachedHabits,
@@ -36,7 +39,6 @@ import {
   setCachedHabits,
 } from "./db/habits";
 import {
-  clearPendingWrites,
   enqueuePendingWrite,
   flushPendingWrites,
   pendingWriteCount as dbPendingWriteCount,
@@ -44,7 +46,13 @@ import {
   type PendingWriteBody,
 } from "./db/pending-writes";
 import { DateFormats } from "./db/schema";
-import type { DailyEntry, Habit, HabitLog, WriteOutcome } from "./db/types";
+import type {
+  DailyEntry,
+  Habit,
+  HabitLog,
+  MonthRef,
+  WriteOutcome,
+} from "./db/types";
 import { UnrecoverableWriteError } from "./db/types";
 import { supabase } from "./supabase";
 
@@ -68,6 +76,11 @@ const FAILED_REASONS: Record<string, string> = {
 };
 const GENERIC_FAILURE = "Couldn't save that. Please try again.";
 
+// How far back a habit-log purge sweeps when we know neither the habit's
+// creation date nor the account's (a queued purge from an older build). Days
+// are HMAC'd locally, so a wide-but-bounded sweep is cheap; unbounded is not.
+const FALLBACK_PURGE_DAYS = 366 * 5;
+
 function failed(error: unknown): WriteOutcome {
   const message = error instanceof Error ? error.message : "";
   return { status: "failed", reason: FAILED_REASONS[message] ?? GENERIC_FAILURE };
@@ -78,6 +91,111 @@ function worstOutcome(outcomes: WriteOutcome[]): WriteOutcome {
   const failure = outcomes.find((o) => o.status === "failed");
   if (failure) return failure;
   return outcomes.some((o) => o.status === "queued") ? QUEUED : SYNCED;
+}
+
+// ============================================================================
+// Value equality — the guard that stops a no-op read from re-rendering the app
+// ============================================================================
+// A read that returns exactly what we already hold must NOT produce a new state
+// identity. Screens derive effect dependencies from store values, so an
+// identity change on every refresh is what turned "load this month" into an
+// endless load → render → load loop.
+function sameList<T>(a: T[], b: T[], eq: (x: T, y: T) => boolean): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return a.every((item, i) => eq(item, b[i]));
+}
+
+const sameStrings = (a: string[], b: string[]): boolean =>
+  sameList(a, b, (x, y) => x === y);
+
+const sameHabit = (a: Habit, b: Habit): boolean =>
+  a.id === b.id && a.name === b.name && a.createdAt === b.createdAt;
+
+const sameLog = (a: HabitLog, b: HabitLog): boolean =>
+  a.habitId === b.habitId && a.date === b.date && a.completed === b.completed;
+
+const sameEntry = (a: DailyEntry, b: DailyEntry): boolean =>
+  a.id === b.id &&
+  a.date === b.date &&
+  a.text === b.text &&
+  a.createdAt === b.createdAt &&
+  sameStrings(a.mediaPaths, b.mediaPaths);
+
+/** Group logs by their day key. */
+function groupByDay(logs: HabitLog[]): Map<string, HabitLog[]> {
+  const byDay = new Map<string, HabitLog[]>();
+  for (const log of logs) {
+    const dayLogs = byDay.get(log.date);
+    if (dayLogs) dayLogs.push(log);
+    else byDay.set(log.date, [log]);
+  }
+  return byDay;
+}
+
+// ============================================================================
+// Pending-writes replay executor (NFR-1)
+// ============================================================================
+/**
+ * What a replayed write has to do to LOCAL state once the server has taken it.
+ * Init order is reads-then-flush, so by the time a queued write replays, the
+ * server's (pre-replay) answer has already overwritten the optimistic value in
+ * state — without re-applying, the UI shows a habit un-ticked for the rest of
+ * the session while server, disk and cache all say ticked.
+ */
+export interface FlushHandlers {
+  userId: string;
+  onEntrySaved: (entry: DailyEntry) => void;
+  onEntryDeleted: (entryId: string, date: string) => void;
+  onHabitsSaved: (habits: Habit[]) => void;
+  onHabitLogSaved: (log: HabitLog) => void;
+  onHabitLogsPurged: (habitId: string) => void;
+  /** Range for a purge queued before ranges were recorded (back-compat). */
+  fallbackPurgeRange: () => HabitLogPurgeRange;
+}
+
+/**
+ * Build the executor `flushPendingWrites` drives. Every replay is idempotent
+ * (upsert, replace-all, or a delete of something already gone). It must NEVER
+ * enqueue on failure — throwing IS how it says "keep this queued" (D5).
+ *
+ * Module-scope + exported so the replay wiring is testable without mounting the
+ * provider.
+ */
+export function createFlushExecutor(
+  handlers: FlushHandlers,
+): (item: PendingWrite) => Promise<void> {
+  const { userId } = handlers;
+  return async (item: PendingWrite): Promise<void> => {
+    switch (item.kind) {
+      case "entry":
+        if (item.op === "delete") {
+          await dbDeleteEntry(item.payload.id, item.payload.date, userId);
+          handlers.onEntryDeleted(item.payload.id, item.payload.date);
+        } else {
+          await dbSaveEntry(item.payload, userId);
+          handlers.onEntrySaved(item.payload);
+        }
+        return;
+      case "habits":
+        await dbSaveHabits(item.payload, userId);
+        handlers.onHabitsSaved(item.payload);
+        return;
+      case "habitLog":
+        await dbUpsertHabitLog(item.payload, userId);
+        handlers.onHabitLogSaved(item.payload);
+        return;
+      case "habitLogs": {
+        const fallback = handlers.fallbackPurgeRange();
+        await dbDeleteHabitLogsForHabit(item.payload.habitId, userId, {
+          from: item.payload.from ?? fallback.from,
+          to: item.payload.to ?? fallback.to,
+        });
+        handlers.onHabitLogsPurged(item.payload.habitId);
+        return;
+      }
+    }
+  };
 }
 
 // ============================================================================
@@ -110,6 +228,17 @@ interface ProfileData {
   created_at: string;
 }
 
+/** What a windowed read reports back: the rows, and how many months failed. */
+interface WindowResult<T> {
+  data: T[];
+  /**
+   * Months whose network read failed outright. Anything already on the
+   * device is still in `data` — a screen uses this to say "showing what's saved
+   * on this device", not to blank itself.
+   */
+  failed: number;
+}
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -125,7 +254,6 @@ interface DataState {
   habitLogsByDay: Map<string, HabitLog[]>; // key: "YYYY-MM-DD" for progressive render
   habitLogsLoading: boolean;
   habitLogsReady: boolean;
-  habitLogsProgress: number; // 0-1 for current month loading progress
 
   // Entries per month
   entries: Map<string, DailyEntry[]>; // key: "YYYY-MM"
@@ -160,6 +288,20 @@ interface DataActions {
     month: number,
     opts?: { force?: boolean },
   ) => Promise<DailyEntry[]>;
+  /**
+   * Load a whole window of months in ONE round trip — the analysis
+   * screens want twelve. Months already cached short-circuit; the rest are
+   * fetched together. Reports how many months failed so the caller can say so.
+   */
+  refreshHabitLogWindow: (
+    months: MonthRef[],
+    opts?: { force?: boolean },
+  ) => Promise<WindowResult<HabitLog>>;
+  /** Same window, for journal entries. */
+  refreshEntryWindow: (
+    months: MonthRef[],
+    opts?: { force?: boolean },
+  ) => Promise<WindowResult<DailyEntry>>;
   refreshProfile: () => Promise<void>;
 
   // Get data for specific month (uses cache or fetches)
@@ -235,7 +377,6 @@ export function DataProvider({ children, session }: DataProviderProps) {
   );
   const [habitLogsLoading, setHabitLogsLoading] = useState(false);
   const [habitLogsReady, setHabitLogsReady] = useState(false);
-  const [habitLogsProgress, setHabitLogsProgress] = useState(0);
 
   const [entries, setEntries] = useState<Map<string, DailyEntry[]>>(new Map());
   const [entriesLoading, setEntriesLoading] = useState(false);
@@ -261,7 +402,7 @@ export function DataProvider({ children, session }: DataProviderProps) {
   // forever. It also gates the AsyncStorage tier: that tier is for cold start /
   // offline, so once a key has been resolved here we skip it and go to the
   // network (a write that invalidates the in-memory month must not be answered
-  // from a stale on-disk copy).
+  // from a stale on-disk copy). A FAILED read never lands here.
   const loadedKeysRef = useRef<Set<string>>(new Set());
   // In-flight reads, keyed the same way (+ the force flag, so a pull-to-refresh
   // never joins a cache-path request). See `singleFlight` above.
@@ -271,9 +412,24 @@ export function DataProvider({ children, session }: DataProviderProps) {
   const flushInFlightRef = useRef<Promise<void> | null>(null);
   // The last habit list we loaded or persisted — the baseline `saveHabits`
   // diffs against to find deleted habits (D12). Deliberately NOT touched by
-  // `updateHabits`: screens call that optimistically before saving, and diffing
-  // against an already-optimistic list would hide the deletion.
+  // `updateHabits` (screens call that optimistically before saving, and diffing
+  // against an already-optimistic list would hide the deletion) and never by a
+  // FAILED read (which used to reset it to `[]`, silently disabling the purge).
   const lastSyncedHabitsRef = useRef<Habit[]>([]);
+  // Mirrors of the state maps, for the fallback value a failed read returns
+  // without pulling `habitLogs` / `entries` into a callback's dependencies
+  // (which would change every refresh callback's identity on every update).
+  const habitLogsRef = useRef<Map<string, HabitLog[]>>(new Map());
+  const entriesRef = useRef<Map<string, DailyEntry[]>>(new Map());
+  // The account's creation day — the floor for a habit-log purge sweep.
+  const accountCreatedRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    habitLogsRef.current = habitLogs;
+  }, [habitLogs]);
+  useEffect(() => {
+    entriesRef.current = entries;
+  }, [entries]);
 
   // ============================================================================
   // Helper: Format month key
@@ -292,8 +448,10 @@ export function DataProvider({ children, session }: DataProviderProps) {
       const force = opts?.force === true;
       const key = `habits:${userId}`;
 
+      // Only ever called with what the network (or a cache tier) actually
+      // produced — never with the empty list a failed read used to return.
       const apply = (list: Habit[]): Habit[] => {
-        setHabits(list);
+        setHabits((prev) => (sameList(prev, list, sameHabit) ? prev : list));
         lastSyncedHabitsRef.current = list;
         loadedKeysRef.current.add(key);
         setHabitsReady(true);
@@ -318,10 +476,11 @@ export function DataProvider({ children, session }: DataProviderProps) {
               const stored = await loadHabitsFromStorage(userId);
               if (stored !== null) return apply(stored);
             }
-            // Tier 3 — network.
-            const fresh = await getHabits({ force });
-            setCachedHabits(userId, fresh);
-            return apply(fresh);
+            // Tier 3 — network. A failure keeps the device's copy: nothing is
+            // applied, nothing is cached, and the caller gets what we hold.
+            const fresh = await getHabits(userId);
+            if (!fresh.ok) return getCachedHabits(userId) ?? [];
+            return apply(fresh.data);
           } finally {
             setHabitsLoading(false);
           }
@@ -332,128 +491,283 @@ export function DataProvider({ children, session }: DataProviderProps) {
   );
 
   // ============================================================================
-  // Fetch Habit Logs
+  // Fetch Habit Logs (one month or a whole window — same path)
   // ============================================================================
+  // Applies a batch of months in ONE state update, and only for the months that
+  // actually changed.
+  const applyLogMonths = useCallback(
+    (userId: string, byMonth: Map<string, HabitLog[]>) => {
+      if (byMonth.size === 0) return;
+
+      setHabitLogs((prev) => {
+        let next: Map<string, HabitLog[]> | null = null;
+        byMonth.forEach((logs, ym) => {
+          const current = prev.get(ym);
+          if (current && sameList(current, logs, sameLog)) return;
+          next = next ?? new Map(prev);
+          next.set(ym, logs);
+        });
+        return next ?? prev;
+      });
+
+      setHabitLogsByDay((prev) => {
+        const next = new Map(prev);
+        let changed = false;
+        byMonth.forEach((logs, ym) => {
+          const days = groupByDay(logs);
+          // Days that lost every log this month must disappear, or a deleted
+          // habit's ticks linger in the day map forever.
+          for (const day of [...next.keys()]) {
+            if (day.slice(0, 7) !== ym || days.has(day)) continue;
+            next.delete(day);
+            changed = true;
+          }
+          days.forEach((dayLogs, day) => {
+            const current = next.get(day);
+            if (current && sameList(current, dayLogs, sameLog)) return;
+            next.set(day, dayLogs);
+            changed = true;
+          });
+        });
+        return changed ? next : prev;
+      });
+
+      byMonth.forEach((_logs, ym) =>
+        loadedKeysRef.current.add(`logs:${userId}:${ym}`),
+      );
+      setHabitLogsReady(true);
+    },
+    [],
+  );
+
+  const refreshHabitLogWindow = useCallback(
+    async (
+      months: MonthRef[],
+      opts?: { force?: boolean },
+    ): Promise<WindowResult<HabitLog>> => {
+      if (!session || months.length === 0) return { data: [], failed: 0 };
+
+      const userId = session.user.id;
+      const force = opts?.force === true;
+      const resolved = new Map<string, HabitLog[]>();
+      const fromNetwork = new Map<string, HabitLog[]>();
+
+      // Tier 1 — in-memory (sync). `[]` is a real, resolved month (no logs yet)
+      // and short-circuits exactly like a non-empty one.
+      const uncached: MonthRef[] = [];
+      for (const m of months) {
+        const ym = getMonthKey(m.year, m.month);
+        if (!force) {
+          const cached = getCachedHabitLogsForMonth(m.year, m.month, userId);
+          if (cached !== null) {
+            resolved.set(ym, cached);
+            continue;
+          }
+        }
+        uncached.push(m);
+      }
+
+      let failedMonths = 0;
+      if (uncached.length > 0) {
+        setHabitLogsLoading(true);
+        try {
+          // Tier 2 — AsyncStorage (offline cold start).
+          const missing: MonthRef[] = [];
+          for (const m of uncached) {
+            const ym = getMonthKey(m.year, m.month);
+            if (!force && !loadedKeysRef.current.has(`logs:${userId}:${ym}`)) {
+              const stored = await loadHabitLogsFromStorage(
+                m.year,
+                m.month,
+                userId,
+              );
+              if (stored !== null) {
+                resolved.set(ym, stored);
+                continue;
+              }
+            }
+            missing.push(m);
+          }
+
+          // Tier 3 — network: every remaining month in ONE query.
+          if (missing.length > 0) {
+            const ids = missing
+              .map((m) => getMonthKey(m.year, m.month))
+              .sort()
+              .join(",");
+            const result = await singleFlight(
+              inFlightRef.current,
+              `logs:${userId}:${ids}:${force ? "force" : "cache"}`,
+              () => getHabitLogsForMonths(missing, userId),
+            );
+            if (result.ok) {
+              result.data.forEach((logs, ym) => {
+                resolved.set(ym, logs);
+                fromNetwork.set(ym, logs);
+              });
+            } else {
+              // The read never happened. Cache nothing, apply nothing —
+              // the device keeps whatever it already had.
+              failedMonths = missing.length;
+            }
+          }
+        } finally {
+          setHabitLogsLoading(false);
+        }
+      }
+
+      applyLogMonths(userId, resolved);
+
+      const data: HabitLog[] = [];
+      for (const m of months) {
+        const ym = getMonthKey(m.year, m.month);
+        const logs =
+          resolved.get(ym) ??
+          getCachedHabitLogsForMonth(m.year, m.month, userId) ??
+          habitLogsRef.current.get(ym) ??
+          [];
+        data.push(...logs);
+      }
+      return { data, failed: failedMonths };
+    },
+    [session, applyLogMonths],
+  );
+
   const refreshHabitLogs = useCallback(
     async (
       year: number,
       month: number,
       opts?: { force?: boolean },
     ): Promise<HabitLog[]> => {
-      if (!session) return [];
-
-      const userId = session.user.id;
-      const monthKey = getMonthKey(year, month);
-      const force = opts?.force === true;
-      const key = `logs:${userId}:${monthKey}`;
-
-      const apply = (logs: HabitLog[]): HabitLog[] => {
-        setHabitLogs((prev) => new Map(prev).set(monthKey, logs));
-        const byDay = new Map<string, HabitLog[]>();
-        for (const log of logs) {
-          const dayLogs = byDay.get(log.date) || [];
-          dayLogs.push(log);
-          byDay.set(log.date, dayLogs);
-        }
-        setHabitLogsByDay((prev) => {
-          const next = new Map(prev);
-          byDay.forEach((dayLogs, dayKey) => next.set(dayKey, dayLogs));
-          return next;
-        });
-        loadedKeysRef.current.add(key);
-        setHabitLogsReady(true);
-        return logs;
-      };
-
-      // Tier 1 — in-memory (sync). `[]` is a real, resolved month (no logs yet)
-      // and short-circuits exactly like a non-empty one.
-      if (!force) {
-        const cached = getCachedHabitLogsForMonth(year, month, userId);
-        if (cached !== null) return apply(cached);
-      }
-
-      return singleFlight(
-        inFlightRef.current,
-        `${key}:${force ? "force" : "cache"}`,
-        async () => {
-          setHabitLogsLoading(true);
-          try {
-            // Tier 2 — AsyncStorage (offline cold start).
-            if (!force && !loadedKeysRef.current.has(key)) {
-              const stored = await loadHabitLogsFromStorage(year, month, userId);
-              if (stored !== null) return apply(stored);
-            }
-            // Tier 3 — network.
-            const logs = await getHabitLogsForMonthDirect(year, month);
-            setCachedHabitLogsForMonth(year, month, userId, logs);
-            return apply(logs);
-          } finally {
-            setHabitLogsLoading(false);
-          }
-        },
-      );
+      const { data } = await refreshHabitLogWindow([{ year, month }], opts);
+      return data;
     },
-    [session],
+    [refreshHabitLogWindow],
   );
 
   // ============================================================================
-  // Fetch Entries
+  // Fetch Entries (same shape as habit logs)
   // ============================================================================
+  const applyEntryMonths = useCallback(
+    (userId: string, byMonth: Map<string, DailyEntry[]>) => {
+      if (byMonth.size === 0) return;
+
+      setEntries((prev) => {
+        let next: Map<string, DailyEntry[]> | null = null;
+        byMonth.forEach((list, ym) => {
+          const current = prev.get(ym);
+          if (current && sameList(current, list, sameEntry)) return;
+          next = next ?? new Map(prev);
+          next.set(ym, list);
+        });
+        return next ?? prev;
+      });
+
+      byMonth.forEach((_list, ym) =>
+        loadedKeysRef.current.add(`entries:${userId}:${ym}`),
+      );
+      setEntriesReady(true);
+    },
+    [],
+  );
+
+  const refreshEntryWindow = useCallback(
+    async (
+      months: MonthRef[],
+      opts?: { force?: boolean },
+    ): Promise<WindowResult<DailyEntry>> => {
+      if (!session || months.length === 0) return { data: [], failed: 0 };
+
+      const userId = session.user.id;
+      const force = opts?.force === true;
+      const resolved = new Map<string, DailyEntry[]>();
+
+      // Tier 1 — in-memory. Pull-to-refresh (`force`) skips it so the user can
+      // see fresh server state.
+      const uncached: MonthRef[] = [];
+      for (const m of months) {
+        const ym = getMonthKey(m.year, m.month);
+        if (!force) {
+          const cached = getCachedEntriesForMonth(m.year, m.month, userId);
+          if (cached !== null) {
+            resolved.set(ym, cached);
+            continue;
+          }
+        }
+        uncached.push(m);
+      }
+
+      let failedMonths = 0;
+      if (uncached.length > 0) {
+        setEntriesLoading(true);
+        try {
+          // Tier 2 — AsyncStorage (offline cold start).
+          const missing: MonthRef[] = [];
+          for (const m of uncached) {
+            const ym = getMonthKey(m.year, m.month);
+            if (!force && !loadedKeysRef.current.has(`entries:${userId}:${ym}`)) {
+              const stored = await loadEntriesForMonthFromStorage(
+                m.year,
+                m.month,
+                userId,
+              );
+              if (stored !== null) {
+                resolved.set(ym, stored);
+                continue;
+              }
+            }
+            missing.push(m);
+          }
+
+          // Tier 3 — network, one query for the whole window.
+          if (missing.length > 0) {
+            const ids = missing
+              .map((m) => getMonthKey(m.year, m.month))
+              .sort()
+              .join(",");
+            const result = await singleFlight(
+              inFlightRef.current,
+              `entries:${userId}:${ids}:${force ? "force" : "cache"}`,
+              () => getEntriesForMonths(missing, userId),
+            );
+            if (result.ok) {
+              result.data.forEach((list, ym) => resolved.set(ym, list));
+            } else {
+              failedMonths = missing.length;
+            }
+          }
+        } finally {
+          setEntriesLoading(false);
+        }
+      }
+
+      applyEntryMonths(userId, resolved);
+
+      const data: DailyEntry[] = [];
+      for (const m of months) {
+        const ym = getMonthKey(m.year, m.month);
+        const list =
+          resolved.get(ym) ??
+          getCachedEntriesForMonth(m.year, m.month, userId) ??
+          entriesRef.current.get(ym) ??
+          [];
+        data.push(...list);
+      }
+      return { data, failed: failedMonths };
+    },
+    [session, applyEntryMonths],
+  );
+
   const refreshEntries = useCallback(
     async (
       year: number,
       month: number,
       opts?: { force?: boolean },
     ): Promise<DailyEntry[]> => {
-      if (!session) return [];
-
-      const userId = session.user.id;
-      const monthKey = getMonthKey(year, month);
-      const force = opts?.force === true;
-      const key = `entries:${userId}:${monthKey}`;
-
-      const apply = (list: DailyEntry[]): DailyEntry[] => {
-        setEntries((prev) => new Map(prev).set(monthKey, list));
-        loadedKeysRef.current.add(key);
-        setEntriesReady(true);
-        return list;
-      };
-
-      // Cache short-circuit only when NOT forced. Pull-to-refresh forces
-      // through to the network so the user can see fresh server state.
-      // Tier 1 — in-memory (sync). `[]` is a month we loaded and that is
-      // genuinely empty: short-circuit it like any other resolved month.
-      if (!force) {
-        const cached = getCachedEntriesForMonth(year, month, userId);
-        if (cached !== null) return apply(cached);
-      }
-
-      return singleFlight(
-        inFlightRef.current,
-        `${key}:${force ? "force" : "cache"}`,
-        async () => {
-          setEntriesLoading(true);
-          try {
-            // Tier 2 — AsyncStorage (offline cold start).
-            if (!force && !loadedKeysRef.current.has(key)) {
-              const stored = await loadEntriesForMonthFromStorage(
-                year,
-                month,
-                userId,
-              );
-              if (stored !== null) return apply(stored);
-            }
-            // Tier 3 — network.
-            const fresh = await getEntriesForMonth(year, month);
-            setCachedEntriesForMonth(year, month, userId, fresh);
-            return apply(fresh);
-          } finally {
-            setEntriesLoading(false);
-          }
-        },
-      );
+      const { data } = await refreshEntryWindow([{ year, month }], opts);
+      return data;
     },
-    [session],
+    [refreshEntryWindow],
   );
 
   // ============================================================================
@@ -473,7 +787,7 @@ export function DataProvider({ children, session }: DataProviderProps) {
         .single();
 
       if (error) {
-        console.error("[DataStore] Profile fetch error:", error);
+        if (__DEV__) console.warn("[DataStore] Profile fetch error:", error.message);
         return;
       }
 
@@ -483,6 +797,11 @@ export function DataProvider({ children, session }: DataProviderProps) {
           username: data.username,
           created_at: data.created_at,
         });
+        // The account's first day floors every habit-log purge sweep.
+        const created = new Date(data.created_at as string);
+        if (!Number.isNaN(created.getTime())) {
+          accountCreatedRef.current = toDayKey(created);
+        }
       }
       setProfileReady(true);
     } finally {
@@ -512,12 +831,14 @@ export function DataProvider({ children, session }: DataProviderProps) {
   // ============================================================================
   // Local Updates (Optimistic UI)
   // ============================================================================
+  // The lib/db cache is written HERE, outside the setState updater:
+  // updaters must be pure (StrictMode double-invokes them), and the db helpers
+  // only touch a month they already hold, so an optimistic edit can never
+  // replace an unloaded month with a one-item array.
   const updateHabits = useCallback(
     (newHabits: Habit[]) => {
-      setHabits(newHabits);
-      if (session) {
-        setCachedHabits(session.user.id, newHabits);
-      }
+      if (session) setCachedHabits(session.user.id, newHabits);
+      setHabits((prev) => (sameList(prev, newHabits, sameHabit) ? prev : newHabits));
     },
     [session],
   );
@@ -525,46 +846,29 @@ export function DataProvider({ children, session }: DataProviderProps) {
   const updateHabitLog = useCallback(
     (log: HabitLog) => {
       if (!session) return;
+      upsertHabitLogInCache(session.user.id, log);
 
-      const userId = session.user.id;
       const monthKey = log.date.slice(0, 7);
-      const [yearStr, monthStr] = monthKey.split("-");
-      const year = parseInt(yearStr, 10);
-      const month = parseInt(monthStr, 10);
-
-      // Update monthly logs
       setHabitLogs((prev) => {
-        const next = new Map(prev);
-        const monthLogs = [...(next.get(monthKey) || [])];
-        const existingIndex = monthLogs.findIndex(
+        const monthLogs = prev.get(monthKey) ?? [];
+        const i = monthLogs.findIndex(
           (l) => l.habitId === log.habitId && l.date === log.date,
         );
-        if (existingIndex >= 0) {
-          monthLogs[existingIndex] = log;
-        } else {
-          monthLogs.push(log);
-        }
-        next.set(monthKey, monthLogs);
-
-        // Update cache
-        setCachedHabitLogsForMonth(year, month, userId, monthLogs);
-        return next;
+        if (i >= 0 && sameLog(monthLogs[i], log)) return prev;
+        const nextLogs = [...monthLogs];
+        if (i >= 0) nextLogs[i] = log;
+        else nextLogs.push(log);
+        return new Map(prev).set(monthKey, nextLogs);
       });
 
-      // Update day-by-day cache
       setHabitLogsByDay((prev) => {
-        const next = new Map(prev);
-        const dayLogs = [...(next.get(log.date) || [])];
-        const existingIndex = dayLogs.findIndex(
-          (l) => l.habitId === log.habitId,
-        );
-        if (existingIndex >= 0) {
-          dayLogs[existingIndex] = log;
-        } else {
-          dayLogs.push(log);
-        }
-        next.set(log.date, dayLogs);
-        return next;
+        const dayLogs = prev.get(log.date) ?? [];
+        const i = dayLogs.findIndex((l) => l.habitId === log.habitId);
+        if (i >= 0 && sameLog(dayLogs[i], log)) return prev;
+        const nextDay = [...dayLogs];
+        if (i >= 0) nextDay[i] = log;
+        else nextDay.push(log);
+        return new Map(prev).set(log.date, nextDay);
       });
     },
     [session],
@@ -573,27 +877,35 @@ export function DataProvider({ children, session }: DataProviderProps) {
   const updateEntry = useCallback(
     (entry: DailyEntry) => {
       if (!session) return;
+      upsertEntryInCache(entry, session.user.id);
 
-      const userId = session.user.id;
       const monthKey = entry.date.slice(0, 7);
-      const [yearStr, monthStr] = monthKey.split("-");
-      const year = parseInt(yearStr, 10);
-      const month = parseInt(monthStr, 10);
-
       setEntries((prev) => {
-        const next = new Map(prev);
-        const monthEntries = [...(next.get(monthKey) || [])];
-        const existingIndex = monthEntries.findIndex((e) => e.id === entry.id);
-        if (existingIndex >= 0) {
-          monthEntries[existingIndex] = entry;
-        } else {
-          monthEntries.push(entry);
-        }
-        next.set(monthKey, monthEntries);
+        const monthEntries = prev.get(monthKey) ?? [];
+        const i = monthEntries.findIndex((e) => e.id === entry.id);
+        if (i >= 0 && sameEntry(monthEntries[i], entry)) return prev;
+        const next = [...monthEntries];
+        if (i >= 0) next[i] = entry;
+        else next.push(entry);
+        return new Map(prev).set(monthKey, next);
+      });
+    },
+    [session],
+  );
 
-        // Update cache
-        setCachedEntriesForMonth(year, month, userId, monthEntries);
-        return next;
+  /** Drop one entry from state + the db cache (optimistic delete, and replay). */
+  const removeEntryLocally = useCallback(
+    (entryId: string, date: string) => {
+      if (!session) return;
+      removeEntryFromCache(entryId, date, session.user.id);
+
+      const monthKey = date.slice(0, 7);
+      setEntries((prev) => {
+        const monthEntries = prev.get(monthKey);
+        if (!monthEntries) return prev;
+        const next = monthEntries.filter((e) => e.id !== entryId);
+        if (next.length === monthEntries.length) return prev;
+        return new Map(prev).set(monthKey, next);
       });
     },
     [session],
@@ -636,9 +948,10 @@ export function DataProvider({ children, session }: DataProviderProps) {
   const saveEntry = useCallback(
     async (entry: DailyEntry): Promise<WriteOutcome> => {
       if (!session) return failed(new UnrecoverableWriteError("Not signed in"));
+      const userId = session.user.id;
       updateEntry(entry); // optimistic
-      return persist(session.user.id, { kind: "entry", payload: entry }, () =>
-        dbSaveEntry(entry),
+      return persist(userId, { kind: "entry", payload: entry }, () =>
+        dbSaveEntry(entry, userId),
       );
     },
     [session, updateEntry, persist],
@@ -649,47 +962,61 @@ export function DataProvider({ children, session }: DataProviderProps) {
   const deleteEntry = useCallback(
     async (entry: DailyEntry): Promise<WriteOutcome> => {
       if (!session) return failed(new UnrecoverableWriteError("Not signed in"));
-
       const userId = session.user.id;
-      const monthKey = entry.date.slice(0, 7);
-      const [yearStr, monthStr] = monthKey.split("-");
-      const year = parseInt(yearStr, 10);
-      const month = parseInt(monthStr, 10);
 
-      setEntries((prev) => {
-        const next = new Map(prev);
-        const monthEntries = (next.get(monthKey) || []).filter(
-          (e) => e.id !== entry.id,
-        );
-        next.set(monthKey, monthEntries);
-
-        // Keep the offline cache in sync with the removal.
-        setCachedEntriesForMonth(year, month, userId, monthEntries);
-        return next;
-      });
+      removeEntryLocally(entry.id, entry.date);
 
       return persist(
         userId,
         { op: "delete", kind: "entry", payload: { id: entry.id, date: entry.date } },
-        () => dbDeleteEntry(entry.id, entry.date),
+        () => dbDeleteEntry(entry.id, entry.date, userId),
       );
     },
-    [session, persist],
+    [session, removeEntryLocally, persist],
   );
 
   // Drop every local trace of one habit's logs (D12 optimistic half).
   const purgeHabitLogsLocally = useCallback((habitId: string) => {
-    const drop = (logs: HabitLog[]) => logs.filter((l) => l.habitId !== habitId);
-    setHabitLogs((prev) => {
-      const next = new Map<string, HabitLog[]>();
-      prev.forEach((logs, key) => next.set(key, drop(logs)));
-      return next;
-    });
-    setHabitLogsByDay((prev) => {
-      const next = new Map<string, HabitLog[]>();
-      prev.forEach((logs, key) => next.set(key, drop(logs)));
-      return next;
-    });
+    const drop = (
+      prev: Map<string, HabitLog[]>,
+    ): Map<string, HabitLog[]> => {
+      let next: Map<string, HabitLog[]> | null = null;
+      prev.forEach((logs, key) => {
+        const kept = logs.filter((l) => l.habitId !== habitId);
+        if (kept.length === logs.length) return;
+        next = next ?? new Map(prev);
+        next.set(key, kept);
+      });
+      return next ?? prev;
+    };
+    setHabitLogs(drop);
+    setHabitLogsByDay(drop);
+  }, []);
+
+  /**
+   * The day range a habit-log purge has to sweep. `day_bucket` is
+   * forward-computable, so the purge enumerates days instead of downloading
+   * every log row: start at the habit's creation day, floored by the account's
+   * (a habit can be ticked on days before it was created, and the account's
+   * first day is the earliest anything can exist).
+   */
+  const purgeRangeFor = useCallback((habit?: Habit): HabitLogPurgeRange => {
+    const to = todayKey();
+    const candidates: string[] = [];
+    const accountDay = accountCreatedRef.current;
+    if (accountDay) candidates.push(accountDay);
+    if (habit) {
+      const created = new Date(habit.createdAt);
+      if (!Number.isNaN(created.getTime())) candidates.push(toDayKey(created));
+    }
+    if (candidates.length === 0) {
+      // Neither date is known — sweep a wide but bounded window.
+      const fallback = new Date();
+      fallback.setDate(fallback.getDate() - FALLBACK_PURGE_DAYS);
+      return { from: toDayKey(fallback), to };
+    }
+    // Day keys are fixed-width, so lexicographic order is calendar order.
+    return { from: candidates.sort()[0], to };
   }, []);
 
   // Persist the whole habit list (create / rename / delete / reorder). Array
@@ -711,21 +1038,26 @@ export function DataProvider({ children, session }: DataProviderProps) {
 
       const outcomes: WriteOutcome[] = [
         await persist(userId, { kind: "habits", payload: next }, () =>
-          dbSaveHabits(next),
+          dbSaveHabits(next, userId),
         ),
       ];
       for (const habit of removed) {
+        const range = purgeRangeFor(habit);
         outcomes.push(
           await persist(
             userId,
-            { op: "delete", kind: "habitLogs", payload: { habitId: habit.id } },
-            () => dbDeleteHabitLogsForHabit(habit.id),
+            {
+              op: "delete",
+              kind: "habitLogs",
+              payload: { habitId: habit.id, from: range.from, to: range.to },
+            },
+            () => dbDeleteHabitLogsForHabit(habit.id, userId, range),
           ),
         );
       }
       return worstOutcome(outcomes);
     },
-    [session, updateHabits, purgeHabitLogsLocally, persist],
+    [session, updateHabits, purgeHabitLogsLocally, purgeRangeFor, persist],
   );
 
   // Flip one habit-log cell: optimistic first, then the exact resulting state
@@ -737,22 +1069,26 @@ export function DataProvider({ children, session }: DataProviderProps) {
       currentCompleted?: boolean,
     ): Promise<WriteOutcome> => {
       if (!session) return failed(new UnrecoverableWriteError("Not signed in"));
+      const userId = session.user.id;
 
+      // Read the current value off the state MIRROR, not off `habitLogs`:
+      // depending on the state itself would give this action a new identity on
+      // every log update, and screens hang effects off these callbacks.
       const current =
         typeof currentCompleted === "boolean"
           ? currentCompleted
-          : ((habitLogs.get(date.slice(0, 7)) ?? []).find(
+          : ((habitLogsRef.current.get(date.slice(0, 7)) ?? []).find(
               (l) => l.habitId === habitId && l.date === date,
             )?.completed ?? false);
 
       const log: HabitLog = { habitId, date, completed: !current };
       updateHabitLog(log); // optimistic
 
-      return persist(session.user.id, { kind: "habitLog", payload: log }, () =>
-        dbUpsertHabitLog(log),
+      return persist(userId, { kind: "habitLog", payload: log }, () =>
+        dbUpsertHabitLog(log, userId),
       );
     },
-    [session, habitLogs, updateHabitLog, persist],
+    [session, updateHabitLog, persist],
   );
 
   // ============================================================================
@@ -764,6 +1100,12 @@ export function DataProvider({ children, session }: DataProviderProps) {
   // the executor and the item stays queued, untouched — the executor must never
   // enqueue, or the queue gets rewritten with a fresh id/timestamp on every
   // flush instead of retried (D5). The count is refreshed after the flush.
+  //
+  // A SUCCESSFUL replay is also re-applied to store state. Init order is
+  // reads-then-flush, so the server's answer (which predates the replay) has
+  // already overwritten the optimistic value: without this the UI showed a
+  // habit un-ticked for the rest of the session while the server, the disk and
+  // the db cache all said ticked.
   const flushQueue = useCallback((): Promise<void> => {
     if (!session) return Promise.resolve();
     const userId = session.user.id;
@@ -774,26 +1116,18 @@ export function DataProvider({ children, session }: DataProviderProps) {
     const running = flushInFlightRef.current;
     if (running) return running;
 
-    const executor = async (item: PendingWrite): Promise<void> => {
-      switch (item.kind) {
-        case "entry":
-          if (item.op === "delete") {
-            await dbDeleteEntry(item.payload.id, item.payload.date);
-          } else {
-            await dbSaveEntry(item.payload);
-          }
-          return;
-        case "habits":
-          await dbSaveHabits(item.payload);
-          return;
-        case "habitLog":
-          await dbUpsertHabitLog(item.payload);
-          return;
-        case "habitLogs":
-          await dbDeleteHabitLogsForHabit(item.payload.habitId);
-          return;
-      }
-    };
+    const executor = createFlushExecutor({
+      userId,
+      onEntrySaved: updateEntry,
+      onEntryDeleted: removeEntryLocally,
+      onHabitsSaved: (list) => {
+        updateHabits(list);
+        lastSyncedHabitsRef.current = list;
+      },
+      onHabitLogSaved: updateHabitLog,
+      onHabitLogsPurged: purgeHabitLogsLocally,
+      fallbackPurgeRange: () => purgeRangeFor(),
+    });
 
     const started = (async () => {
       await flushPendingWrites(userId, executor);
@@ -803,16 +1137,25 @@ export function DataProvider({ children, session }: DataProviderProps) {
     });
     flushInFlightRef.current = started;
     return started;
-  }, [session]);
+  }, [
+    session,
+    updateEntry,
+    updateHabitLog,
+    updateHabits,
+    removeEntryLocally,
+    purgeHabitLogsLocally,
+    purgeRangeFor,
+  ]);
 
   // ============================================================================
   // Clear on Logout
   // ============================================================================
   const clearAll = useCallback(() => {
-    // Drop the queue if we still know who the user is. On a logout that has
-    // already nulled the session the queue stays keyed to that userId — it's
-    // per-user, harmless, and flushed on their next sign-in.
-    if (session) void clearPendingWrites(session.user.id);
+    // The pending-writes queue is NOT cleared here. Logging out leaves
+    // the AsyncStorage month caches on the device by design, so dropping the
+    // queue would destroy the unsynced write while keeping its optimistic value
+    // in the cache — the two would diverge permanently on the next sign-in.
+    // Only account deletion clears it (lib/auth/local-purge.ts).
     setPendingWriteCount(0);
     setHabits([]);
     setHabitsLoading(false);
@@ -821,7 +1164,6 @@ export function DataProvider({ children, session }: DataProviderProps) {
     setHabitLogsByDay(new Map());
     setHabitLogsLoading(false);
     setHabitLogsReady(false);
-    setHabitLogsProgress(0);
     setEntries(new Map());
     setEntriesLoading(false);
     setEntriesReady(false);
@@ -831,12 +1173,15 @@ export function DataProvider({ children, session }: DataProviderProps) {
     setInitialLoadComplete(false);
     prefetchedRef.current = false;
     lastSyncedHabitsRef.current = [];
+    accountCreatedRef.current = null;
+    habitLogsRef.current = new Map();
+    entriesRef.current = new Map();
     // Drop read-path bookkeeping so the next user starts from a cold cache and
     // never joins the previous session's in-flight requests.
     loadedKeysRef.current.clear();
     inFlightRef.current.clear();
     flushInFlightRef.current = null;
-  }, [session]);
+  }, []);
 
   // ============================================================================
   // Priority-Based Initial Load
@@ -859,7 +1204,9 @@ export function DataProvider({ children, session }: DataProviderProps) {
 
       setInitialLoadComplete(true);
 
-      // NFR-1: replay any writes that were queued in a previous session.
+      // NFR-1: replay any writes that were queued in a previous session. The
+      // executor re-applies each replayed write to state, so a toggle the
+      // server hadn't seen when the reads above ran isn't lost.
       await flushQueue();
     }
 
@@ -905,7 +1252,6 @@ export function DataProvider({ children, session }: DataProviderProps) {
       habitLogsByDay,
       habitLogsLoading,
       habitLogsReady,
-      habitLogsProgress,
       entries,
       entriesLoading,
       entriesReady,
@@ -919,6 +1265,8 @@ export function DataProvider({ children, session }: DataProviderProps) {
       refreshHabits,
       refreshHabitLogs,
       refreshEntries,
+      refreshHabitLogWindow,
+      refreshEntryWindow,
       refreshProfile,
       getLogsForMonth,
       getEntriesForMonth: getEntriesForMonthData,
@@ -940,7 +1288,6 @@ export function DataProvider({ children, session }: DataProviderProps) {
       habitLogsByDay,
       habitLogsLoading,
       habitLogsReady,
-      habitLogsProgress,
       entries,
       entriesLoading,
       entriesReady,
@@ -952,6 +1299,8 @@ export function DataProvider({ children, session }: DataProviderProps) {
       refreshHabits,
       refreshHabitLogs,
       refreshEntries,
+      refreshHabitLogWindow,
+      refreshEntryWindow,
       refreshProfile,
       getLogsForMonth,
       getEntriesForMonthData,

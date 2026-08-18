@@ -41,6 +41,7 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { OnboardingProgress } from "./_layout";
 
 /** Start small — five is plenty to build a rhythm, and the grid stays legible. */
 const MAX_STARTER_HABITS = 5;
@@ -353,6 +354,11 @@ export default function OnboardingHabitsScreen() {
             ]}
             disabled={selectedHabits.length === 0 || saving}
             onPress={handleContinue}
+            accessibilityRole="button"
+            accessibilityLabel="Continue"
+            accessibilityState={{
+              disabled: selectedHabits.length === 0 || saving,
+            }}
           >
             <Text style={styles.continueText}>
               {saving ? "Saving…" : "Continue"}
@@ -364,17 +370,16 @@ export default function OnboardingHabitsScreen() {
             onPress={() => router.push("/onboarding/feed-demo" as Href)}
             disabled={saving}
             activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Skip choosing habits for now"
+            accessibilityState={{ disabled: saving }}
           >
             <Text style={[styles.skipText, saving && styles.disabled]}>
               Skip for now
             </Text>
           </TouchableOpacity>
 
-          <View style={styles.progressContainer}>
-            <View style={styles.progressDot} />
-            <View style={[styles.progressDot, styles.progressDotActive]} />
-            <View style={styles.progressDot} />
-          </View>
+          <OnboardingProgress step={2} />
         </View>
       </KeyboardAvoidingView>
     </PaperBackground>
@@ -530,17 +535,4 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
   },
-  progressContainer: {
-    flexDirection: "row",
-    justifyContent: "center",
-    gap: 8,
-    paddingTop: 4,
-  },
-  progressDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: Colors.shadow,
-  },
-  progressDotActive: { backgroundColor: Colors.ink, width: 24 },
 });

@@ -1,4 +1,5 @@
 import { ProfileStats } from "@/components/profile-stats";
+import { SyncStatus } from "@/components/sync-status";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
@@ -13,12 +14,12 @@ import { clearUserMedia } from "@/lib/media";
 import { useOnboarding } from "@/lib/onboarding-context";
 import { formatReminderTime, loadReminder, syncReminder } from "@/lib/reminder";
 import { supabase } from "@/lib/supabase";
+import * as Clipboard from "expo-clipboard";
 import Constants from "expo-constants";
 import { Href, router, useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   Linking,
   RefreshControl,
   ScrollView,
@@ -30,6 +31,13 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const APP_VERSION = Constants.expoConfig?.version ?? "1.0.0";
+// The build number is what a support email actually needs — "1.0.0" alone
+// can't tell two TestFlight builds apart.
+const BUILD_NUMBER =
+  Constants.expoConfig?.ios?.buildNumber ??
+  (Constants.expoConfig?.android?.versionCode != null
+    ? String(Constants.expoConfig.android.versionCode)
+    : null);
 const SUPPORT_EMAIL = "nazmulhayat588@gmail.com";
 
 /**
@@ -49,10 +57,14 @@ export default function ProfileScreen() {
   const [signingOut, setSigningOut] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deletingAccount, setDeletingAccount] = useState(false);
+  // Why the last attempt stopped — shown inside the dialog, which stays open.
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const username = dataStore.profile?.username ?? null;
   const habits = dataStore.habits;
-  const loading = !dataStore.habitsReady && !dataStore.profileReady;
+  // `||`, not `&&`: if habits resolve first, the identity card would render
+  // without a username and pop it in a beat later.
+  const loading = !dataStore.habitsReady || !dataStore.profileReady;
 
   // The reminder lives entirely on-device, so the row's subtitle reads the
   // local preference rather than anything from the store. Coming back here is
@@ -89,6 +101,25 @@ export default function ProfileScreen() {
     return `Joined ${d.toLocaleDateString("en-US", { month: "long", year: "numeric" })}`;
   }, [dataStore.profile?.created_at]);
 
+  // Contact Support: a device with no mail client rejects the mailto:, so
+  // check first and fall back to the clipboard rather than doing nothing.
+  const [supportNote, setSupportNote] = useState<string | null>(null);
+  const openSupport = async () => {
+    const url = `mailto:${SUPPORT_EMAIL}`;
+    const canOpen = await Linking.canOpenURL(url).catch(() => false);
+    if (canOpen) {
+      try {
+        await Linking.openURL(url);
+        setSupportNote(null);
+        return;
+      } catch {
+        // fall through to the clipboard
+      }
+    }
+    await Clipboard.setStringAsync(SUPPORT_EMAIL);
+    setSupportNote("No mail app here — the address is on your clipboard.");
+  };
+
   // Stats live in <ProfileStats/>, which self-loads a 12-month log window.
   // Bump this token on pull-to-refresh to force a reload.
   const [statsRefresh, setStatsRefresh] = useState(0);
@@ -114,13 +145,13 @@ export default function ProfileScreen() {
   // word) and the order of operations below are unchanged.
   const handleConfirmDeleteAccount = async () => {
     setDeletingAccount(true);
+    setDeleteError(null);
     try {
       // Supabase blocks direct DELETE from storage.objects in SECURITY
       // DEFINER, so clean up media client-side BEFORE the RPC that drops the
       // auth.users row.
       if (!user?.id) {
-        Alert.alert(
-          "Not signed in",
+        setDeleteError(
           "We couldn't confirm who you are, so nothing was deleted. Sign in again and retry.",
         );
         return;
@@ -132,8 +163,7 @@ export default function ProfileScreen() {
       // deleted user's photos left in storage is a privacy failure, not clutter.
       const cleanup = await clearUserMedia(user.id);
       if (cleanup.status !== "complete") {
-        Alert.alert(
-          "Couldn't remove your photos",
+        setDeleteError(
           "Some of your photos couldn't be deleted, so we stopped before touching anything else. Your account is untouched. Check your connection and try again.",
         );
         return;
@@ -142,8 +172,7 @@ export default function ProfileScreen() {
       const { error } = await supabase.rpc("delete_my_account");
       if (error) {
         if (__DEV__) console.warn("[profile] delete_my_account:", error.message);
-        Alert.alert(
-          "Couldn't delete your account",
+        setDeleteError(
           "Something went wrong on our side, so your account is still here and untouched. Check your connection and try again.",
         );
         return;
@@ -157,8 +186,7 @@ export default function ProfileScreen() {
       setShowDeleteConfirm(false);
     } catch (e) {
       if (__DEV__) console.warn("[profile] delete account threw:", e);
-      Alert.alert(
-        "Couldn't delete your account",
+      setDeleteError(
         "Something went wrong, so we stopped. Your account is still here. Check your connection and try again.",
       );
     } finally {
@@ -191,6 +219,13 @@ export default function ProfileScreen() {
           </Text>
         </View>
 
+        {/* The same one-line sync truth the Tracker shows. Whether your work
+            has reached the server is account information; it belongs here. */}
+        <SyncStatus
+          pendingCount={dataStore.pendingWriteCount}
+          onRetry={() => void dataStore.flushPendingWrites()}
+        />
+
         {/* Identity (display only) */}
         <PaperCard style={styles.userCard}>
           <View style={styles.avatar}>
@@ -220,6 +255,16 @@ export default function ProfileScreen() {
         <View style={styles.section}>
           <SectionTitle>Manage</SectionTitle>
           <PaperCard style={styles.rowGroup}>
+            {/* A second, stable way into the analysis. The peek card above is
+                the invitation; this is the door that's always in the same
+                place. */}
+            <SettingsRow
+              icon="chart.bar.fill"
+              title="Stats & analysis"
+              subtitle="Streaks, records, patterns"
+              onPress={() => router.push("/analysis" as Href)}
+            />
+            <View style={styles.rowDivider} />
             <SettingsRow
               icon="checklist"
               title="Habits"
@@ -263,11 +308,20 @@ export default function ProfileScreen() {
               icon="questionmark.circle"
               title="Contact Support"
               subtitle={SUPPORT_EMAIL}
-              onPress={() => Linking.openURL(`mailto:${SUPPORT_EMAIL}`)}
+              onPress={() => void openSupport()}
             />
           </PaperCard>
+          {supportNote ? (
+            <Text style={styles.supportNote}>{supportNote}</Text>
+          ) : null}
           <View style={styles.versionRow}>
-            <Text style={styles.versionText}>Version {APP_VERSION}</Text>
+            <Text style={styles.versionText}>
+              Aight Bet {APP_VERSION}
+              {BUILD_NUMBER ? ` (${BUILD_NUMBER})` : ""}
+            </Text>
+            <Text style={styles.versionText}>
+              End-to-end encrypted · your key never leaves this device
+            </Text>
           </View>
         </View>
 
@@ -280,8 +334,11 @@ export default function ProfileScreen() {
 
           <TouchableOpacity
             style={styles.deleteButton}
-            onPress={() => setShowDeleteConfirm(true)}
-            activeOpacity={0.7}
+            onPress={() => {
+              setDeleteError(null);
+              setShowDeleteConfirm(true);
+            }}
+            activeOpacity={0.85}
             accessibilityRole="button"
             accessibilityLabel="Delete account"
           >
@@ -289,20 +346,23 @@ export default function ProfileScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Dev only */}
+        {/* Dev only — a normal section, not a dashed box wedged mid-list. */}
         {__DEV__ && (
-          <View style={styles.devSection}>
-            <Text style={styles.devTitle}>Developer Tools</Text>
-            <TouchableOpacity
-              style={styles.devButton}
-              onPress={async () => {
-                await resetOnboarding();
-                router.replace("/onboarding/welcome" as Href);
-              }}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.devButtonText}>Reset Onboarding</Text>
-            </TouchableOpacity>
+          <View style={styles.section}>
+            <SectionTitle>Developer</SectionTitle>
+            <PaperCard style={styles.rowGroup}>
+              <SettingsRow
+                icon="arrow.counterclockwise"
+                title="Reset onboarding"
+                subtitle="Debug builds only"
+                onPress={() => {
+                  void (async () => {
+                    await resetOnboarding();
+                    router.replace("/onboarding/welcome" as Href);
+                  })();
+                }}
+              />
+            </PaperCard>
           </View>
         )}
 
@@ -323,7 +383,10 @@ export default function ProfileScreen() {
       <ConfirmDialog
         visible={showDeleteConfirm}
         title="Delete your account?"
-        message="This permanently deletes your account, every journal entry, your habits, and your encryption keys. It cannot be undone. Type DELETE to confirm."
+        message={
+          deleteError ??
+          "This permanently deletes your account, every journal entry, your habits, and your encryption keys. It cannot be undone. Type DELETE to confirm."
+        }
         confirmLabel="Delete forever"
         confirmPhrase="DELETE"
         loading={deletingAccount}
@@ -361,8 +424,20 @@ const styles = StyleSheet.create({
     backgroundColor: Hairline.base,
     marginLeft: 38,
   },
-  versionRow: { alignItems: "center", paddingVertical: 16 },
-  versionText: { fontSize: 12, color: Colors.textSecondary, fontFamily: Fonts.handwriting },
+  versionRow: { alignItems: "center", paddingVertical: 16, gap: 4 },
+  versionText: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    textAlign: "center",
+  },
+  supportNote: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    textAlign: "center",
+    marginTop: 10,
+  },
   signOutButton: {
     flexDirection: "row",
     alignItems: "center",
@@ -378,23 +453,4 @@ const styles = StyleSheet.create({
   signOutText: { fontSize: 15, color: Colors.ink, fontFamily: Fonts.handwriting, fontWeight: "600" },
   deleteButton: { height: 48, backgroundColor: "transparent", borderRadius: 12, justifyContent: "center", alignItems: "center" },
   deleteText: { fontSize: 14, color: Colors.danger, fontFamily: Fonts.handwriting, fontWeight: "600" },
-  devSection: {
-    marginHorizontal: 16,
-    marginTop: 24,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: Colors.shadow,
-    borderRadius: 12,
-    borderStyle: "dashed",
-  },
-  devTitle: {
-    fontSize: 11,
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
-    marginBottom: 8,
-    textTransform: "uppercase",
-    letterSpacing: 1,
-  },
-  devButton: { padding: 10, backgroundColor: Colors.shadow, borderRadius: 8, alignItems: "center" },
-  devButtonText: { fontSize: 12, color: Colors.ink, fontFamily: Fonts.handwriting, fontWeight: "600" },
 });
