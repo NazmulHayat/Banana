@@ -31,7 +31,8 @@ The product is zero-knowledge — treat every shortcut as a breach.
 - **Query builder only** — `.select('a, b')`, `.eq()`, `.upsert(…, { onConflict })`, `.maybeSingle()`. No string-interpolated filters. RLS already scopes per user, but still pass `.eq('owner_id', userId)` for explicit intent + index use.
 - **Select narrowly, map to DTOs** — request only the columns you need and convert rows to app types (`DailyEntry`, `HabitLog`, `ProfileData`) before they leave `lib/db` / the store. Never hand a raw row to a component. Widening a select to "grab everything" is review-blocking.
 - **Errors** — writes throw with a useful message: `throw new Error(\`Failed to save entry: ${error.message}\`)`. Reads degrade to empty + a `__DEV__` log. Never swallow a write error — for a journal app, a lost write is the unforgivable bug (tasks.md M1).
-- **No N+1** — fetch a month in one query filtered by `month_bucket`, then decrypt the rows (decryption is the per-row step; becomes `Promise.all` at M2). Never one round-trip per day/item.
+- **No N+1** — fetch a month in one query filtered by `month_bucket`, then decrypt the rows. Never one round-trip per day/item; batch a multi-month window with `.in("month_bucket", buckets)` and always bound a read with `.range()` so it can't silently truncate at the PostgREST row cap.
+- **Decryption is synchronous CPU on the JS thread.** `decryptJson` → `aesDecrypt` is pure computation, so `Promise.all` buys nothing — the only levers are fewer rows, fewer round trips, or chunked yielding. Measured: ~0.03 ms/row in Node, 3–10× slower on Hermes.
 - **Caching is fixed** — in-memory `Map` (sync) → AsyncStorage (`JSON.stringify`, fire-and-forget `.catch(() => {})`) → network. Keys are `userId:YYYY-MM`. Reuse `monthKey` / `storageKey` / `DateFormats`. No parallel cache mechanism.
 
 ## SQL / migrations (`supabase/migrations/`)
