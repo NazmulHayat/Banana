@@ -41,11 +41,16 @@ else
   echo "warning: could not detect a LAN IP; Expo Go reset links won't resolve" >&2
 fi
 
+patch() {
+  curl -sS -X PATCH "https://api.supabase.com/v1/projects/$PROJECT_REF/config/auth" \
+    -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+    -H "Content-Type: application/json" -d "$1"
+}
+
 # password_min_length 8  — matches every client screen (app/auth/signup.tsx,
 #   app/auth/recover-with-key.tsx, app/security/index.tsx). The master key is
 #   scrypt-derived from this password, so the server must not be laxer than
 #   the UI.
-# password_hibp_enabled  — rejects passwords found in HaveIBeenPwned breaches.
 # site_url               — was the http://localhost:3000 default; this is a
 #   mobile app, so the fallback redirect should be the app's own scheme.
 #
@@ -54,13 +59,9 @@ fi
 # once throwaway test accounts no longer need to sign up instantly.
 echo "patching auth config for $PROJECT_REF ..."
 
-curl -sS -X PATCH "https://api.supabase.com/v1/projects/$PROJECT_REF/config/auth" \
-  -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "$(cat <<JSON
+patch "$(cat <<JSON
 {
   "password_min_length": 8,
-  "password_hibp_enabled": true,
   "site_url": "aightbet://",
   "uri_allow_list": "$ALLOW_LIST"
 }
@@ -72,8 +73,27 @@ if "message" in d:
     print("FAILED:", d["message"]); raise SystemExit(1)
 print("\nresulting config:")
 for k in ("site_url", "uri_allow_list", "password_min_length",
-          "password_hibp_enabled", "mailer_autoconfirm"):
+          "mailer_autoconfirm"):
     print(f"  {k}: {d.get(k)}")
-print("\nmailer_autoconfirm is still true — email verification is off by design")
-print("until launch. See the comment in this script.")
 '
+
+# Leaked-password protection (HaveIBeenPwned) is a Pro-plan feature. Attempt it
+# separately so a Free project still gets everything above, and report rather
+# than fail — this is the one hardening item the plan, not the code, gates.
+echo
+echo "attempting leaked-password protection (Pro plan only) ..."
+patch '{"password_hibp_enabled": true}' | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+msg = d.get("message", "")
+if "Pro Plan" in msg or "available on" in msg:
+    print("  skipped: needs a Pro plan. Still OFF — revisit if you upgrade.")
+elif msg:
+    print("  FAILED:", msg)
+else:
+    print("  enabled:", d.get("password_hibp_enabled"))
+'
+
+echo
+echo "mailer_autoconfirm is still true — email verification stays off by design"
+echo "until launch. See the comment in this script."
