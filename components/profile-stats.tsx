@@ -165,7 +165,7 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
     <PressableScale
       scaleTo={0.98}
       onPress={() => open("/analysis")}
-      accessibilityLabel={`Your momentum. Best streak ${overall.bestCurrentStreak} day${
+      accessibilityLabel={`Your momentum. Current streak ${overall.bestCurrentStreak} day${
         overall.bestCurrentStreak === 1 ? "" : "s"
       }. ${standing}`}
       accessibilityHint="Opens your full analysis"
@@ -178,7 +178,9 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
             "day best streak" caption competing with the flame beside it. */}
         <View style={styles.hero}>
           <View>
-            <Text style={styles.heroLabel}>best streak</Text>
+            {/* `bestCurrentStreak` is a LIVE streak — "best" is reserved for
+                records, so the label says what the number is: current. */}
+            <Text style={styles.heroLabel}>current streak</Text>
             <View style={styles.heroValueRow}>
               <InkIcon name="flame" size={26} />
               <Text style={styles.heroValue}>{overall.bestCurrentStreak}</Text>

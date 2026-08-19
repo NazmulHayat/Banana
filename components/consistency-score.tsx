@@ -8,13 +8,13 @@ interface ConsistencyScoreProps {
 }
 
 /**
- * FR-AN3 — a 0-100 consistency score with its formula spelled out underneath.
- * An invented metric is only honest if the user can see exactly how it was
- * built, so the sentence below is generated from the same numbers the score
- * was: the window, the weights, and how many days actually counted.
+ * FR-AN3 — a 0-100 consistency score with its formula in one line underneath.
+ * An invented metric is only honest if the user can see how it was built; the
+ * line is generated from the same numbers the score was — the window and the
+ * recency weight — and owns up to a short window while it's still filling.
  */
 export function ConsistencyScore({ result }: ConsistencyScoreProps) {
-  const { score, windowDays, newestWeight, oldestWeight, daysCounted } = result;
+  const { score, windowDays, newestWeight, daysCounted } = result;
 
   if (daysCounted === 0) {
     return (
@@ -34,12 +34,10 @@ export function ConsistencyScore({ result }: ConsistencyScoreProps) {
         <View style={[styles.fill, { width: `${score}%` }]} />
       </View>
       <Text style={styles.formula}>
-        Each of the last {windowDays} days scores the share of your habits you
-        completed, weighted by how recent it is — today counts ×{newestWeight},
-        {" "}
-        {windowDays} days ago ×{oldestWeight}. Days before a habit existed are
-        skipped, so {daysCounted} day{daysCounted === 1 ? "" : "s"} went into
-        this.
+        Last {windowDays} days, recent days count more — today ×{newestWeight}.
+        {daysCounted < windowDays
+          ? ` ${daysCounted} day${daysCounted === 1 ? "" : "s"} counted so far.`
+          : ""}
       </Text>
     </View>
   );
