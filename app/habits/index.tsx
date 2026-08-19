@@ -10,7 +10,7 @@ import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { useDataStore } from "@/lib/data-store";
 import type { Habit } from "@/lib/db";
 import * as Haptics from "expo-haptics";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -94,7 +94,24 @@ export default function HabitsScreen() {
 
   // Destructive confirmations go through ConfirmDialog (the app's own paper
   // dialog with haptics + a double-submit latch), never a native Alert.
+  // TEMPORARY diagnostic — remove once the delete confirm is confirmed working.
+  useEffect(() => {
+    if (__DEV__) {
+      console.log(
+        `[habits] state: pendingDelete=${pendingDelete?.name ?? "null"} · ` +
+          `confirmInSheet=${confirmInSheet} · sheetOpen=${showHabitModal}`,
+      );
+    }
+  }, [pendingDelete, confirmInSheet, showHabitModal]);
+
   const handleDeleteHabit = (habit: Habit) => {
+    // TEMPORARY diagnostic — remove once the delete confirm is confirmed working.
+    if (__DEV__) {
+      console.log(
+        `[habits] delete tapped: "${habit.name}" · sheetOpen=${showHabitModal} · ` +
+          `path=${showHabitModal ? "inline-in-sheet" : "confirm-dialog"}`,
+      );
+    }
     setListError(null);
     // Two paths on purpose.
     //
