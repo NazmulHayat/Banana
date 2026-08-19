@@ -2,7 +2,6 @@ import { DayHighlightSheet } from "@/components/day-highlight-sheet";
 import { HabitComparison } from "@/components/habit-comparison";
 import { HabitHeatmap } from "@/components/habit-heatmap";
 import { JournalStatsCard } from "@/components/journal-stats-card";
-import { RecordsBoard } from "@/components/records-board";
 import { ProgressChart } from "@/components/progress-chart";
 import { PressableScale } from "@/components/ui/pressable-scale";
 import { SectionTitle } from "@/components/ui/settings-row";
@@ -11,7 +10,6 @@ import { InkIcon } from "@/components/ui/ink-icon";
 import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { todayKey } from "@/lib/dates";
 import { type DailyEntry, type Habit, type HabitLog } from "@/lib/db";
-import { computeRecords, type PersonalRecord } from "@/lib/gamification";
 import { computeJournalStats } from "@/lib/journal-stats";
 import {
   completionForMonth,
@@ -47,12 +45,15 @@ interface AnalysisContentProps {
   onRetry?: () => void;
 }
 
-// Each range drives BOTH the heatmap window and the trend series. Short range
-// = a daily series (a month of monthly points would be a single dot); longer
-// ranges = monthly points, which is what the eye can actually read.
+// Each range drives BOTH the heatmap window and the trend series, always as
+// monthly points.
+//
+// There is deliberately no "Month" option: a 30-square heatmap shows a shape
+// too short to read as a pattern, and its trend series collapsed to a single
+// monthly point. Consistency is a question about months, not days — the month
+// you're in is already answered by the hero and the Progress delta.
 const RANGES = [
-  { label: "Month", days: 30, months: 0 },
-  { label: "6 mo", days: 183, months: 6 },
+  { label: "6 months", days: 183, months: 6 },
   { label: "Year", days: 365, months: 12 },
 ] as const;
 
@@ -87,15 +88,13 @@ function trimToHistory(points: RatePoint[]): RatePoint[] {
  *
  *   hero            current streak · this month %   ← the only place both appear
  *   How it's going  consistency (heatmap) · progress (column chart)
- *   Against your best  records board (streak record leads it) · stamps
  *   Patterns        by habit (each row opens that habit's deep-dive)
  *   Your journal    FR-AN1 stats
  *
  * Each number lives in exactly ONE place: the current streak is in the hero,
- * the longest streak lives only on the records board (its top row — there is
- * no separate "longest run" section, and no milestone marks: 7/30/100 are the
- * stamps' job), and this month's rate is in the hero (Progress leads with the
- * month-over-month delta instead).
+ * and this month's rate is in the hero (Progress leads with the
+ * month-over-month delta instead). Personal records were cut on 2026-08-20:
+ * "now vs best" restated numbers the hero and Progress already carry.
  *
  * PROGRESSIVE DISCLOSURE: a module that could only say "nothing here yet" is
  * not rendered at all. A new user gets the hero, their story, the heatmap and
@@ -221,24 +220,6 @@ export function AnalysisContent({
 
   const journal = habitId ? null : computeJournalStats(entries, today);
   const comparison = habitId ? [] : habitComparison(habits, logs, today);
-  // The records board is the one home of every "best ever" number, streak
-  // included — its top row. Per-habit, the board narrows to the one record
-  // that exists at habit scope, built from the same stats the hero reads.
-  const records: PersonalRecord[] = habitId
-    ? hs && hs.longestStreak > 0
-      ? [
-          {
-            key: "longestStreak",
-            current: hs.currentStreak,
-            record: hs.longestStreak,
-            unit: "days",
-            detail: "",
-            atRecord: hs.currentStreak >= hs.longestStreak,
-            distance: Math.max(0, hs.longestStreak - hs.currentStreak),
-          },
-        ]
-      : []
-    : computeRecords({ habits, logs, entries, today }).filter((r) => r.record > 0);
 
   const trendUp = trend.delta >= 0;
   const activeDays = overall?.activeDays ?? hs?.totalCompletions ?? 0;
@@ -247,12 +228,10 @@ export function AnalysisContent({
   // Render a module only when it has something to say; collect what's still
   // locked into one honest line instead of a column of empty panels.
   const showProgress = series.length > 1;
-  const showRecords = records.length > 0;
   const showJournal = !habitId && (entriesLoading || (journal?.totalEntries ?? 0) > 0);
 
   const locked: string[] = [];
   if (!showProgress) locked.push("your trend line, after a few more days");
-  if (!showRecords && !habitId) locked.push("records, once there's a best to beat");
   if (!showJournal && !habitId) locked.push("your journal, from the first highlight you write");
 
   return (
@@ -281,7 +260,7 @@ export function AnalysisContent({
       {/* Each stat is one VoiceOver stop — a label and a bare number read as
           two unrelated fragments otherwise. */}
       <View style={styles.heroRow}>
-        {/* "Current streak" everywhere — "best" is reserved for records. On
+        {/* "Current streak" everywhere — never "best streak". On
             the overview it's the best LIVE streak across habits, which is
             still the user's current streak in every sense that matters. */}
         <View
@@ -413,55 +392,33 @@ export function AnalysisContent({
         )}
       </View>
 
-      {/* ================= AGAINST YOUR BEST ================= */}
-      {/* One module, not three: the records board leads with the streak
-          record (current vs best, distance to tie), so the old "Longest run"
-          section and its 7/30/100 milestone row are gone — milestones are the
-          stamps' mechanic, one tap away. */}
-      {(showRecords || !habitId) && (
-        <View style={styles.group}>
-          <SectionTitle>Against your best</SectionTitle>
-
-          {/* FR-G2 — records board, streak record on top. */}
-          {showRecords && (
-            <View style={[styles.section, styles.sectionFirst]}>
-              <Text style={styles.sectionLabel} accessibilityRole="header">
-                Records
+      {/* FR-G3 — stamps. The records board that used to head this group is
+          gone (cut 2026-08-20: "now vs best" repeated numbers the hero and
+          Progress already carry). Stamps stay as a standalone doorway rather
+          than a section, so the wall of what you've already done is still one
+          tap away. */}
+      {!habitId && (
+        <TouchableOpacity
+          style={styles.stampsCard}
+          activeOpacity={0.85}
+          onPress={() => {
+            void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            router.push("/analysis/stamps");
+          }}
+          accessibilityRole="button"
+          accessibilityLabel="Stamps"
+          accessibilityHint="Everything you've already done, kept permanently"
+        >
+          <View style={styles.stampsRow}>
+            <View style={styles.stampsText}>
+              <Text style={styles.stampsTitle}>Stamps</Text>
+              <Text style={styles.stampsBlurb}>
+                Everything you&apos;ve already done, kept permanently.
               </Text>
-              <Text style={styles.caption2}>
-                Beaten or tied — never lost. Every one of these is you against you.
-              </Text>
-              <View style={{ height: 6 }} />
-              <RecordsBoard records={records} />
             </View>
-          )}
-
-          {/* FR-G3 — stamps (overview only). A link, not a panel: it stays
-              even when empty, because the stamp wall explains itself. */}
-          {!habitId && (
-            <TouchableOpacity
-              style={[styles.section, !showRecords && styles.sectionFirst]}
-              activeOpacity={0.85}
-              onPress={() => {
-                void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                router.push("/analysis/stamps");
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="Stamps"
-              accessibilityHint="Everything you've already done, kept permanently"
-            >
-              <View style={styles.stampsRow}>
-                <View style={styles.stampsText}>
-                  <Text style={styles.sectionLabel}>Stamps</Text>
-                  <Text style={styles.insight}>
-                    Everything you&apos;ve already done, kept permanently.
-                  </Text>
-                </View>
-                <Text style={styles.chev}>›</Text>
-              </View>
-            </TouchableOpacity>
-          )}
-        </View>
+            <Text style={styles.chev}>›</Text>
+          </View>
+        </TouchableOpacity>
       )}
 
       {/* ================= PATTERNS (overview only) ================= */}
@@ -651,11 +608,37 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   // segmented range
-  segment: { flexDirection: "row", gap: 4, marginBottom: 10 },
-  segItem: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999 },
-  segItemOn: { backgroundColor: Colors.ink },
-  segText: { fontSize: 12, color: Colors.textSecondary, fontFamily: Fonts.handwritingMedium },
+  // Two ranges now, so the pills can be generous instead of cramped.
+  segment: { flexDirection: "row", gap: 6 },
+  segItem: {
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: Hairline.base,
+    backgroundColor: Colors.card,
+  },
+  segItemOn: { backgroundColor: Colors.ink, borderColor: Colors.ink },
+  segText: { fontSize: 13.5, color: Colors.textSecondary, fontFamily: Fonts.handwritingMedium },
   segTextOn: { color: Colors.paper },
+  // stamps — a standalone doorway, same card language as the Manage rows
+  stampsCard: {
+    marginTop: 24,
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    backgroundColor: Colors.card,
+    borderWidth: 1,
+    borderColor: Hairline.base,
+  },
+  stampsTitle: { fontSize: 17, color: Colors.ink, fontFamily: Fonts.handwritingSemiBold },
+  stampsBlurb: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    lineHeight: 20,
+    marginTop: 3,
+  },
   // progress
   bigDelta: { fontSize: 24, fontFamily: Fonts.handwritingSemiBold },
   bold: { fontFamily: Fonts.handwritingSemiBold },

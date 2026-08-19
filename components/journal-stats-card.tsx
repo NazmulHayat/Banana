@@ -45,17 +45,17 @@ export function JournalStatsCard({ stats, loading }: JournalStatsCardProps) {
 
   return (
     <View>
-      <View style={styles.grid}>
-        <Kpi value={stats.totalEntries} label="entries written" />
-        <Kpi value={stats.longestStreak} label="longest run" suffix="d" />
-        <Kpi value={stats.photos} label="photos kept" />
-        <Kpi value={stats.daysJournaled} label="days written down" />
-      </View>
       <Text style={styles.line}>
         {stats.currentStreak > 0
           ? `You've written ${stats.currentStreak} day${stats.currentStreak === 1 ? "" : "s"} in a row.`
           : `${stats.daysJournaled} day${stats.daysJournaled === 1 ? "" : "s"} of your life are written down.`}
       </Text>
+      <View style={styles.grid}>
+        <Kpi value={stats.totalEntries} label="entries" />
+        <Kpi value={stats.daysJournaled} label="days written" />
+        <Kpi value={stats.longestStreak} label="longest run" suffix="d" />
+        <Kpi value={stats.photos} label="photos" />
+      </View>
       {stats.mostWrittenMonths.length > 0 && (
         <View style={styles.months}>
           <Text style={styles.monthsLabel}>Most written</Text>
@@ -76,7 +76,12 @@ interface KpiProps {
   suffix?: string;
 }
 
-/** One boxed figure. The number carries the accent; the unit stays quiet. */
+/**
+ * One boxed figure, centred. The number carries the accent; the unit stays
+ * quiet underneath. Centring matters here because the four tiles are read as a
+ * set — left-aligned figures of different digit counts made the row look
+ * ragged rather than tabular.
+ */
 function Kpi({ value, label, suffix }: KpiProps) {
   return (
     <View style={styles.tile}>
@@ -84,7 +89,9 @@ function Kpi({ value, label, suffix }: KpiProps) {
         {value}
         {suffix ?? ""}
       </Text>
-      <Text style={styles.tileLabel}>{label}</Text>
+      <Text style={styles.tileLabel} numberOfLines={1}>
+        {label}
+      </Text>
     </View>
   );
 }
@@ -96,41 +103,47 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     justifyContent: "space-between",
-    rowGap: 10,
+    rowGap: 12,
+    marginTop: 16,
   },
   tile: {
     width: "48%",
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 18,
+    paddingHorizontal: 10,
+    borderRadius: 14,
     backgroundColor: Colors.card,
     borderWidth: 1,
     borderColor: Hairline.base,
   },
   tileValue: {
-    fontSize: 24,
+    fontSize: 30,
+    lineHeight: 36,
     color: Colors.accent,
     fontFamily: Fonts.handwritingSemiBold,
+    textAlign: "center",
   },
   tileLabel: {
-    fontSize: 11.5,
+    fontSize: 12,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
-    marginTop: 2,
+    textAlign: "center",
+    marginTop: 3,
   },
   line: {
     fontSize: 15,
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
     lineHeight: 23,
-    marginTop: 14,
   },
   months: {
     flexDirection: "row",
     flexWrap: "wrap",
     alignItems: "center",
+    justifyContent: "center",
     gap: 10,
-    marginTop: 12,
+    marginTop: 16,
     paddingTop: 12,
     borderTopWidth: 1,
     borderTopColor: Hairline.strong,
