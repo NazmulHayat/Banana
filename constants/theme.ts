@@ -4,7 +4,15 @@ export const Colors = {
   ink: '#1A1A1A',
   card: '#FFFFFF',
   shadow: '#E0DDD8',
-  accent: '#FFB380',
+  /**
+   * The one accent. Deepened from the original '#FFB380' — that peach was so
+   * light it sat at roughly 1.7:1 against paper, which was fine as a decorative
+   * rule but unreadable once the accent started carrying real content (KPI
+   * figures, chart columns, heatmap steps). This reads as the same warm orange
+   * and clears 3:1, so large figures on paper are legible and paper-on-accent
+   * buttons gained contrast too.
+   */
+  accent: '#C96A2E',
   completed: '#1A1A1A',
   textSecondary: '#4A4A4A',
   border: '#A8C4C4',
@@ -49,7 +57,7 @@ export const Scrim = {
   /** Frosted paper over the blur behind the tab bar. */
   paper: 'rgba(251,248,233,0.55)',
   /** Accent tint behind tips and callouts. */
-  accent: 'rgba(255,179,128,0.18)',
+  accent: 'rgba(201,106,46,0.15)',
   /** Skeleton card surface — card white, softened. */
   card: 'rgba(255,255,255,0.6)',
   /** Control chrome floating over a full-bleed photo. */
