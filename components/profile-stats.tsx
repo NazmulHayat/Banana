@@ -30,15 +30,21 @@ interface MetricProps {
 }
 
 /**
- * One supporting number in the momentum card's right-hand column. Value first,
- * then its unit — these used to be a run-on sentence ("2 done · 1 active
- * days"), which read as prose and hid the figures.
+ * One column of the stat strip: the figure, then its unit underneath.
+ *
+ * These were a left-aligned stack beside the hero ("26 done" / "16 active
+ * days" / "4 perfect"), which read as a ragged list — different digit counts
+ * and different label lengths meant nothing lined up. As centred columns of
+ * equal width they read as one tabular set, and they match the KPI tiles on
+ * the analysis screen.
  */
 function Metric({ value, label }: MetricProps) {
   return (
     <View style={styles.metric}>
       <Text style={styles.metricValue}>{value}</Text>
-      <Text style={styles.metricLabel}>{label}</Text>
+      <Text style={styles.metricLabel} numberOfLines={1}>
+        {label}
+      </Text>
     </View>
   );
 }
@@ -108,11 +114,13 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
         <PaperCard style={styles.card}>
           <Skeleton width="40%" height={12} />
           <View style={{ height: 14 }} />
-          <Skeleton width="55%" height={40} />
-          <View style={{ height: 16 }} />
+          <Skeleton width="50%" height={52} />
+          <View style={{ height: 14 }} />
           <Skeleton width="85%" height={13} />
+          <View style={{ height: 18 }} />
+          <Skeleton width="100%" height={72} borderRadius={12} />
           <View style={{ height: 16 }} />
-          <Skeleton width="100%" height={44} borderRadius={12} />
+          <Skeleton width="100%" height={48} borderRadius={12} />
         </PaperCard>
       </PressableScale>
     );
@@ -176,33 +184,36 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
         {/* Hero band: the label sits ABOVE its number (same order as the
             analysis screen's hero), so the big figure isn't chased by a
             "day best streak" caption competing with the flame beside it. */}
+        {/* Hero: `bestCurrentStreak` is a LIVE streak — "best" is reserved
+            for records, so the label says what the number is: current. */}
         <View style={styles.hero}>
-          <View>
-            {/* `bestCurrentStreak` is a LIVE streak — "best" is reserved for
-                records, so the label says what the number is: current. */}
+          <InkIcon name="flame" size={30} />
+          <Text style={styles.heroValue}>{overall.bestCurrentStreak}</Text>
+          <View style={styles.heroCaption}>
+            <Text style={styles.heroUnit}>
+              {overall.bestCurrentStreak === 1 ? "day" : "days"}
+            </Text>
             <Text style={styles.heroLabel}>current streak</Text>
-            <View style={styles.heroValueRow}>
-              <InkIcon name="flame" size={26} />
-              <Text style={styles.heroValue}>{overall.bestCurrentStreak}</Text>
-              <Text style={styles.heroUnit}>
-                {overall.bestCurrentStreak === 1 ? "day" : "days"}
-              </Text>
-            </View>
-          </View>
-          <View style={styles.heroRule} />
-          <View style={styles.metrics}>
-            <Metric value={overall.totalCompletions} label="done" />
-            <Metric
-              value={overall.activeDays}
-              label={overall.activeDays === 1 ? "active day" : "active days"}
-            />
-            {overall.perfectDays > 0 ? (
-              <Metric value={overall.perfectDays} label="perfect" />
-            ) : null}
           </View>
         </View>
 
         <Text style={styles.standing}>{standing}</Text>
+
+        {/* The supporting figures, as one divided strip. */}
+        <View style={styles.metrics}>
+          <Metric value={overall.totalCompletions} label="done" />
+          <View style={styles.metricRule} />
+          <Metric
+            value={overall.activeDays}
+            label={overall.activeDays === 1 ? "active day" : "active days"}
+          />
+          {overall.perfectDays > 0 ? (
+            <>
+              <View style={styles.metricRule} />
+              <Metric value={overall.perfectDays} label="perfect" />
+            </>
+          ) : null}
+        </View>
 
         <CardAction
           label="Stats & analysis"
@@ -232,59 +243,69 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     marginBottom: 10,
   },
-  hero: { flexDirection: "row", alignItems: "center" },
+  // The headline gets its own line now. Sharing a row with the supporting
+  // numbers squeezed both: a 44pt figure beside a three-line column left the
+  // card lopsided and the metrics cramped into half the width.
+  hero: { flexDirection: "row", alignItems: "center", gap: 10 },
+  heroValue: {
+    fontSize: 52,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingSemiBold,
+    letterSpacing: -1,
+    lineHeight: 58,
+  },
+  // Unit and label stack beside the figure so the number owns the baseline.
+  heroCaption: { justifyContent: "center", paddingTop: 6 },
+  heroUnit: {
+    fontSize: 15,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingMedium,
+  },
   heroLabel: {
     fontSize: 12,
     color: Colors.textSecondary,
-    fontFamily: Fonts.handwritingMedium,
-    marginBottom: 2,
-  },
-  heroValueRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-  heroValue: {
-    fontSize: 44,
-    color: Colors.ink,
-    fontFamily: Fonts.handwritingSemiBold,
-    letterSpacing: -0.5,
-    lineHeight: 50,
-  },
-  heroUnit: {
-    fontSize: 13,
-    color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
-    alignSelf: "flex-end",
-    marginBottom: 10,
   },
-  // A drawn rule between the headline and its supporting data — the two
-  // groups are different kinds of number and shouldn't share a column.
-  heroRule: {
+  // The stat strip: equal centred columns divided by hairlines, inset on the
+  // paper so it reads as one grouped block rather than three loose numbers.
+  metrics: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    marginTop: 18,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Hairline.base,
+    backgroundColor: Colors.card,
+  },
+  metric: { flex: 1, alignItems: "center", paddingHorizontal: 4 },
+  metricRule: {
     width: StyleSheet.hairlineWidth,
     alignSelf: "stretch",
-    backgroundColor: Hairline.strong,
-    marginHorizontal: 16,
+    backgroundColor: Hairline.base,
   },
-  metrics: { flex: 1, gap: 2 },
-  metric: { flexDirection: "row", alignItems: "baseline", gap: 6 },
   metricValue: {
     // Accent on the figures only — the numbers are what the eye should catch,
     // the units stay quiet in secondary ink.
-    fontSize: 16,
+    fontSize: 24,
+    lineHeight: 30,
     color: Colors.accent,
     fontFamily: Fonts.handwritingSemiBold,
-    minWidth: 24,
-    textAlign: "right",
+    textAlign: "center",
   },
   metricLabel: {
-    fontSize: 13,
+    fontSize: 12,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
-    flexShrink: 1,
+    textAlign: "center",
+    marginTop: 1,
   },
   standing: {
     fontSize: 14.5,
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
     lineHeight: 22,
-    marginTop: 16,
+    marginTop: 14,
   },
   action: {
     // Same surface language as the Manage rows — card fill, ink hairline —
