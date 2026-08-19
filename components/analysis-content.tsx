@@ -1,7 +1,6 @@
 import { ConsistencyScore } from "@/components/consistency-score";
 import { DayHighlightSheet } from "@/components/day-highlight-sheet";
 import { HabitComparison } from "@/components/habit-comparison";
-import { HabitCorrelations } from "@/components/habit-correlations";
 import { HabitHeatmap } from "@/components/habit-heatmap";
 import { JournalStatsCard } from "@/components/journal-stats-card";
 import { RecordsBoard } from "@/components/records-board";
@@ -25,7 +24,6 @@ import {
   consistencyScore,
   dailyRateSeries,
   habitComparison,
-  habitCorrelations,
   hadRecentComeback,
   heatmapCells,
   monthlyRateSeries,
@@ -96,7 +94,7 @@ function trimToHistory(points: RatePoint[]): RatePoint[] {
  *   hero            current streak · this month %   ← the only place both appear
  *   How it's going  your story · consistency (heatmap + score) · progress
  *   Against your best  records board (streak record leads it) · stamps
- *   Patterns        by habit · what goes together
+ *   Patterns        by habit (each row opens that habit's deep-dive)
  *   Your journal    FR-AN1 stats
  *
  * Each number lives in exactly ONE place: the current streak is in the hero,
@@ -250,7 +248,6 @@ export function AnalysisContent({
 
   const journal = habitId ? null : computeJournalStats(entries, today);
   const comparison = habitId ? [] : habitComparison(habits, logs, today);
-  const correlations = habitId ? [] : habitCorrelations(habits, logs, today);
   // The records board is the one home of every "best ever" number, streak
   // included — its top row. Per-habit, the board narrows to the one record
   // that exists at habit scope, built from the same stats the hero reads.
@@ -279,15 +276,11 @@ export function AnalysisContent({
   const showProgress = series.length > 1;
   const showScore = consistency.daysCounted > 0;
   const showRecords = records.length > 0;
-  const showCorrelations = !habitId && correlations.length > 0;
   const showJournal = !habitId && (entriesLoading || (journal?.totalEntries ?? 0) > 0);
 
   const locked: string[] = [];
   if (!showProgress) locked.push("your trend line, after a few more days");
   if (!showRecords && !habitId) locked.push("records, once there's a best to beat");
-  if (!showCorrelations && !habitId) {
-    locked.push("what goes together, after a couple of weeks");
-  }
   if (!showJournal && !habitId) locked.push("your journal, from the first highlight you write");
 
   return (
@@ -526,16 +519,6 @@ export function AnalysisContent({
             </Text>
             <HabitComparison rows={comparison} onSelect={drillInto} />
           </View>
-
-          {/* FR-AN4 — correlations, once there's a pattern worth the name */}
-          {showCorrelations && (
-            <View style={styles.section}>
-              <Text style={styles.sectionLabel} accessibilityRole="header">
-                What goes together
-              </Text>
-              <HabitCorrelations correlations={correlations} habits={habits} />
-            </View>
-          )}
         </View>
       )}
 

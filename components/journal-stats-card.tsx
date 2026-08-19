@@ -12,15 +12,25 @@ interface JournalStatsCardProps {
 /**
  * FR-AN1 — the journal half of the analysis: what you wrote, how long you kept
  * writing, how many photos you kept, and the months you had the most to say.
+ *
+ * Laid out as four KPI tiles rather than a row of bare numbers — boxed, each
+ * figure sitting on its own card surface so the section reads as a dashboard
+ * at a glance instead of as a sentence. Same card + hairline language as the
+ * Manage rows and the momentum card, so it stays inside the paper aesthetic.
+ *
  * Three states, never a blank frame: skeleton, empty, loaded.
  */
 export function JournalStatsCard({ stats, loading }: JournalStatsCardProps) {
   if (loading || !stats) {
     return (
-      <View>
-        <Skeleton width="45%" height={26} />
-        <View style={{ height: 12 }} />
-        <Skeleton width="80%" height={14} />
+      <View style={styles.grid}>
+        {[0, 1, 2, 3].map((i) => (
+          <View key={i} style={styles.tile}>
+            <Skeleton width="55%" height={26} />
+            <View style={{ height: 6 }} />
+            <Skeleton width="80%" height={11} />
+          </View>
+        ))}
       </View>
     );
   }
@@ -36,9 +46,10 @@ export function JournalStatsCard({ stats, loading }: JournalStatsCardProps) {
   return (
     <View>
       <View style={styles.grid}>
-        <Stat value={stats.totalEntries} label="entries written" />
-        <Stat value={stats.longestStreak} label="longest writing run" suffix="d" />
-        <Stat value={stats.photos} label="photos kept" />
+        <Kpi value={stats.totalEntries} label="entries written" />
+        <Kpi value={stats.longestStreak} label="longest run" suffix="d" />
+        <Kpi value={stats.photos} label="photos kept" />
+        <Kpi value={stats.daysJournaled} label="days written down" />
       </View>
       <Text style={styles.line}>
         {stats.currentStreak > 0
@@ -59,29 +70,49 @@ export function JournalStatsCard({ stats, loading }: JournalStatsCardProps) {
   );
 }
 
-interface StatProps {
+interface KpiProps {
   value: number;
   label: string;
   suffix?: string;
 }
 
-function Stat({ value, label, suffix }: StatProps) {
+/** One boxed figure. The number carries the accent; the unit stays quiet. */
+function Kpi({ value, label, suffix }: KpiProps) {
   return (
-    <View style={styles.stat}>
-      <Text style={styles.statValue}>
+    <View style={styles.tile}>
+      <Text style={styles.tileValue}>
         {value}
         {suffix ?? ""}
       </Text>
-      <Text style={styles.statLabel}>{label}</Text>
+      <Text style={styles.tileLabel}>{label}</Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  grid: { flexDirection: "row", justifyContent: "space-between" },
-  stat: { flex: 1 },
-  statValue: { fontSize: 26, color: Colors.ink, fontFamily: Fonts.handwritingSemiBold },
-  statLabel: {
+  // Two per row on every iPhone width — `48%` leaves the gap without needing
+  // to measure the container.
+  grid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+    rowGap: 10,
+  },
+  tile: {
+    width: "48%",
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: Colors.card,
+    borderWidth: 1,
+    borderColor: Hairline.base,
+  },
+  tileValue: {
+    fontSize: 24,
+    color: Colors.accent,
+    fontFamily: Fonts.handwritingSemiBold,
+  },
+  tileLabel: {
     fontSize: 11.5,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
