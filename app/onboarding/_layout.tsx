@@ -26,15 +26,23 @@ export function OnboardingProgress({
     <View
       accessibilityRole="progressbar"
       accessibilityLabel={`Step ${step} of ${ONBOARDING_STEPS}`}
+      accessibilityValue={{ min: 1, max: ONBOARDING_STEPS, now: step }}
     >
       <Text style={styles.label}>
         Step {step} of {ONBOARDING_STEPS}
       </Text>
       <View style={[styles.dots, { paddingBottom: bottomInset }]}>
         {Array.from({ length: ONBOARDING_STEPS }).map((_, index) => (
+          // Three states, not two: steps already behind you read as inked-in
+          // (faded), the one you're on as the long bar, the rest as blank
+          // paper — so the row shows progress, not just position.
           <View
             key={index}
-            style={[styles.dot, index === step - 1 && styles.dotActive]}
+            style={[
+              styles.dot,
+              index < step - 1 && styles.dotDone,
+              index === step - 1 && styles.dotActive,
+            ]}
           />
         ))}
       </View>
@@ -78,5 +86,6 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     backgroundColor: Colors.shadow,
   },
+  dotDone: { backgroundColor: Colors.ink, opacity: 0.35 },
   dotActive: { backgroundColor: Colors.ink, width: 24 },
 });

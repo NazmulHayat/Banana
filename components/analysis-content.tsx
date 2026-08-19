@@ -13,7 +13,7 @@ import { InkIcon } from "@/components/ui/ink-icon";
 import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { todayKey } from "@/lib/dates";
 import { type DailyEntry, type Habit, type HabitLog } from "@/lib/db";
-import { computeRecords } from "@/lib/gamification";
+import { computeRecords, type PersonalRecord } from "@/lib/gamification";
 import { computeJournalStats } from "@/lib/journal-stats";
 import {
   bestDayOfWeek,
@@ -24,7 +24,6 @@ import {
   computeOverallStats,
   consistencyScore,
   dailyRateSeries,
-  daysToRecord,
   habitComparison,
   habitCorrelations,
   hadRecentComeback,
@@ -94,16 +93,17 @@ function trimToHistory(points: RatePoint[]): RatePoint[] {
  *
  * INFORMATION HIERARCHY (three titled groups, one hero, no nav bar):
  *
- *   hero            best/current streak · this month %   ← the only place both appear
+ *   hero            current streak · this month %   ← the only place both appear
  *   How it's going  your story · consistency (heatmap + score) · progress
- *   Against your best  streak vs record · records board · stamps
+ *   Against your best  records board (streak record leads it) · stamps
  *   Patterns        by habit · what goes together
  *   Your journal    FR-AN1 stats
  *
- * Each number lives in exactly ONE place: the streak is in the hero (the
- * "record" section talks only about the longest and the distance to it, and
- * the records board drops its duplicate streak row), and this month's rate is
- * in the hero (Progress leads with the month-over-month delta instead).
+ * Each number lives in exactly ONE place: the current streak is in the hero,
+ * the longest streak lives only on the records board (its top row — there is
+ * no separate "longest run" section, and no milestone marks: 7/30/100 are the
+ * stamps' job), and this month's rate is in the hero (Progress leads with the
+ * month-over-month delta instead).
  *
  * PROGRESSIVE DISCLOSURE: a module that could only say "nothing here yet" is
  * not rendered at all. A new user gets the hero, their story, the heatmap and
@@ -227,7 +227,6 @@ export function AnalysisContent({
     habits,
     totalHabits: habits.length || 1,
   });
-  const toRecord = daysToRecord(currentStreak, longestStreak);
   const consistency = consistencyScore(
     habit ? [habit] : habits,
     logs,
@@ -252,16 +251,26 @@ export function AnalysisContent({
   const journal = habitId ? null : computeJournalStats(entries, today);
   const comparison = habitId ? [] : habitComparison(habits, logs, today);
   const correlations = habitId ? [] : habitCorrelations(habits, logs, today);
-  // The streak record already has its own section directly above the board —
-  // showing it a third time is the redundancy, not the record.
-  const records = habitId
-    ? []
-    : computeRecords({ habits, logs, entries, today }).filter(
-        (r) => r.key !== "longestStreak" && r.record > 0,
-      );
+  // The records board is the one home of every "best ever" number, streak
+  // included — its top row. Per-habit, the board narrows to the one record
+  // that exists at habit scope, built from the same stats the hero reads.
+  const records: PersonalRecord[] = habitId
+    ? hs && hs.longestStreak > 0
+      ? [
+          {
+            key: "longestStreak",
+            current: hs.currentStreak,
+            record: hs.longestStreak,
+            unit: "days",
+            detail: "",
+            atRecord: hs.currentStreak >= hs.longestStreak,
+            distance: Math.max(0, hs.longestStreak - hs.currentStreak),
+          },
+        ]
+      : []
+    : computeRecords({ habits, logs, entries, today }).filter((r) => r.record > 0);
 
   const trendUp = trend.delta >= 0;
-  const recordProgress = longestStreak > 0 ? Math.min(1, currentStreak / longestStreak) : 0;
   const activeDays = overall?.activeDays ?? hs?.totalCompletions ?? 0;
 
   // --- Progressive disclosure -------------------------------------------
@@ -269,7 +278,7 @@ export function AnalysisContent({
   // locked into one honest line instead of a column of empty panels.
   const showProgress = series.length > 1;
   const showScore = consistency.daysCounted > 0;
-  const showRecords = !habitId && records.length > 0;
+  const showRecords = records.length > 0;
   const showCorrelations = !habitId && correlations.length > 0;
   const showJournal = !habitId && (entriesLoading || (journal?.totalEntries ?? 0) > 0);
 
@@ -307,13 +316,16 @@ export function AnalysisContent({
       {/* Each stat is one VoiceOver stop — a label and a bare number read as
           two unrelated fragments otherwise. */}
       <View style={styles.heroRow}>
+        {/* "Current streak" everywhere — "best" is reserved for records. On
+            the overview it's the best LIVE streak across habits, which is
+            still the user's current streak in every sense that matters. */}
         <View
           accessible
-          accessibilityLabel={`${habitId ? "Current" : "Best"} streak, ${currentStreak} day${
+          accessibilityLabel={`Current streak, ${currentStreak} day${
             currentStreak === 1 ? "" : "s"
           }`}
         >
-          <Text style={styles.heroLabel}>{habitId ? "current streak" : "best streak"}</Text>
+          <Text style={styles.heroLabel}>current streak</Text>
           <View style={styles.heroValueRow}>
             <InkIcon name="flame" size={22} />
             <Text style={styles.heroValue}>{currentStreak}</Text>
@@ -355,8 +367,8 @@ export function AnalysisContent({
           accessibilityLabel={`Showing ${habit?.name ?? "this habit"} only. See the overall analysis`}
         >
           <Text style={styles.scopeText}>
-            Just <Text style={styles.bold}>{habit?.name}</Text>. Records, stamps,
-            your journal and cross-habit patterns live on the overall analysis.
+            Just <Text style={styles.bold}>{habit?.name}</Text>. Stamps, your
+            journal and cross-habit patterns live on the overall analysis.
           </Text>
           <Text style={styles.scopeLink}>See everything →</Text>
         </TouchableOpacity>
@@ -452,92 +464,55 @@ export function AnalysisContent({
       </View>
 
       {/* ================= AGAINST YOUR BEST ================= */}
-      <View style={styles.group}>
-        <SectionTitle>Against your best</SectionTitle>
+      {/* One module, not three: the records board leads with the streak
+          record (current vs best, distance to tie), so the old "Longest run"
+          section and its 7/30/100 milestone row are gone — milestones are the
+          stamps' mechanic, one tap away. */}
+      {(showRecords || !habitId) && (
+        <View style={styles.group}>
+          <SectionTitle>Against your best</SectionTitle>
 
-        {/* Streak vs record — the longest and the distance to it. The current
-            streak is the hero number; it isn't repeated here. */}
-        <View style={[styles.section, styles.sectionFirst]}>
-          <Text style={styles.sectionLabel} accessibilityRole="header">
-            Longest run
-          </Text>
-          <View style={styles.recordRow}>
-            <Text style={styles.recordLine}>
-              <Text style={styles.bold}>{longestStreak}</Text> day
-              {longestStreak === 1 ? "" : "s"}
-              {toRecord > 0
-                ? ` · ${toRecord} more to beat it`
-                : longestStreak > 0
-                  ? " · you're at your best ever"
-                  : " · nothing to beat yet"}
-            </Text>
-            {toRecord === 0 && longestStreak > 0 ? (
-              <InkIcon name="seal" size={18} />
-            ) : null}
-          </View>
-          <View
-            style={styles.bar}
-            accessible
-            accessibilityLabel={`You are ${Math.round(recordProgress * 100)} percent of the way to your longest run`}
-          >
-            <View style={[styles.barFill, { width: `${recordProgress * 100}%` }]} />
-          </View>
-          <View style={styles.milestones}>
-            {[7, 30, 100].map((m) => {
-              const hit = longestStreak >= m;
-              return (
-                <Text
-                  key={m}
-                  style={[styles.milestone, hit && styles.milestoneHit]}
-                  accessibilityLabel={`${m} day milestone, ${hit ? "reached" : "not yet"}`}
-                >
-                  {hit ? "✓" : "○"} {m}
-                </Text>
-              );
-            })}
-          </View>
-        </View>
-
-        {/* FR-G2 — records board (overview only, once a record exists). */}
-        {showRecords && (
-          <View style={styles.section}>
-            <Text style={styles.sectionLabel} accessibilityRole="header">
-              Records
-            </Text>
-            <Text style={styles.caption2}>
-              Beaten or tied — never lost. Every one of these is you against you.
-            </Text>
-            <View style={{ height: 6 }} />
-            <RecordsBoard records={records} />
-          </View>
-        )}
-
-        {/* FR-G3 — stamps (overview only). A link, not a panel: it stays even
-            when empty, because the stamp wall explains itself. */}
-        {!habitId && (
-          <TouchableOpacity
-            style={styles.section}
-            activeOpacity={0.85}
-            onPress={() => {
-              void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              router.push("/analysis/stamps");
-            }}
-            accessibilityRole="button"
-            accessibilityLabel="Stamps"
-            accessibilityHint="Everything you've already done, kept permanently"
-          >
-            <View style={styles.stampsRow}>
-              <View style={styles.stampsText}>
-                <Text style={styles.sectionLabel}>Stamps</Text>
-                <Text style={styles.insight}>
-                  Everything you&apos;ve already done, kept permanently.
-                </Text>
-              </View>
-              <Text style={styles.chev}>›</Text>
+          {/* FR-G2 — records board, streak record on top. */}
+          {showRecords && (
+            <View style={[styles.section, styles.sectionFirst]}>
+              <Text style={styles.sectionLabel} accessibilityRole="header">
+                Records
+              </Text>
+              <Text style={styles.caption2}>
+                Beaten or tied — never lost. Every one of these is you against you.
+              </Text>
+              <View style={{ height: 6 }} />
+              <RecordsBoard records={records} />
             </View>
-          </TouchableOpacity>
-        )}
-      </View>
+          )}
+
+          {/* FR-G3 — stamps (overview only). A link, not a panel: it stays
+              even when empty, because the stamp wall explains itself. */}
+          {!habitId && (
+            <TouchableOpacity
+              style={[styles.section, !showRecords && styles.sectionFirst]}
+              activeOpacity={0.85}
+              onPress={() => {
+                void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                router.push("/analysis/stamps");
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Stamps"
+              accessibilityHint="Everything you've already done, kept permanently"
+            >
+              <View style={styles.stampsRow}>
+                <View style={styles.stampsText}>
+                  <Text style={styles.sectionLabel}>Stamps</Text>
+                  <Text style={styles.insight}>
+                    Everything you&apos;ve already done, kept permanently.
+                  </Text>
+                </View>
+                <Text style={styles.chev}>›</Text>
+              </View>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
 
       {/* ================= PATTERNS (overview only) ================= */}
       {!habitId && (
@@ -743,15 +718,7 @@ const styles = StyleSheet.create({
   segTextOn: { color: Colors.paper },
   // progress
   bigDelta: { fontSize: 24, fontFamily: Fonts.handwritingSemiBold },
-  // record
-  recordRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-  recordLine: { fontSize: 15, color: Colors.ink, fontFamily: Fonts.handwriting, marginBottom: 10 },
   bold: { fontFamily: Fonts.handwritingSemiBold },
-  bar: { height: 10, borderRadius: 5, backgroundColor: Hairline.track, overflow: "hidden" },
-  barFill: { height: "100%", backgroundColor: Colors.accent },
-  milestones: { flexDirection: "row", gap: 16, marginTop: 10 },
-  milestone: { fontSize: 13, color: Colors.textSecondary, fontFamily: Fonts.handwritingMedium },
-  milestoneHit: { color: Colors.ink },
   insight: { fontSize: 16, color: Colors.ink, fontFamily: Fonts.handwriting, lineHeight: 24 },
   // what's still filling in
   locked: {

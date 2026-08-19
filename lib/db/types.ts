@@ -31,11 +31,45 @@ export interface MonthRef {
   month: number;
 }
 
+/**
+ * The `accounts` columns we select — the raw row shape, mapped to `Account`
+ * inside lib/db before it goes anywhere near a screen.
+ */
 export interface AccountRow {
   id: string;
   username: string;
+  avatar_path: string | null;
   created_at: string;
 }
+
+/**
+ * App-facing account DTO (the store surfaces it as `profile`). Plaintext by
+ * design: the username is public-facing and `avatarPath` is an opaque Storage
+ * object key the server already owns — neither reveals a date, habit or
+ * journal line, so neither is encrypted.
+ *
+ * `created_at` keeps its snake_case name because the store has exposed this
+ * exact field on `profile` since v1 and screens read it; renaming it would be
+ * a silent break for no gain.
+ */
+export interface Account {
+  id: string;
+  username: string;
+  /** Storage key "<uid>/avatar/<id>.<ext>" in `private-media`, or null. */
+  avatarPath: string | null;
+  created_at: string;
+}
+
+/**
+ * The answer to "can I have this username?" — the live check behind the edit
+ * field. `unknown` means we couldn't ask (offline / server error), which the
+ * UI must present as "couldn't check", never as "taken".
+ */
+export type UsernameCheck =
+  | { status: "available" }
+  | { status: "taken" }
+  | { status: "invalid"; reason: string }
+  | { status: "unknown" };
 
 // Payloads stored as encrypted JSON in `ciphertext` columns
 export interface EntryPayload {

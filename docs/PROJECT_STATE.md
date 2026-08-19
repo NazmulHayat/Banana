@@ -557,8 +557,49 @@ npx tsx tests/benchmark.test.ts       # crypto perf numbers
 npx expo install --check
 ```
 
+### Running on a physical device
+
+`npx expo start` (or `npm start`) serves over the LAN — install Expo Go and scan the QR. Verified:
+the iOS bundle builds and serves at `exp://<lan-ip>:8081`. `npm run start:tunnel` is the fallback
+when the phone and Mac can't reach each other directly.
+
+Expo Go cannot run two things: the daily reminder (`lib/reminder.ts` — `expo-notifications` isn't
+fully supported in Expo Go on SDK 54) and `aightbet://` deep links (Expo Go serves
+`exp://<lan-ip>:8081/--/…`, so the password-reset redirect must be registered in that form in
+Supabase, or tested on a native build). Both work under `npm run ios:device` or an EAS build.
+
+`eas.json` carries two profiles, `preview` (internal distribution) and `production`. There is no
+dev-client profile on purpose — installing `expo-dev-client` makes bare `expo start` default away
+from Expo Go, which breaks the scan-the-QR workflow above. EAS cloud builds can't read `.env` (it
+is gitignored and the repo is public), so `EXPO_PUBLIC_SUPABASE_URL` / `EXPO_PUBLIC_SUPABASE_KEY`
+must be registered once with `eas env:create`. Never commit either value.
+
+### Supabase audit (2026-08-20)
+
+Verified against the live project via the Management API. RLS on all 6 tables, every policy scoped
+to `auth.uid()`; `private-media` private with all four CRUD policies path-guarded to `auth.uid()/`.
+Zero-knowledge holds: `entries` / `habits` / `habit_logs` expose only `ciphertext`, `nonce` and the
+HMAC buckets. `accounts.avatar_path` + its owner-scoped check are applied.
+
+`20260819180000_security_hardening.sql` is **applied**: `set_updated_at` search_path pinned,
+`rls_auto_enable` and `delete_my_account` revoked from `anon`/`public`, and `private-media` capped
+at 25 MB with an `image/{jpeg,png,webp,heic}` allow-list.
+
+Three advisor warnings remain and are **intentional** — `username_available` must be callable by
+`anon` (signup checks a name before a session exists) and `delete_my_account` by `authenticated`
+(that is the feature). Both are SECURITY DEFINER by necessity and return the minimum possible.
+
+Open, and **not** fixable from code — Auth config lives in the dashboard:
+- `password_min_length` is **6** while every client screen enforces 8 (`app/auth/signup.tsx:47`,
+  `app/auth/recover-with-key.tsx:58`, `app/security/index.tsx:141`). The master key is scrypt-derived
+  from this password, so the server being laxer than the UI is the weakest link in the crypto model.
+- Leaked-password protection (HaveIBeenPwned) is off.
+- `site_url` is still the `http://localhost:3000` default.
+- `mailer_autoconfirm` is **on** — no email verification. A launch-gate decision, not a bug: turning
+  it on makes every new signup wait for an email, which breaks throwaway test accounts.
+
 **Environment.** `.env` holds the public client vars only — `EXPO_PUBLIC_SUPABASE_URL` and
-`EXPO_PUBLIC_SUPABASE_ANON_KEY` (the anon key is public by design; RLS is the boundary).
+`EXPO_PUBLIC_SUPABASE_KEY` (the anon key is public by design; RLS is the boundary).
 
 **`tests/e2e.test.ts` prerequisite:** it needs `SUPABASE_SERVICE_ROLE_KEY` in **`.env.local`**
 (gitignored via `.env*.local`) to create and tear down its disposable users. The service-role key

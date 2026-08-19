@@ -10,7 +10,9 @@ import { HighlightInput } from "@/components/highlight-input";
 import { SyncStatus } from "@/components/sync-status";
 import { IconButton } from "@/components/ui/icon-button";
 import { IconSymbol } from "@/components/ui/icon-symbol";
+import { InkIcon } from "@/components/ui/ink-icon";
 import { PaperBackground } from "@/components/ui/paper-background";
+import { PressableScale } from "@/components/ui/pressable-scale";
 import { Motion } from "@/constants/motion";
 import { Colors, Fonts } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
@@ -23,7 +25,10 @@ import {
     parseDayKey,
     todayKey,
 } from "@/lib/dates";
+import { computeHabitStats } from "@/lib/stats";
+import { useRecentHabitLogs } from "@/lib/use-recent-logs";
 import { useReduceMotion } from "@/lib/use-reduce-motion";
+import * as Haptics from "expo-haptics";
 // Photo upload has no store action yet, so this is the one data call the screen
 // still makes directly. It's a single atomic primitive (upload-all-or-nothing)
 // rather than the old inline loop. Lead: ideal end-state is the store owning it,
@@ -58,6 +63,29 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
  * of the last few days for context, not so much that today sits off-screen.
  */
 const ROWS_OF_CONTEXT_ABOVE = 2;
+
+/**
+ * The best live streak across habits — the number on the header pill. The
+ * 12-month window is a mount-time snapshot, so today's month is overlaid from
+ * the store's live cache: ticking a habit moves the pill immediately.
+ */
+function bestLiveStreak(
+  habits: Habit[],
+  windowLogs: HabitLog[],
+  liveMonthLogs: HabitLog[],
+  today: string,
+): number {
+  const byKey = new Map<string, HabitLog>();
+  for (const log of windowLogs) byKey.set(`${log.habitId}:${log.date}`, log);
+  for (const log of liveMonthLogs) byKey.set(`${log.habitId}:${log.date}`, log);
+  const merged = [...byKey.values()];
+  let best = 0;
+  for (const habit of habits) {
+    const streak = computeHabitStats(habit.id, merged, today).currentStreak;
+    if (streak > best) best = streak;
+  }
+  return best;
+}
 
 export default function TrackerScreen() {
   const insets = useSafeAreaInsets();
@@ -117,6 +145,18 @@ export default function TrackerScreen() {
         .getEntriesForMonth(todayParts.year, todayParts.month)
         .filter((entry) => entry.date === todayDayKey).length
     : 0;
+
+  // Streak pill (calm gamification, FR-G): the one glanceable streak on the
+  // daily screen, tapping through to the full analysis. The window read is
+  // cache-first and one round trip, shared with the profile and analysis
+  // screens through the store's month cache.
+  const { logs: streakWindowLogs, loading: streakLoading } = useRecentHabitLogs(12);
+  const todayMonthLogs = todayParts
+    ? dataStore.getLogsForMonth(todayParts.year, todayParts.month)
+    : [];
+  const currentStreak = streakLoading
+    ? 0
+    : bestLiveStreak(dataStore.habits, streakWindowLogs, todayMonthLogs, todayDayKey);
 
   // Get logs for current month with progressive rendering
   const logsForMonth = dataStore.getLogsForMonth(currentYear, currentMonth);
@@ -544,25 +584,46 @@ export default function TrackerScreen() {
             >
               <IconSymbol name="chevron.left" size={22} color={Colors.ink} />
             </IconButton>
-            <TouchableOpacity
-              onPress={jumpToToday}
-              activeOpacity={0.7}
-              style={styles.monthTextWrapper}
-              // Vertical only — the chevrons sit right beside it.
-              hitSlop={{ top: 10, bottom: 10 }}
-              accessibilityRole="button"
-              accessibilityLabel={
-                isCurrentMonthView ? monthName : `${monthName}, jump to today`
-              }
-              accessibilityState={{ disabled: isCurrentMonthView }}
-            >
-              <Text style={styles.monthText}>{monthName}</Text>
-              {!isCurrentMonthView && (
-                <View style={styles.todayPill}>
-                  <Text style={styles.todayPillText}>Today</Text>
-                </View>
+            <View style={styles.monthCenter}>
+              <TouchableOpacity
+                onPress={jumpToToday}
+                activeOpacity={0.7}
+                style={styles.monthTextWrapper}
+                // Vertical only — the chevrons sit right beside it.
+                hitSlop={{ top: 10, bottom: 10 }}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  isCurrentMonthView ? monthName : `${monthName}, jump to today`
+                }
+                accessibilityState={{ disabled: isCurrentMonthView }}
+              >
+                <Text style={styles.monthText}>{monthName}</Text>
+                {!isCurrentMonthView && (
+                  <View style={styles.todayPill}>
+                    <Text style={styles.todayPillText}>Today</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+              {/* A zero-day pill would be a guilt badge — show nothing until
+                  there's a streak to show. */}
+              {currentStreak > 0 && (
+                <PressableScale
+                  style={styles.streakPill}
+                  hitSlop={10}
+                  onPress={() => {
+                    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    router.push("/analysis");
+                  }}
+                  accessibilityLabel={`Current streak, ${currentStreak} day${
+                    currentStreak === 1 ? "" : "s"
+                  }`}
+                  accessibilityHint="Opens your stats and analysis"
+                >
+                  <InkIcon name="flame" size={13} />
+                  <Text style={styles.streakPillText}>{currentStreak}</Text>
+                </PressableScale>
               )}
-            </TouchableOpacity>
+            </View>
             <IconButton
               onPress={() => changeMonth(1)}
               accessibilityLabel="Next month"
@@ -709,9 +770,30 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 16,
   },
+  monthCenter: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
   monthTextWrapper: {
     alignItems: "center",
     paddingHorizontal: 4,
+  },
+  streakPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: `${Colors.accent}33`,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.accent,
+  },
+  streakPillText: {
+    fontSize: 13,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingSemiBold,
   },
   monthText: {
     fontSize: 20,

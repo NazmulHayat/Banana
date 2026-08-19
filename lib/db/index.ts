@@ -12,6 +12,7 @@ export {
 } from "../dates";
 
 export type {
+  Account,
   AccountRow,
   DailyEntry,
   EntryPayload,
@@ -23,12 +24,22 @@ export type {
   HabitRef,
   MonthRef,
   ReadResult,
+  UsernameCheck,
   WriteOutcome,
 } from "./types";
 
 export { UnrecoverableWriteError } from "./types";
 
 export { DateFormats, HabitLimits, UsernameRules } from "./schema";
+
+export {
+  AccountWriteErrors,
+  checkUsername,
+  getAccount,
+  normalizeUsername,
+  setAvatarPath,
+  updateUsername,
+} from "./accounts";
 
 export {
   clearEntriesCache,
