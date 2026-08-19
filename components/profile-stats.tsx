@@ -279,10 +279,14 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.card,
   },
   metric: { flex: 1, alignItems: "center", paddingHorizontal: 4 },
+  // A real 1pt rule, inset top and bottom so it separates the columns without
+  // touching the strip's own border. At `hairlineWidth` in `Hairline.base` it
+  // was there but invisible — 0.33pt of 8%-alpha ink reads as nothing.
   metricRule: {
-    width: StyleSheet.hairlineWidth,
+    width: 1,
     alignSelf: "stretch",
-    backgroundColor: Hairline.base,
+    marginVertical: 2,
+    backgroundColor: Hairline.outline,
   },
   metricValue: {
     // Accent on the figures only — the numbers are what the eye should catch,
