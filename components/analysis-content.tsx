@@ -1,10 +1,9 @@
-import { ConsistencyScore } from "@/components/consistency-score";
 import { DayHighlightSheet } from "@/components/day-highlight-sheet";
 import { HabitComparison } from "@/components/habit-comparison";
 import { HabitHeatmap } from "@/components/habit-heatmap";
 import { JournalStatsCard } from "@/components/journal-stats-card";
 import { RecordsBoard } from "@/components/records-board";
-import { StatSparkline } from "@/components/stat-sparkline";
+import { ProgressChart } from "@/components/progress-chart";
 import { PressableScale } from "@/components/ui/pressable-scale";
 import { SectionTitle } from "@/components/ui/settings-row";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -15,22 +14,17 @@ import { type DailyEntry, type Habit, type HabitLog } from "@/lib/db";
 import { computeRecords, type PersonalRecord } from "@/lib/gamification";
 import { computeJournalStats } from "@/lib/journal-stats";
 import {
-  bestDayOfWeek,
-  buildInsight,
   completionForMonth,
   computeAllHabitStats,
   computeHabitStats,
   computeOverallStats,
-  consistencyScore,
   dailyRateSeries,
   habitComparison,
-  hadRecentComeback,
   heatmapCells,
   monthlyRateSeries,
   monthOverMonthTrend,
   type RatePoint,
   type StatsScope,
-  weekendComparison,
 } from "@/lib/stats";
 import * as Haptics from "expo-haptics";
 import { type Href, router } from "expo-router";
@@ -92,7 +86,7 @@ function trimToHistory(points: RatePoint[]): RatePoint[] {
  * INFORMATION HIERARCHY (three titled groups, one hero, no nav bar):
  *
  *   hero            current streak · this month %   ← the only place both appear
- *   How it's going  your story · consistency (heatmap + score) · progress
+ *   How it's going  consistency (heatmap) · progress (column chart)
  *   Against your best  records board (streak record leads it) · stamps
  *   Patterns        by habit (each row opens that habit's deep-dive)
  *   Your journal    FR-AN1 stats
@@ -207,7 +201,6 @@ export function AnalysisContent({
     ? null
     : computeOverallStats(computeAllHabitStats(habits, logs, today), logs, today, habits);
   const currentStreak = hs ? hs.currentStreak : (overall?.bestCurrentStreak ?? 0);
-  const longestStreak = hs ? hs.longestStreak : (overall?.bestLongestStreak ?? 0);
   const totalCompletions = hs
     ? hs.totalCompletions
     : (overall?.totalCompletions ?? 0);
@@ -225,26 +218,6 @@ export function AnalysisContent({
     habits,
     totalHabits: habits.length || 1,
   });
-  const consistency = consistencyScore(
-    habit ? [habit] : habits,
-    logs,
-    today,
-    30,
-  );
-
-  const best = bestDayOfWeek(logs, today, scope);
-  const weekend = weekendComparison(logs, today, 90, scope);
-  const insight = buildInsight(
-    {
-      bestDow: best?.dow ?? null,
-      weekendDrop: weekend.weekdayRate > 0 && weekend.weekendRate < weekend.weekdayRate * 0.6,
-      currentStreak,
-      longestStreak,
-      trendDelta: trend.delta,
-      hadComeback: hadRecentComeback(logs, today, scope),
-    },
-    ty * 12 + tm, // rotates month to month
-  );
 
   const journal = habitId ? null : computeJournalStats(entries, today);
   const comparison = habitId ? [] : habitComparison(habits, logs, today);
@@ -274,7 +247,6 @@ export function AnalysisContent({
   // Render a module only when it has something to say; collect what's still
   // locked into one honest line instead of a column of empty panels.
   const showProgress = series.length > 1;
-  const showScore = consistency.daysCounted > 0;
   const showRecords = records.length > 0;
   const showJournal = !habitId && (entriesLoading || (journal?.totalEntries ?? 0) > 0);
 
@@ -371,13 +343,8 @@ export function AnalysisContent({
       <View style={styles.group}>
         <SectionTitle>How it&apos;s going</SectionTitle>
 
-        {/* Your story — the one rotating sentence, and the only prose here. */}
+        {/* Consistency: the calendar shape, and the range that frames it. */}
         <View style={[styles.section, styles.sectionFirst]}>
-          <Text style={styles.insight}>{insight}</Text>
-        </View>
-
-        {/* Consistency: the calendar shape, then the score built from it. */}
-        <View style={styles.section}>
           <View style={styles.sectionHead}>
             <Text style={styles.sectionLabel} accessibilityRole="header">
               Consistency
@@ -410,21 +377,11 @@ export function AnalysisContent({
             habitName={habit?.name}
           />
           <Text style={styles.caption}>
-            Each square is a day · darker is stronger · tap to look back
+            Each square is a day · tap one to look back
             {!habitId && overall && overall.perfectDays > 0
               ? ` · ${overall.perfectDays} perfect day${overall.perfectDays === 1 ? "" : "s"} filled in solid`
               : ""}
           </Text>
-
-          {/* FR-AN3 — the score, sitting under the shape it's derived from. */}
-          {showScore && (
-            <View style={styles.subSection}>
-              <Text style={styles.subLabel} accessibilityRole="header">
-                Your score
-              </Text>
-              <ConsistencyScore result={consistency} />
-            </View>
-          )}
         </View>
 
         {/* Progress — leads with the delta; the rate itself is in the hero. */}
@@ -446,8 +403,8 @@ export function AnalysisContent({
                 ? `${month.done} of ${month.days} day${month.days === 1 ? "" : "s"} counted so far this month`
                 : "This month starts counting from the day you added it"}
             </Text>
-            <View style={{ marginTop: 10 }}>
-              <StatSparkline values={series.map((p) => p.rate)} />
+            <View style={{ marginTop: 14 }}>
+              <ProgressChart points={series.map((p) => ({ label: p.label, rate: p.rate }))} />
             </View>
             <Text style={styles.caption}>
               {range.months > 0 ? `Last ${range.months} months` : `Last ${range.days} days`}
@@ -651,7 +608,7 @@ const styles = StyleSheet.create({
   },
   // groups + sections: the group title carries the weight, so the first
   // section under it skips the rule and only siblings get one.
-  group: { marginTop: 28 },
+  group: { marginTop: 36 },
   section: { paddingVertical: 18, borderTopWidth: 1, borderTopColor: Hairline.strong },
   sectionFirst: { borderTopWidth: 0, paddingTop: 2 },
   subSection: {
@@ -667,10 +624,10 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   sectionLabel: {
-    fontSize: 13,
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwritingMedium,
-    letterSpacing: 0.3,
+    fontSize: 15,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingSemiBold,
+    letterSpacing: 0.2,
     marginBottom: 10,
   },
   subLabel: {

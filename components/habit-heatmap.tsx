@@ -4,8 +4,8 @@ import { fromDayKey } from "@/lib/dates";
 import type { HeatCell } from "@/lib/stats";
 import { useReduceMotion } from "@/lib/use-reduce-motion";
 import { useEffect, useRef, useState } from "react";
-import { Animated, type LayoutChangeEvent, StyleSheet, Text } from "react-native";
-import Svg, { Defs, Line, Pattern, Rect } from "react-native-svg";
+import { Animated, type LayoutChangeEvent, StyleSheet, Text, View } from "react-native";
+import Svg, { Rect } from "react-native-svg";
 
 interface HabitHeatmapProps {
   /** Days oldest → newest (from `heatmapCells`). Laid out in columns of `rows`. */
@@ -46,12 +46,20 @@ function spokenState(cell: HeatCell, singleHabit: boolean): string {
   return cell.level === 3 ? "nearly all done" : cell.level === 2 ? "most done" : "a few done";
 }
 
-// Crosshatch density per level, reusing the HabitCell ink look. Empty days
-// stay paper with a hairline so the grid still reads as a calendar.
-const levelOpacity = (l: number): number =>
-  l === 1 ? 0.4 : l === 2 ? 0.7 : l === 3 ? 1 : 0;
+// One colour, five steps — the GitHub contribution-graph idea in our accent
+// instead of green. A single ramp is readable at a glance: darker means more.
+// (It replaced a crosshatch pattern, where "denser hatching" had to be decoded
+// rather than seen, and the solid-ink perfect day sat outside the scale
+// entirely as a sixth, different-looking thing.)
+//
+// Empty days stay paper with a hairline so the grid still reads as a calendar,
+// and `Hairline.faint` marks days before any habit existed: not a miss, not
+// yours.
+const LEVEL_OPACITY = [0, 0.28, 0.52, 0.76, 1] as const;
 
-// `Hairline.faint` marks days before any habit existed: not a miss, not yours.
+/** Fill opacity for a cell. A perfect day is the top of the same ramp. */
+const levelOpacity = (level: number, perfect: boolean): number =>
+  perfect ? LEVEL_OPACITY[4] : LEVEL_OPACITY[Math.max(0, Math.min(3, level))];
 
 /**
  * A crosshatch consistency heatmap drawn as a single SVG (one node, not N).
@@ -110,18 +118,14 @@ export function HabitHeatmap({
     >
       {cell > 0 && (
         <Svg width={width} height={height}>
-          <Defs>
-            <Pattern id="hm-hatch" patternUnits="userSpaceOnUse" width={5} height={5}>
-              <Line x1="0" y1="0" x2="5" y2="5" stroke={Colors.ink} strokeWidth="1.4" />
-              <Line x1="5" y1="0" x2="0" y2="5" stroke={Colors.ink} strokeWidth="1.4" />
-            </Pattern>
-          </Defs>
           {cells.map((c, i) => {
             const x = Math.floor(i / rows) * (cell + gap);
             const y = (i % rows) * (cell + gap);
-            const op = levelOpacity(c.level);
+            const op = levelOpacity(c.level, c.perfect);
+            // The fill is the accent now, so the longest run can't be outlined
+            // in accent too — ink reads against every step of the ramp.
             const stroke = c.inLongest
-              ? Colors.accent
+              ? Colors.ink
               : c.eligible
                 ? Hairline.outline
                 : Hairline.faint;
@@ -143,8 +147,8 @@ export function HabitHeatmap({
                 width={cell}
                 height={cell}
                 rx={3}
-                fill={c.perfect ? Colors.ink : op > 0 ? "url(#hm-hatch)" : "transparent"}
-                fillOpacity={c.perfect ? 0.92 : op}
+                fill={op > 0 ? Colors.accent : "transparent"}
+                fillOpacity={op}
                 stroke={stroke}
                 strokeWidth={c.inLongest ? 1.5 : 1}
                 onPress={onDayPress ? () => onDayPress(c) : undefined}
@@ -160,11 +164,50 @@ export function HabitHeatmap({
           })}
         </Svg>
       )}
+      {cell > 0 && <HeatmapLegend />}
     </Animated.View>
   );
 }
 
+/**
+ * The key to the ramp. Without it "darker = more" is a guess; with it the grid
+ * is self-explaining, which is the whole reason GitHub prints one.
+ */
+function HeatmapLegend() {
+  return (
+    <View style={styles.legend} accessibilityLabel="Lighter squares are fewer habits done, darker squares are more">
+      <Text style={styles.legendText}>Less</Text>
+      {LEVEL_OPACITY.map((op, i) => (
+        <View
+          key={i}
+          style={[
+            styles.swatch,
+            op === 0
+              ? { borderColor: Hairline.outline, borderWidth: 1 }
+              : { backgroundColor: Colors.accent, opacity: op },
+          ]}
+        />
+      ))}
+      <Text style={styles.legendText}>More</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  legend: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-end",
+    gap: 3,
+    marginTop: 10,
+  },
+  swatch: { width: 10, height: 10, borderRadius: 2 },
+  legendText: {
+    fontSize: 10.5,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    marginHorizontal: 3,
+  },
   empty: {
     fontSize: 14,
     color: Colors.textSecondary,
