@@ -37,6 +37,9 @@ export default function HabitsScreen() {
   const [editingHabit, setEditingHabit] = useState<Habit | null>(null);
   const [habitName, setHabitName] = useState("");
   const [pendingDelete, setPendingDelete] = useState<Habit | null>(null);
+  // Held while the edit sheet animates away, then promoted to `pendingDelete`
+  // in the sheet's onDismiss. See handleDeleteHabit.
+  const [deleteAfterDismiss, setDeleteAfterDismiss] = useState<Habit | null>(null);
   const [deleting, setDeleting] = useState(false);
   // Failures speak inline, in the app's own voice — never a native Alert.
   // `formError` lives in the sheet, `listError` on the list behind it.
@@ -90,10 +93,22 @@ export default function HabitsScreen() {
   // Destructive confirmations go through ConfirmDialog (the app's own paper
   // dialog with haptics + a double-submit latch), never a native Alert.
   const handleDeleteHabit = (habit: Habit) => {
-    // Close the edit sheet first — two stacked native modals fight over the
-    // presentation on iOS.
-    setShowHabitModal(false);
     setListError(null);
+    // On iOS the edit sheet is a real UIKit page sheet. Dismissing it and
+    // presenting the confirm dialog in the same batch means the dialog tries
+    // to present while the sheet is still animating out — it arrives dead
+    // (visible but ignoring taps) or never arrives at all. Park the habit and
+    // let the sheet's onDismiss open the dialog once the presentation is
+    // genuinely free.
+    //
+    // onDismiss is iOS-only, so Android — which has no such conflict — opens
+    // the dialog directly.
+    if (Platform.OS === "ios" && showHabitModal) {
+      setDeleteAfterDismiss(habit);
+      setShowHabitModal(false);
+      return;
+    }
+    setShowHabitModal(false);
     setPendingDelete(habit);
   };
 
@@ -197,6 +212,14 @@ export default function HabitsScreen() {
         animationType="slide"
         presentationStyle="pageSheet"
         onRequestClose={() => setShowHabitModal(false)}
+        // Fires once the sheet is fully off-screen (iOS). Only now is it safe
+        // to present the confirm dialog.
+        onDismiss={() => {
+          if (deleteAfterDismiss) {
+            setPendingDelete(deleteAfterDismiss);
+            setDeleteAfterDismiss(null);
+          }
+        }}
       >
         <KeyboardAvoidingView
           style={styles.modalContainer}
@@ -270,7 +293,10 @@ export default function HabitsScreen() {
         confirmLabel="Delete"
         loading={deleting}
         onConfirm={handleConfirmDelete}
-        onCancel={() => setPendingDelete(null)}
+        onCancel={() => {
+          setPendingDelete(null);
+          setDeleteAfterDismiss(null);
+        }}
       />
     </PaperBackground>
   );

@@ -104,17 +104,23 @@ export function ConfirmDialog({
         style={styles.fill}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        {/* Trap VoiceOver on the dialog — a decision this size shouldn't be
-            swipe-past-able. */}
+        {/* Tap-outside-to-cancel. Deliberately NOT an accessibility element:
+            giving the backdrop a button role made it an a11y container that
+            absorbed its own children, so VoiceOver announced one "Dismiss"
+            button and never reached Cancel or Delete inside it. Sighted taps
+            are unaffected either way — the innermost pressable wins the
+            responder — but the dialog was unusable with VoiceOver on.
+            Cancel is the accessible way out; onRequestClose covers hardware
+            back and the Esc key. */}
         <Pressable
           style={styles.backdrop}
           onPress={handleCancel}
-          accessibilityViewIsModal
-          accessibilityRole="button"
-          accessibilityLabel="Dismiss"
+          accessible={false}
+          importantForAccessibility="no"
         >
-          {/* Inner Pressable swallows taps so pressing the card doesn't cancel. */}
-          <Pressable onPress={() => {}}>
+          {/* Inner Pressable swallows taps so pressing the card doesn't cancel.
+              This is where VoiceOver gets trapped instead. */}
+          <Pressable onPress={() => {}} accessibilityViewIsModal>
             <PaperCard style={styles.card}>
               <Text style={styles.title} accessibilityRole="header">
                 {title}
@@ -140,6 +146,8 @@ export function ConfirmDialog({
                   onPress={handleCancel}
                   disabled={loading}
                   style={[styles.button, styles.cancelButton]}
+                  accessibilityLabel={cancelLabel}
+                  accessibilityHint="Closes without making the change"
                 >
                   <Text style={[styles.cancelLabel, loading && styles.disabled]}>
                     {cancelLabel}
@@ -155,6 +163,12 @@ export function ConfirmDialog({
                     { backgroundColor: confirmColor, borderColor: confirmColor },
                     (loading || !phraseSatisfied) && styles.disabled,
                   ]}
+                  accessibilityLabel={loading ? `${confirmLabel}, working` : confirmLabel}
+                  accessibilityHint={
+                    confirmPhrase && !phraseSatisfied
+                      ? `Type ${confirmPhrase} above to enable this`
+                      : title
+                  }
                 >
                   {loading ? (
                     <ActivityIndicator color={Colors.card} />
