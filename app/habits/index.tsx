@@ -10,7 +10,7 @@ import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { useDataStore } from "@/lib/data-store";
 import type { Habit } from "@/lib/db";
 import * as Haptics from "expo-haptics";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -94,24 +94,7 @@ export default function HabitsScreen() {
 
   // Destructive confirmations go through ConfirmDialog (the app's own paper
   // dialog with haptics + a double-submit latch), never a native Alert.
-  // TEMPORARY diagnostic — remove once the delete confirm is confirmed working.
-  useEffect(() => {
-    if (__DEV__) {
-      console.log(
-        `[habits] state: pendingDelete=${pendingDelete?.name ?? "null"} · ` +
-          `confirmInSheet=${confirmInSheet} · sheetOpen=${showHabitModal}`,
-      );
-    }
-  }, [pendingDelete, confirmInSheet, showHabitModal]);
-
   const handleDeleteHabit = (habit: Habit) => {
-    // TEMPORARY diagnostic — remove once the delete confirm is confirmed working.
-    if (__DEV__) {
-      console.log(
-        `[habits] delete tapped: "${habit.name}" · sheetOpen=${showHabitModal} · ` +
-          `path=${showHabitModal ? "inline-in-sheet" : "confirm-dialog"}`,
-      );
-    }
     setListError(null);
     // Two paths on purpose.
     //
@@ -305,6 +288,7 @@ export default function HabitsScreen() {
                 </Text>
                 <View style={styles.inlineConfirmRow}>
                   <PressableScale
+                    containerStyle={styles.inlineSlot}
                     style={[styles.inlineBtn, styles.inlineKeep]}
                     onPress={() => setConfirmInSheet(false)}
                     disabled={deleting}
@@ -314,6 +298,7 @@ export default function HabitsScreen() {
                     <Text style={styles.inlineKeepText}>Keep</Text>
                   </PressableScale>
                   <PressableScale
+                    containerStyle={styles.inlineSlot}
                     style={[styles.inlineBtn, styles.inlineDelete, deleting && styles.inlineDisabled]}
                     onPress={handleConfirmDelete}
                     disabled={deleting}
@@ -375,8 +360,8 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   inlineConfirmRow: { flexDirection: "row", gap: 12, marginTop: 18 },
+  inlineSlot: { flex: 1 },
   inlineBtn: {
-    flex: 1,
     height: 48,
     borderRadius: 14,
     alignItems: "center",

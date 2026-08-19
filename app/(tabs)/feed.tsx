@@ -540,6 +540,7 @@ export default function FeedScreen() {
                 ) : null}
                 <View style={styles.editButtonRow}>
                   <PressableScale
+                    containerStyle={styles.editButtonSlot}
                     style={[styles.editButton, styles.editCancelButton]}
                     onPress={closeEditor}
                     disabled={editSaving}
@@ -555,6 +556,7 @@ export default function FeedScreen() {
                     </Text>
                   </PressableScale>
                   <PressableScale
+                    containerStyle={styles.editButtonSlot}
                     style={[
                       styles.editButton,
                       styles.editSaveButton,
@@ -789,8 +791,11 @@ const styles = StyleSheet.create({
     marginTop: 20,
     gap: 12,
   },
+  // `flex` goes on the Pressable via containerStyle; the painted surface
+  // stays on the inner animated view. Passing flex in `style` leaves the
+  // Pressable unflexed and collapses the button to nothing.
+  editButtonSlot: { flex: 1 },
   editButton: {
-    flex: 1,
     height: 48,
     borderRadius: 14,
     alignItems: "center",

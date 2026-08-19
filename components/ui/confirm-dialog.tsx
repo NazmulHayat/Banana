@@ -120,7 +120,7 @@ export function ConfirmDialog({
         >
           {/* Inner Pressable swallows taps so pressing the card doesn't cancel.
               This is where VoiceOver gets trapped instead. */}
-          <Pressable onPress={() => {}} accessibilityViewIsModal>
+          <Pressable onPress={() => {}} accessibilityViewIsModal style={styles.cardHolder}>
             <PaperCard style={styles.card}>
               <Text style={styles.title} accessibilityRole="header">
                 {title}
@@ -145,6 +145,7 @@ export function ConfirmDialog({
                 <PressableScale
                   onPress={handleCancel}
                   disabled={loading}
+                  containerStyle={styles.buttonSlot}
                   style={[styles.button, styles.cancelButton]}
                   accessibilityLabel={cancelLabel}
                   accessibilityHint="Closes without making the change"
@@ -157,6 +158,7 @@ export function ConfirmDialog({
                 <PressableScale
                   onPress={handleConfirm}
                   disabled={loading || !phraseSatisfied}
+                  containerStyle={styles.buttonSlot}
                   style={[
                     styles.button,
                     styles.confirmButton,
@@ -196,9 +198,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingHorizontal: 32,
   },
+  // The holder carries the width so the card's `100%` has something definite
+  // to resolve against — an auto-sized parent makes that percentage undefined.
+  cardHolder: { width: "100%", maxWidth: 360 },
   card: {
     width: "100%",
-    maxWidth: 360,
   },
   title: {
     fontFamily: Fonts.handwritingSemiBold,
@@ -229,8 +233,11 @@ const styles = StyleSheet.create({
     marginTop: 24,
     gap: 12,
   },
+  // `flex` belongs on the Pressable (containerStyle); everything painted
+  // belongs on the inner animated view (style). Splitting them is what makes
+  // the row divide evenly instead of collapsing.
+  buttonSlot: { flex: 1 },
   button: {
-    flex: 1,
     height: 48,
     borderRadius: 14,
     alignItems: "center",
