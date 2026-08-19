@@ -286,7 +286,7 @@ const styles = StyleSheet.create({
     width: 1,
     alignSelf: "stretch",
     marginVertical: 2,
-    backgroundColor: Hairline.outline,
+    backgroundColor: Hairline.divider,
   },
   metricValue: {
     // Accent on the figures only — the numbers are what the eye should catch,
