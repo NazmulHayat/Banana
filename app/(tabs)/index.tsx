@@ -1,7 +1,7 @@
 import {
-    ADAPTIVE_MAX_HABITS,
     CELL_GAP,
     computeColumnWidth,
+    fitsWithoutScroll,
     HabitGrid,
     HEADER_ROW_HEIGHT,
     ROW_PITCH,
@@ -550,11 +550,12 @@ export default function TrackerScreen() {
 
   // The sticky header mirrors the grid's columns, so it repeats the grid's
   // width math on its own measured width (same 16pt margins + 62pt DAY column,
-  // so the two always agree). 1-3 habits fill the row and don't scroll.
+  // so the two always agree) — including whether the columns fit, so header
+  // and grid scroll or fill together.
   const [stickyGridWidth, setStickyGridWidth] = useState(0);
   const stickyColumnWidth = computeColumnWidth(stickyGridWidth, habits.length);
   const totalHabitsWidth = habits.length * stickyColumnWidth;
-  const stickyScrollable = habits.length > ADAPTIVE_MAX_HABITS;
+  const stickyScrollable = !fitsWithoutScroll(stickyGridWidth, habits.length);
 
   return (
     <PaperBackground>
