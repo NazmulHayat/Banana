@@ -557,8 +557,25 @@ npx tsx tests/benchmark.test.ts       # crypto perf numbers
 npx expo install --check
 ```
 
+### Running on a physical device
+
+`npx expo start` (or `npm start`) serves over the LAN — install Expo Go and scan the QR. Verified:
+the iOS bundle builds and serves at `exp://<lan-ip>:8081`. `npm run start:tunnel` is the fallback
+when the phone and Mac can't reach each other directly.
+
+Expo Go cannot run two things: the daily reminder (`lib/reminder.ts` — `expo-notifications` isn't
+fully supported in Expo Go on SDK 54) and `aightbet://` deep links (Expo Go serves
+`exp://<lan-ip>:8081/--/…`, so the password-reset redirect must be registered in that form in
+Supabase, or tested on a native build). Both work under `npm run ios:device` or an EAS build.
+
+`eas.json` carries two profiles, `preview` (internal distribution) and `production`. There is no
+dev-client profile on purpose — installing `expo-dev-client` makes bare `expo start` default away
+from Expo Go, which breaks the scan-the-QR workflow above. EAS cloud builds can't read `.env` (it
+is gitignored and the repo is public), so `EXPO_PUBLIC_SUPABASE_URL` / `EXPO_PUBLIC_SUPABASE_KEY`
+must be registered once with `eas env:create`. Never commit either value.
+
 **Environment.** `.env` holds the public client vars only — `EXPO_PUBLIC_SUPABASE_URL` and
-`EXPO_PUBLIC_SUPABASE_ANON_KEY` (the anon key is public by design; RLS is the boundary).
+`EXPO_PUBLIC_SUPABASE_KEY` (the anon key is public by design; RLS is the boundary).
 
 **`tests/e2e.test.ts` prerequisite:** it needs `SUPABASE_SERVICE_ROLE_KEY` in **`.env.local`**
 (gitignored via `.env*.local`) to create and tear down its disposable users. The service-role key

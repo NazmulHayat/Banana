@@ -4,10 +4,16 @@
   "version": "1.0.0",
   "scripts": {
     "start": "expo start",
-    "reset-project": "node ./scripts/reset-project.js",
-    "android": "expo start --android",
+    "start:tunnel": "expo start --tunnel",
+    "start:clear": "expo start --clear",
     "ios": "expo start --ios",
+    "android": "expo start --android",
     "web": "expo start --web",
+    "ios:device": "expo run:ios --device",
+    "android:device": "expo run:android --device",
+    "build:preview:ios": "npx --yes eas-cli build --profile preview --platform ios",
+    "build:preview:android": "npx --yes eas-cli build --profile preview --platform android",
+    "reset-project": "node ./scripts/reset-project.js",
     "lint": "expo lint",
     "test": "npx tsx tests/crypto.test.ts && npx tsx tests/stats.test.ts && npx tsx tests/gamification.test.ts && npx tsx tests/pending-writes.test.ts && npx tsx tests/dates.test.ts && npx tsx tests/db-cache.test.ts && npx tsx tests/db-writes.test.ts"
   },
