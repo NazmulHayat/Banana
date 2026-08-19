@@ -427,11 +427,14 @@ export function HighlightInput({
         </View>
       )}
       {/* Photos are NOT end-to-end encrypted in v1 (private Storage bucket
-          only) — disclosed plainly, right where photos get attached. */}
-      <Text style={styles.privacyNote}>
-        Your words and habits are end-to-end encrypted. Photos are stored
-        privately, but not encrypted yet.
-      </Text>
+          only) — still disclosed, but only once a photo is actually attached.
+          Standing on every empty composer it was permanent furniture on the
+          home screen; it says nothing until there's a photo to say it about. */}
+      {pickedUris.length > 0 && (
+        <Text style={styles.privacyNote}>
+          Photos are stored privately, but aren&apos;t encrypted yet.
+        </Text>
+      )}
     </PaperCard>
   );
 }
