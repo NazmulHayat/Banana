@@ -12,6 +12,7 @@ import type { Habit } from "@/lib/db";
 import * as Haptics from "expo-haptics";
 import { useState } from "react";
 import {
+  ActivityIndicator,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -37,9 +38,8 @@ export default function HabitsScreen() {
   const [editingHabit, setEditingHabit] = useState<Habit | null>(null);
   const [habitName, setHabitName] = useState("");
   const [pendingDelete, setPendingDelete] = useState<Habit | null>(null);
-  // Held while the edit sheet animates away, then promoted to `pendingDelete`
-  // in the sheet's onDismiss. See handleDeleteHabit.
-  const [deleteAfterDismiss, setDeleteAfterDismiss] = useState<Habit | null>(null);
+  // Delete confirmation shown INSIDE the edit sheet. See handleDeleteHabit.
+  const [confirmInSheet, setConfirmInSheet] = useState(false);
   const [deleting, setDeleting] = useState(false);
   // Failures speak inline, in the app's own voice — never a native Alert.
   // `formError` lives in the sheet, `listError` on the list behind it.
@@ -50,6 +50,8 @@ export default function HabitsScreen() {
     setEditingHabit(habit ?? null);
     setHabitName(habit?.name ?? "");
     setFormError(null);
+    // Never reopen the sheet still armed for deletion.
+    setConfirmInSheet(false);
     setShowHabitModal(true);
   };
 
@@ -94,26 +96,25 @@ export default function HabitsScreen() {
   // dialog with haptics + a double-submit latch), never a native Alert.
   const handleDeleteHabit = (habit: Habit) => {
     setListError(null);
-    // On iOS the edit sheet is a real UIKit page sheet. Dismissing it and
-    // presenting the confirm dialog in the same batch means the dialog tries
-    // to present while the sheet is still animating out — it arrives dead
-    // (visible but ignoring taps) or never arrives at all. Park the habit and
-    // let the sheet's onDismiss open the dialog once the presentation is
-    // genuinely free.
+    // Two paths on purpose.
     //
-    // onDismiss is iOS-only, so Android — which has no such conflict — opens
-    // the dialog directly.
-    if (Platform.OS === "ios" && showHabitModal) {
-      setDeleteAfterDismiss(habit);
-      setShowHabitModal(false);
+    // From inside the edit sheet, the confirmation renders INLINE in the
+    // sheet — never as a second Modal. The sheet is a real UIKit page sheet,
+    // and presenting a second modal over it (or dismissing it and presenting
+    // in the same breath) races iOS's presentation: the dialog arrives dead,
+    // or never arrives. Keeping it in one modal removes the whole class of
+    // bug rather than timing around it.
+    if (showHabitModal) {
+      setConfirmInSheet(true);
       return;
     }
-    setShowHabitModal(false);
+    // From the list there is no sheet open, so the normal dialog is safe.
     setPendingDelete(habit);
   };
 
   const handleConfirmDelete = async () => {
-    const habit = pendingDelete;
+    // Whichever surface asked — the inline sheet confirm or the dialog.
+    const habit = pendingDelete ?? editingHabit;
     if (!habit) return;
     setDeleting(true);
     const updated = habits.filter((h) => h.id !== habit.id);
@@ -128,6 +129,10 @@ export default function HabitsScreen() {
     } finally {
       setDeleting(false);
       setPendingDelete(null);
+      setConfirmInSheet(false);
+      setShowHabitModal(false);
+      setEditingHabit(null);
+      setHabitName("");
     }
   };
 
@@ -212,14 +217,6 @@ export default function HabitsScreen() {
         animationType="slide"
         presentationStyle="pageSheet"
         onRequestClose={() => setShowHabitModal(false)}
-        // Fires once the sheet is fully off-screen (iOS). Only now is it safe
-        // to present the confirm dialog.
-        onDismiss={() => {
-          if (deleteAfterDismiss) {
-            setPendingDelete(deleteAfterDismiss);
-            setDeleteAfterDismiss(null);
-          }
-        }}
       >
         <KeyboardAvoidingView
           style={styles.modalContainer}
@@ -266,7 +263,7 @@ export default function HabitsScreen() {
               </Text>
             </PressableScale>
 
-            {editingHabit && (
+            {editingHabit && !confirmInSheet && (
               <TouchableOpacity
                 style={styles.deleteButton}
                 onPress={() => handleDeleteHabit(editingHabit)}
@@ -277,6 +274,43 @@ export default function HabitsScreen() {
                 <IconSymbol name="trash" size={16} color={Colors.danger} />
                 <Text style={styles.deleteButtonText}>Delete habit</Text>
               </TouchableOpacity>
+            )}
+
+            {/* Inline confirmation — same two-button choice as ConfirmDialog,
+                rendered in the sheet so no second modal is involved. */}
+            {editingHabit && confirmInSheet && (
+              <View style={styles.inlineConfirm}>
+                <Text style={styles.inlineConfirmTitle} accessibilityRole="header">
+                  Delete &ldquo;{editingHabit.name}&rdquo;?
+                </Text>
+                <Text style={styles.inlineConfirmBody}>
+                  Its history goes with it. This can&apos;t be undone.
+                </Text>
+                <View style={styles.inlineConfirmRow}>
+                  <PressableScale
+                    style={[styles.inlineBtn, styles.inlineKeep]}
+                    onPress={() => setConfirmInSheet(false)}
+                    disabled={deleting}
+                    accessibilityLabel="Keep habit"
+                    accessibilityHint="Closes without deleting"
+                  >
+                    <Text style={styles.inlineKeepText}>Keep</Text>
+                  </PressableScale>
+                  <PressableScale
+                    style={[styles.inlineBtn, styles.inlineDelete, deleting && styles.inlineDisabled]}
+                    onPress={handleConfirmDelete}
+                    disabled={deleting}
+                    accessibilityLabel={deleting ? "Deleting" : "Delete habit"}
+                    accessibilityHint={`Permanently removes ${editingHabit.name}`}
+                  >
+                    {deleting ? (
+                      <ActivityIndicator color={Colors.card} />
+                    ) : (
+                      <Text style={styles.inlineDeleteText}>Delete</Text>
+                    )}
+                  </PressableScale>
+                </View>
+              </View>
             )}
           </ScrollView>
         </KeyboardAvoidingView>
@@ -293,16 +327,58 @@ export default function HabitsScreen() {
         confirmLabel="Delete"
         loading={deleting}
         onConfirm={handleConfirmDelete}
-        onCancel={() => {
-          setPendingDelete(null);
-          setDeleteAfterDismiss(null);
-        }}
+        onCancel={() => setPendingDelete(null)}
       />
     </PaperBackground>
   );
 }
 
 const styles = StyleSheet.create({
+  // Inline delete confirmation, shown inside the edit sheet. Deliberately the
+  // same two-button shape as ConfirmDialog so the choice reads identically
+  // wherever it appears — it just isn't a second Modal.
+  inlineConfirm: {
+    marginTop: 18,
+    padding: 16,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: Colors.danger,
+    backgroundColor: Colors.card,
+  },
+  inlineConfirmTitle: {
+    fontSize: 17,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingSemiBold,
+  },
+  inlineConfirmBody: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    lineHeight: 21,
+    marginTop: 6,
+  },
+  inlineConfirmRow: { flexDirection: "row", gap: 12, marginTop: 18 },
+  inlineBtn: {
+    flex: 1,
+    height: 48,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1.5,
+  },
+  inlineKeep: { backgroundColor: Colors.card, borderColor: Colors.ink },
+  inlineKeepText: {
+    fontSize: 16,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingSemiBold,
+  },
+  inlineDelete: { backgroundColor: Colors.danger, borderColor: Colors.danger },
+  inlineDeleteText: {
+    fontSize: 16,
+    color: Colors.card,
+    fontFamily: Fonts.handwritingSemiBold,
+  },
+  inlineDisabled: { opacity: 0.5 },
   intro: {
     fontSize: 14,
     color: Colors.textSecondary,
