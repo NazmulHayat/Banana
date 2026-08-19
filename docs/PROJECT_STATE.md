@@ -574,6 +574,30 @@ from Expo Go, which breaks the scan-the-QR workflow above. EAS cloud builds can'
 is gitignored and the repo is public), so `EXPO_PUBLIC_SUPABASE_URL` / `EXPO_PUBLIC_SUPABASE_KEY`
 must be registered once with `eas env:create`. Never commit either value.
 
+### Supabase audit (2026-08-20)
+
+Verified against the live project via the Management API. RLS on all 6 tables, every policy scoped
+to `auth.uid()`; `private-media` private with all four CRUD policies path-guarded to `auth.uid()/`.
+Zero-knowledge holds: `entries` / `habits` / `habit_logs` expose only `ciphertext`, `nonce` and the
+HMAC buckets. `accounts.avatar_path` + its owner-scoped check are applied.
+
+`20260819180000_security_hardening.sql` is **applied**: `set_updated_at` search_path pinned,
+`rls_auto_enable` and `delete_my_account` revoked from `anon`/`public`, and `private-media` capped
+at 25 MB with an `image/{jpeg,png,webp,heic}` allow-list.
+
+Three advisor warnings remain and are **intentional** — `username_available` must be callable by
+`anon` (signup checks a name before a session exists) and `delete_my_account` by `authenticated`
+(that is the feature). Both are SECURITY DEFINER by necessity and return the minimum possible.
+
+Open, and **not** fixable from code — Auth config lives in the dashboard:
+- `password_min_length` is **6** while every client screen enforces 8 (`app/auth/signup.tsx:47`,
+  `app/auth/recover-with-key.tsx:58`, `app/security/index.tsx:141`). The master key is scrypt-derived
+  from this password, so the server being laxer than the UI is the weakest link in the crypto model.
+- Leaked-password protection (HaveIBeenPwned) is off.
+- `site_url` is still the `http://localhost:3000` default.
+- `mailer_autoconfirm` is **on** — no email verification. A launch-gate decision, not a bug: turning
+  it on makes every new signup wait for an email, which breaks throwaway test accounts.
+
 **Environment.** `.env` holds the public client vars only — `EXPO_PUBLIC_SUPABASE_URL` and
 `EXPO_PUBLIC_SUPABASE_KEY` (the anon key is public by design; RLS is the boundary).
 
