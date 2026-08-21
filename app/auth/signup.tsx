@@ -1,6 +1,6 @@
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
-import { Colors, Fonts, Scrim } from "@/constants/theme";
+import { Colors, Fonts } from "@/constants/theme";
 import { signupTransient } from "@/lib/auth/signup-transient";
 import { supabase } from "@/lib/supabase";
 import { router } from "expo-router";
@@ -204,9 +204,7 @@ export default function SignupScreen() {
           </TouchableOpacity>
 
           <Text style={styles.title}>Create Account</Text>
-          <Text style={styles.subtitle}>
-            Join Aight Bet and start journaling privately
-          </Text>
+          <Text style={styles.subtitle}>Private by default.</Text>
 
           <View style={styles.form}>
             <Text style={styles.label}>Username</Text>
@@ -242,9 +240,7 @@ export default function SignupScreen() {
             {usernameError ? (
               <Text style={styles.error}>{usernameError}</Text>
             ) : (
-              <Text style={styles.hint}>
-                3-20 characters: letters, numbers, underscores
-              </Text>
+              <Text style={styles.hint}>3 to 20 · a-z 0-9 _</Text>
             )}
 
             <Text style={styles.label}>Email</Text>
@@ -292,9 +288,7 @@ export default function SignupScreen() {
                 />
               </TouchableOpacity>
             </View>
-            <Text style={styles.hint}>
-              Min 8 chars, uppercase, lowercase, number
-            </Text>
+            <Text style={styles.hint}>8+ · upper, lower, number</Text>
 
             <Text style={styles.label}>Confirm Password</Text>
             <TextInput
@@ -313,24 +307,6 @@ export default function SignupScreen() {
             {passwordError ? (
               <Text style={styles.error}>{passwordError}</Text>
             ) : null}
-
-            {/* Said here, before the account exists — the recovery key used to
-                be explained only after it had already been generated and
-                shown. */}
-            <View style={styles.privacyCallout}>
-              <IconSymbol name="lock.fill" size={16} color={Colors.ink} />
-              <Text style={styles.privacyText}>
-                Your password encrypts your journal on this phone. We never see
-                it, so we can&apos;t reset it for you.{" "}
-                <Text style={styles.privacyBold}>
-                  That&apos;s why the next screen gives you a recovery key: one
-                  long code that can unlock your journal if you forget your
-                  password.
-                </Text>{" "}
-                It&apos;s shown once. Without it, a forgotten password means a
-                lost journal — so have somewhere safe ready to put it.
-              </Text>
-            </View>
 
             <TouchableOpacity
               style={[styles.button, loading && styles.buttonDisabled]}
@@ -470,27 +446,6 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwriting,
     marginBottom: 8,
   },
-  privacyCallout: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 8,
-    backgroundColor: Scrim.accent,
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    marginTop: 16,
-    borderWidth: 1,
-    borderColor: Colors.shadow,
-  },
-  privacyText: {
-    flex: 1,
-    fontSize: 13,
-    lineHeight: 18,
-    color: Colors.ink,
-    fontFamily: Fonts.handwriting,
-  },
-  // iOS can't synthesize weight for a custom font — use the loaded family.
-  privacyBold: { fontFamily: Fonts.handwritingSemiBold },
   button: {
     width: "100%",
     height: 52,
