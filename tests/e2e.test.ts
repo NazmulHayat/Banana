@@ -452,6 +452,68 @@ test("can re-wrap with new password (simulates recover-with-key flow)", async ()
 });
 
 // ============================================================================
+suite("places: encrypted round-trip (location tagging)");
+// ============================================================================
+// This suite exists because of a real bug: `places` shipped with `bytea`
+// ciphertext/nonce columns while every other encrypted table is `text`.
+// Postgres accepted the base64 string as escape-format bytea, so writes
+// "succeeded" and every read came back as "\\x<hex>" and failed to decrypt —
+// saved places vanished on reload. Unit tests cannot see a column type; only a
+// live round-trip can. Assert the shape, not just the decrypt.
+test("place row round-trips through the database and decrypts", async () => {
+  const aad = new TextEncoder().encode(AAD.place(userAId));
+  const payload = {
+    id: "place-1",
+    heading: "Haneda Airport",
+    address: "Hanedakuko, Ota, Tokyo, Japan",
+    // Rounded to 3dp by lib/location before it ever reaches here.
+    latitude: 35.549,
+    longitude: 139.779,
+    createdAt: new Date().toISOString(),
+  };
+  const blob = encryptJson(userAMasterKey, payload, AAD.place(userAId));
+
+  const { error: insErr } = await clientA.from("places").insert({
+    owner_id: userAId,
+    ciphertext: blob.ciphertext,
+    nonce: blob.nonce,
+  });
+  if (insErr) throw new Error(insErr.message);
+
+  const { data, error } = await clientA
+    .from("places")
+    .select("ciphertext, nonce")
+    .eq("owner_id", userAId);
+  if (error) throw new Error(error.message);
+  assertEq(data?.length, 1);
+  const row = data![0];
+
+  // The column must hand back exactly what was written. A bytea column would
+  // return "\\x..." here and this is the assertion that catches it.
+  assertEq(row.ciphertext, blob.ciphertext, "ciphertext must survive verbatim");
+  assertEq(row.nonce, blob.nonce, "nonce must survive verbatim");
+
+  const plaintext = aesDecrypt(
+    userAMasterKey,
+    base64ToBytes(row.ciphertext),
+    base64ToBytes(row.nonce),
+    aad,
+  );
+  const decoded = JSON.parse(new TextDecoder().decode(plaintext));
+  assertEq(decoded.heading, "Haneda Airport");
+  assertEq(decoded.latitude, 35.549, "coordinates must survive the round-trip");
+});
+
+test("a place row is invisible to another user (RLS)", async () => {
+  const { data, error } = await clientB
+    .from("places")
+    .select("ciphertext")
+    .eq("owner_id", userAId);
+  if (error) throw new Error(error.message);
+  assertEq(data?.length, 0, "user B must not see user A's places");
+});
+
+// ============================================================================
 suite("account deletion (Apple-required)");
 // ============================================================================
 test("delete_my_account RPC exists + deletes user A", async () => {

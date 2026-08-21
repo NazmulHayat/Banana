@@ -1,4 +1,7 @@
+import { EntryPhotoEditor } from "@/components/entry-photo-editor";
 import { FeedEntryCard } from "@/components/feed-entry-card";
+import { MAX_IMAGES } from "@/components/highlight-input";
+import { PlaceEditor } from "@/components/place-editor";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { IconButton } from "@/components/ui/icon-button";
 import { IconSymbol } from "@/components/ui/icon-symbol";
@@ -11,11 +14,19 @@ import { Colors, Fonts, Hairline, Scrim } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { useDataStore } from "@/lib/data-store";
 import { fromDayKey } from "@/lib/dates";
-import type { DailyEntry } from "@/lib/db";
+import type { DailyEntry, EntryPlace, SavedPlace } from "@/lib/db";
+import { matchSavedPlace, resolvePlace } from "@/lib/location";
+import {
+  deleteImages,
+  discardEntryImages,
+  uploadEntryImages,
+} from "@/lib/media";
+import * as ImagePicker from "expo-image-picker";
 import * as Haptics from "expo-haptics";
 import { router, useFocusEffect } from "expo-router";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Dimensions,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -27,15 +38,54 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
 } from "react-native";
+import {
+  Gesture,
+  GestureDetector,
+  GestureHandlerRootView,
+} from "react-native-gesture-handler";
 import Animated, {
+  Extrapolation,
   FadeInDown,
-  FadeInLeft,
-  FadeInRight,
-  FadeOutLeft,
-  FadeOutRight,
+  interpolate,
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+
+const SCREEN_WIDTH = Dimensions.get("window").width;
+
+/**
+ * Cards rendered before the user scrolls. Enough to fill a tall screen; the
+ * rest arrive as they're reached, so opening a month never fires a photo
+ * request for an entry twenty rows down that may never be looked at.
+ */
+const INITIAL_CARDS = 5;
+/** How many more to reveal each time the user nears the end. */
+const CARDS_PER_REVEAL = 5;
+/** How close to the bottom counts as "nearly there", in points. */
+const REVEAL_THRESHOLD = 700;
+
+/** Sideways travel before the month swipe takes over from the scroll view. */
+const SWIPE_ACTIVATE_X = 24;
+/** Vertical drift that hands the gesture back — scrolling always wins. */
+const SWIPE_CANCEL_Y = 12;
+/** Distance that commits to a month change on release. */
+const SWIPE_COMMIT_X = 60;
+/** …or this much speed, so a quick flick counts too (pt/s). */
+const SWIPE_COMMIT_VELOCITY = 500;
+/** Fraction of the drag the page keeps when there's no next month to reach. */
+const FUTURE_RESISTANCE = 0.25;
+/**
+ * How far the page dims as it travels. Barely: a slide already communicates
+ * the move, and a heavy fade on top of it is two effects doing one job.
+ */
+const SWIPE_FADE_FLOOR = 0.75;
 
 export default function FeedScreen() {
   const insets = useSafeAreaInsets();
@@ -186,6 +236,78 @@ export default function FeedScreen() {
   const isCurrentMonthView =
     currentDate.getMonth() === today.getMonth() &&
     currentDate.getFullYear() === today.getFullYear();
+  // The return button names where it lands. A pill reading "Today" sits
+  // directly under the month title and parses as a label on it — "July is
+  // today" — which is exactly wrong when you're browsing the past.
+  const todayMonthName = today.toLocaleDateString("en-US", { month: "long" });
+
+  // Lazy rendering: how many of this month's cards may exist yet.
+  const [revealed, setRevealed] = useState(INITIAL_CARDS);
+
+  // A new month starts at the top, so it starts from the first few cards.
+  useEffect(() => {
+    setRevealed(INITIAL_CARDS);
+  }, [currentYear, currentMonth]);
+
+  const handleScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+    const toEnd = contentSize.height - (contentOffset.y + layoutMeasurement.height);
+    if (toEnd > REVEAL_THRESHOLD) return;
+    setRevealed((current) =>
+      current >= entries.length ? current : current + CARDS_PER_REVEAL,
+    );
+  };
+
+  // Which entry's place tag is open for editing, if any.
+  const [editingPlace, setEditingPlace] = useState<DailyEntry | null>(null);
+  const [savingPlace, setSavingPlace] = useState(false);
+
+  // Place names are resolved per card at render time, so the feed needs them
+  // in hand — renaming a place then re-labels every entry there at once.
+  const { loadPlaces } = dataStore;
+  useEffect(() => {
+    void loadPlaces();
+  }, [loadPlaces]);
+
+  /**
+   * Save a corrected place. Two writes, deliberately separate: the entry keeps
+   * its own snapshot (history never rewrites itself), and "remember" teaches
+   * the app a preferred name for that spot so future entries use it.
+   */
+  const savePlaceEdit = async (next: EntryPlace, remember: boolean) => {
+    const target = editingPlace;
+    if (!target) return;
+    setSavingPlace(true);
+    try {
+      await dataStore.saveEntry({ ...target, place: next });
+
+      if (remember) {
+        const saved = await dataStore.loadPlaces();
+        const existing = matchSavedPlace(next, saved);
+        const entry: SavedPlace = {
+          id:
+            existing?.id ??
+            `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          heading: next.heading,
+          address: next.address,
+          latitude: next.latitude,
+          longitude: next.longitude,
+          createdAt: existing?.createdAt ?? new Date().toISOString(),
+        };
+        // Renaming somewhere you've already named replaces it rather than
+        // piling up two names for one spot.
+        const merged = existing
+          ? saved.map((p) => (p.id === existing.id ? entry : p))
+          : [...saved, entry];
+        await dataStore.savePlaces(merged);
+      }
+    } finally {
+      // Close only once the write has landed — the sheet closing is the
+      // confirmation, so it must not happen before the change is real.
+      setSavingPlace(false);
+      setEditingPlace(null);
+    }
+  };
 
   const changeMonth = (direction: number) => {
     if (direction > 0 && isCurrentMonthView) return;
@@ -197,6 +319,76 @@ export default function FeedScreen() {
       return newDate;
     });
   };
+
+  // How far the month page is currently pushed sideways. The pan writes to it
+  // live so the page tracks your finger; everything else animates it home.
+  const dragX = useSharedValue(0);
+
+  const monthPageStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: dragX.value }],
+    // Receding as it leaves reads as depth rather than a card sliding on glass.
+    opacity: interpolate(
+      Math.abs(dragX.value),
+      [0, SCREEN_WIDTH * 0.7],
+      [1, SWIPE_FADE_FLOOR],
+      Extrapolation.CLAMP,
+    ),
+  }));
+
+  // Swipe left for the next month, right for the previous — the same two moves
+  // as the chevrons. The thresholds matter more than the handler: this sits on
+  // top of a vertical ScrollView with pull-to-refresh, so the pan only takes
+  // over once the drag is decisively sideways, and gives up if it drifts.
+  const monthSwipe = Gesture.Pan()
+    .activeOffsetX([-SWIPE_ACTIVATE_X, SWIPE_ACTIVATE_X])
+    .failOffsetY([-SWIPE_CANCEL_Y, SWIPE_CANCEL_Y])
+    .onUpdate((e) => {
+      // Dragging forward from this month has nowhere to go, so let it stretch
+      // a quarter of the way and pull back — elastic, not broken.
+      const blocked = e.translationX < 0 && isCurrentMonthView;
+      dragX.value = e.translationX * (blocked ? FUTURE_RESISTANCE : 1);
+    })
+    .onEnd((e) => {
+      const forward = e.translationX < 0;
+      const blocked = forward && isCurrentMonthView;
+      // A quick flick counts as much as a long drag, so the month doesn't feel
+      // stuck when you swipe fast.
+      const committed =
+        !blocked &&
+        (Math.abs(e.translationX) > SWIPE_COMMIT_X ||
+          Math.abs(e.velocityX) > SWIPE_COMMIT_VELOCITY);
+      if (!committed) {
+        // Not enough — settle back flat. Cancelling shouldn't feel like an event.
+        dragX.value = withSpring(0, Motion.springPage);
+        return;
+      }
+      // Carry the page the rest of the way out, then swap the month underneath
+      // it. The effect below brings the new one in from the opposite edge.
+      dragX.value = withTiming(
+        forward ? -SCREEN_WIDTH : SCREEN_WIDTH,
+        { duration: Motion.quick },
+        (finished) => {
+          if (finished) runOnJS(changeMonth)(forward ? 1 : -1);
+        },
+      );
+    });
+
+  // Whenever the month actually changes — swipe, chevron or Today — drop the
+  // incoming page just off the edge it should arrive from and let it settle.
+  // It lands and stops: a page that bounces on arrival reads as unstable.
+  const isFirstRender = useRef(true);
+  // Once you've travelled between months, the page transition is the motion —
+  // see `travelled` at the card level below.
+  const travelled = useRef(false);
+  useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    travelled.current = true;
+    dragX.value = monthDirection > 0 ? SCREEN_WIDTH : -SCREEN_WIDTH;
+    dragX.value = withSpring(0, Motion.springPage);
+  }, [currentYear, currentMonth, monthDirection, dragX]);
 
   const jumpToToday = () => {
     if (isCurrentMonthView) return;
@@ -225,9 +417,16 @@ export default function FeedScreen() {
   };
 
   // --- Edit (FR-E3) ---------------------------------------------------------
+  // Photo edits are STAGED. `editKeptPaths` is what survives, `editNewUris` is
+  // what's been picked but not uploaded. Nothing touches storage until Save.
+  const [editKeptPaths, setEditKeptPaths] = useState<string[]>([]);
+  const [editNewUris, setEditNewUris] = useState<string[]>([]);
+
   const openEditor = (entry: DailyEntry) => {
     setEditingEntry(entry);
     setEditText(entry.text);
+    setEditKeptPaths(entry.mediaPaths ?? []);
+    setEditNewUris([]);
     setEditError(null);
   };
 
@@ -235,28 +434,93 @@ export default function FeedScreen() {
     if (editSaving) return;
     setEditingEntry(null);
     setEditText("");
+    setEditKeptPaths([]);
+    setEditNewUris([]);
     setEditError(null);
+  };
+
+  const pickEditPhotos = async () => {
+    const remaining = MAX_IMAGES - (editKeptPaths.length + editNewUris.length);
+    if (remaining <= 0) return;
+    const allowsMultiple = remaining > 1 && Platform.OS === "ios";
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      allowsMultipleSelection: allowsMultiple,
+      selectionLimit: allowsMultiple ? remaining : 1,
+      quality: 0.8,
+    });
+    if (!result || result.canceled) return;
+    const picked = (result.assets ?? [])
+      .map((a) => a.uri)
+      .filter((uri): uri is string => Boolean(uri));
+    // Clamp in code — Android ignores `selectionLimit`.
+    setEditNewUris((prev) =>
+      [...prev, ...picked].slice(0, MAX_IMAGES - editKeptPaths.length),
+    );
   };
 
   const handleEditSave = async () => {
     if (!editingEntry || editSaving) return;
     const trimmed = editText.trim();
+    const original = editingEntry.mediaPaths ?? [];
+    const removedPaths = original.filter((p) => !editKeptPaths.includes(p));
+    const textChanged = trimmed !== editingEntry.text;
+    const photosChanged = removedPaths.length > 0 || editNewUris.length > 0;
     // Nothing changed — just close.
-    if (trimmed === editingEntry.text) {
+    if (!textChanged && !photosChanged) {
       closeEditor();
       return;
     }
-    // Photos are preserved; only the text changes.
-    const updated: DailyEntry = { ...editingEntry, text: trimmed };
+    // An entry with neither text nor photos left is an empty row, not an edit.
+    if (
+      trimmed.length === 0 &&
+      editKeptPaths.length + editNewUris.length === 0
+    ) {
+      setEditError("Add a few words or a photo — or delete the entry instead.");
+      return;
+    }
+
     setEditSaving(true);
     setEditError(null);
-    // The store action does the optimistic update + persistence, and never
-    // throws: `queued` is durable (it replays on reconnect) so it closes just
-    // like `synced`; only `failed` keeps the editor open with the user's text.
+
+    // 1. Upload the new photos first. `uploadEntryImages` is all-or-nothing: a
+    //    failure part-way rolls back everything it already stored.
+    const upload = await uploadEntryImages(
+      editNewUris,
+      editingEntry.id,
+      session?.user.id ?? "",
+    );
+    if (upload.status === "failed") {
+      setEditSaving(false);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setEditError(upload.reason);
+      return;
+    }
+
+    const updated: DailyEntry = {
+      ...editingEntry,
+      text: trimmed,
+      mediaPaths: [...editKeptPaths, ...upload.paths],
+      // Keep what we already knew about the surviving photos and add the new
+      // ones, so an edit never throws away dimensions and forces a re-measure.
+      media: [
+        ...(editingEntry.media ?? []).filter((m) =>
+          editKeptPaths.includes(m.path),
+        ),
+        ...upload.images,
+      ],
+    };
+
+    // 2. Write the row. Never throws: `queued` is durable (it replays on
+    //    reconnect) so it closes like `synced`; only `failed` keeps the editor
+    //    open with the user's work intact.
     const outcome = await dataStore.saveEntry(updated);
     setEditSaving(false);
+
     if (outcome.status === "failed") {
-      // Re-sync from the server so the optimistic edit doesn't stick.
+      // The row still points at the old photos, so the ones just uploaded have
+      // nothing referencing them — bin them rather than orphan the bucket.
+      await discardEntryImages(upload.paths);
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       setEditError(outcome.reason);
       void dataStore
@@ -264,9 +528,19 @@ export default function FeedScreen() {
         .catch(() => {});
       return;
     }
+
+    // 3. Only NOW delete what the user removed. Deleting before the write
+    //    lands would destroy a photo the entry still points at if the save
+    //    failed — for a journal, that is the unforgivable bug.
+    if (removedPaths.length > 0) {
+      void deleteImages(removedPaths).catch(() => {});
+    }
+
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setEditingEntry(null);
     setEditText("");
+    setEditKeptPaths([]);
+    setEditNewUris([]);
   };
 
   // --- Delete (FR-E4) -------------------------------------------------------
@@ -304,201 +578,250 @@ export default function FeedScreen() {
 
   return (
     <PaperBackground>
-      <ScrollView
-        style={styles.container}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            tintColor={Colors.ink}
-          />
-        }
-      >
-        <View style={[styles.header, { paddingTop: Math.max(insets.top, 16) }]}>
-          <View style={styles.titleContainer}>
-            <Text style={styles.title} accessibilityRole="header">
-              Feed
-            </Text>
-            <View style={styles.titleUnderline} />
-          </View>
-        </View>
-
-        {/* Same month control as the Tracker, including its Today shortcut —
-            eight taps to reach last spring is not navigation. */}
-        <View style={styles.monthHeader}>
-          <IconButton
-            onPress={() => changeMonth(-1)}
-            accessibilityLabel="Previous month"
-          >
-            <IconSymbol name="chevron.left" size={22} color={Colors.ink} />
-          </IconButton>
-          <TouchableOpacity
-            onPress={jumpToToday}
-            activeOpacity={0.85}
-            style={styles.monthTextWrapper}
-            // Vertical only — the chevrons sit right beside it.
-            hitSlop={{ top: 10, bottom: 10 }}
-            accessibilityRole="button"
-            accessibilityLabel={
-              isCurrentMonthView ? monthName : `${monthName}, jump to today`
-            }
-            accessibilityState={{ disabled: isCurrentMonthView }}
-          >
-            <Text style={styles.monthText}>{monthName}</Text>
-            {!isCurrentMonthView && (
-              <View style={styles.todayPill}>
-                <Text style={styles.todayPillText}>Today</Text>
-              </View>
-            )}
-          </TouchableOpacity>
-          <IconButton
-            onPress={() => changeMonth(1)}
-            disabled={isCurrentMonthView}
-            accessibilityLabel="Next month"
-            accessibilityHint={
-              isCurrentMonthView ? "You're on the current month" : undefined
+      {/* The app root doesn't mount a GestureHandlerRootView (see
+          habit-grid.tsx), so the swipe needs to scope its own. */}
+      <GestureHandlerRootView style={styles.gestureRoot}>
+        <GestureDetector gesture={monthSwipe}>
+          <ScrollView
+            style={styles.container}
+            onScroll={handleScroll}
+            // Four times a second is plenty to top up a reveal window.
+            scrollEventThrottle={250}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor={Colors.ink}
+              />
             }
           >
-            <IconSymbol name="chevron.right" size={22} color={Colors.ink} />
-          </IconButton>
-        </View>
+            {/* No page title: the tab bar already says "Feed", and the Tracker
+                has never had one. The month row takes the safe area instead. */}
 
-        {/* A queued write is saved on this device and replays on reconnect —
-            say so once, quietly, instead of interrupting the edit flow. */}
-        {dataStore.pendingWriteCount > 0 ? (
-          <Text style={styles.syncNote}>
-            Saved on this device — will sync when you&apos;re back online.
-          </Text>
-        ) : null}
-
-        {/* Stale-but-present: show what we have, admit it may be behind. */}
-        {loadFailed && entries.length > 0 ? (
-          <TouchableOpacity
-            onPress={retryLoad}
-            activeOpacity={0.85}
-            style={styles.staleNotice}
-            accessibilityRole="button"
-            accessibilityLabel="Couldn't refresh this month. Tap to try again."
-          >
-            <Text style={styles.syncNote}>
-              Couldn&apos;t refresh — showing what&apos;s on this device · tap
-              to try again
-            </Text>
-          </TouchableOpacity>
-        ) : null}
-
-        {loading ? (
-          <View style={styles.entriesContainer}>
-            <SkeletonCard height={140} style={styles.skeletonSpacing} />
-            <SkeletonCard height={100} style={styles.skeletonSpacing} />
-            <SkeletonCard height={180} style={styles.skeletonSpacing} />
-          </View>
-        ) : loadFailed && entries.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <View style={styles.emptyIconWrap}>
-              <IconSymbol
-                name="arrow.clockwise"
-                size={32}
-                color={Colors.ink}
-              />
-            </View>
-            <Text style={styles.emptyText}>Couldn&apos;t load this month</Text>
-            <Text style={styles.emptyHint}>
-              Your entries are safe — we just couldn&apos;t reach them from
-              here. Check your connection and try again.
-            </Text>
-            <PressableScale
-              style={styles.emptyCta}
-              onPress={retryLoad}
-              accessibilityLabel="Try again"
+            {/* Same month control as the Tracker, including its Today shortcut —
+                eight taps to reach last spring is not navigation. */}
+            <View
+              style={[
+                styles.monthHeader,
+                { paddingTop: Math.max(insets.top, 16) },
+              ]}
             >
-              <Text style={styles.emptyCtaText}>Try again</Text>
-            </PressableScale>
-          </View>
-        ) : entries.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <View style={styles.emptyIconWrap}>
-              <IconSymbol
-                name="book.closed.fill"
-                size={36}
-                color={Colors.ink}
-              />
-            </View>
-            <Text style={styles.emptyText}>
-              {isCurrentMonthView
-                ? "Your feed is empty"
-                : `Nothing written in ${monthName}`}
-            </Text>
-            <Text style={styles.emptyHint}>
-              Capture a highlight on the Tracker tab to start your journal.
-            </Text>
-            <PressableScale
-              style={styles.emptyCta}
-              // navigate, not push: the Tracker is a sibling tab, not a page
-              // to stack on top of this one.
-              onPress={() => router.navigate("/(tabs)")}
-              accessibilityLabel="Go to Tracker"
-            >
-              <Text style={styles.emptyCtaText}>Go to Tracker</Text>
-            </PressableScale>
-          </View>
-        ) : (
-          <Animated.View
-            key={`${currentYear}-${currentMonth}`}
-            style={styles.entriesContainer}
-            entering={(monthDirection > 0 ? FadeInRight : FadeInLeft).duration(
-              Motion.base,
-            )}
-            exiting={(monthDirection > 0 ? FadeOutLeft : FadeOutRight).duration(
-              Motion.fast,
-            )}
-          >
-            {(() => {
-              let cardIndex = 0;
-              return entriesByDay.map((group) => (
-                <View key={group.date} style={styles.dayGroup}>
-                  <View style={styles.dateRow}>
-                    <View style={styles.dateDot} />
-                    <Text style={styles.date}>{formatDate(group.date)}</Text>
-                    {group.entries.length > 1 && (
-                      <Text style={styles.dateCount}>
-                        · {group.entries.length}
-                      </Text>
-                    )}
+              <IconButton
+                onPress={() => changeMonth(-1)}
+                accessibilityLabel="Previous month"
+              >
+                <IconSymbol name="chevron.left" size={22} color={Colors.ink} />
+              </IconButton>
+              <TouchableOpacity
+                onPress={jumpToToday}
+                activeOpacity={0.85}
+                style={styles.monthTextWrapper}
+                // Vertical only — the chevrons sit right beside it.
+                hitSlop={{ top: 10, bottom: 10 }}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  isCurrentMonthView
+                    ? monthName
+                    : `${monthName}, tap to go to ${todayMonthName}`
+                }
+                accessibilityState={{ disabled: isCurrentMonthView }}
+              >
+                <Text style={styles.monthText}>{monthName}</Text>
+                {!isCurrentMonthView && (
+                  <View style={styles.todayPill}>
+                    <Text style={styles.todayPillText}>
+                      Go to {todayMonthName}
+                    </Text>
                   </View>
-                  {group.entries.map((entry) => {
-                    const delay =
-                      Math.min(cardIndex++, Motion.staggerCap) * Motion.stagger;
-                    return (
-                      <Animated.View
-                        key={entry.id}
-                        style={styles.entryRow}
-                        entering={FadeInDown.delay(delay)
-                          .springify()
-                          .damping(16)
-                          .stiffness(140)}
-                      >
-                        <FeedEntryCard
-                          entry={entry}
-                          timeLabel={
-                            entry.createdAt
-                              ? formatTime(entry.createdAt)
-                              : undefined
-                          }
-                          onEdit={openEditor}
-                          onDelete={requestDelete}
-                        />
-                      </Animated.View>
-                    );
-                  })}
-                </View>
-              ));
-            })()}
-          </Animated.View>
-        )}
-      </ScrollView>
+                )}
+              </TouchableOpacity>
+              <IconButton
+                onPress={() => changeMonth(1)}
+                disabled={isCurrentMonthView}
+                accessibilityLabel="Next month"
+                accessibilityHint={
+                  isCurrentMonthView ? "You're on the current month" : undefined
+                }
+              >
+                <IconSymbol name="chevron.right" size={22} color={Colors.ink} />
+              </IconButton>
+            </View>
 
-      {/* Edit entry (FR-E3) — text only; existing photos are preserved.
+            {/* A queued write is saved on this device and replays on reconnect —
+                say so once, quietly, instead of interrupting the edit flow. */}
+            {dataStore.pendingWriteCount > 0 ? (
+              <Text style={styles.syncNote}>
+                Saved on this device — will sync when you&apos;re back online.
+              </Text>
+            ) : null}
+
+            {/* Stale-but-present: show what we have, admit it may be behind. */}
+            {loadFailed && entries.length > 0 ? (
+              <TouchableOpacity
+                onPress={retryLoad}
+                activeOpacity={0.85}
+                style={styles.staleNotice}
+                accessibilityRole="button"
+                accessibilityLabel="Couldn't refresh this month. Tap to try again."
+              >
+                <Text style={styles.syncNote}>
+                  Couldn&apos;t refresh — showing what&apos;s on this device · tap
+                  to try again
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+
+            <Animated.View style={monthPageStyle}>
+              {loading ? (
+                <View style={styles.entriesContainer}>
+                  <SkeletonCard height={140} style={styles.skeletonSpacing} />
+                  <SkeletonCard height={100} style={styles.skeletonSpacing} />
+                  <SkeletonCard height={180} style={styles.skeletonSpacing} />
+                </View>
+              ) : loadFailed && entries.length === 0 ? (
+                <View style={styles.emptyContainer}>
+                  <View style={styles.emptyIconWrap}>
+                    <IconSymbol
+                      name="arrow.clockwise"
+                      size={32}
+                      color={Colors.ink}
+                    />
+                  </View>
+                  <Text style={styles.emptyText}>Couldn&apos;t load this month</Text>
+                  <Text style={styles.emptyHint}>
+                    Your entries are safe — we just couldn&apos;t reach them from
+                    here. Check your connection and try again.
+                  </Text>
+                  <PressableScale
+                    style={styles.emptyCta}
+                    onPress={retryLoad}
+                    accessibilityLabel="Try again"
+                  >
+                    <Text style={styles.emptyCtaText}>Try again</Text>
+                  </PressableScale>
+                </View>
+              ) : entries.length === 0 ? (
+                <View style={styles.emptyContainer}>
+                  <View style={styles.emptyIconWrap}>
+                    <IconSymbol
+                      name="book.closed.fill"
+                      size={36}
+                      color={Colors.ink}
+                    />
+                  </View>
+                  <Text style={styles.emptyText}>
+                    {isCurrentMonthView
+                      ? "Your feed is empty"
+                      : `Nothing written in ${monthName}`}
+                  </Text>
+                  <Text style={styles.emptyHint}>
+                    Capture a highlight on the Tracker tab to start your journal.
+                  </Text>
+                  <PressableScale
+                    style={styles.emptyCta}
+                    // navigate, not push: the Tracker is a sibling tab, not a page
+                    // to stack on top of this one.
+                    onPress={() => router.navigate("/(tabs)")}
+                    accessibilityLabel="Go to Tracker"
+                  >
+                    <Text style={styles.emptyCtaText}>Go to Tracker</Text>
+                  </PressableScale>
+                </View>
+              ) : (
+                <Animated.View
+                  key={`${currentYear}-${currentMonth}`}
+                  style={styles.entriesContainer}
+                >
+                  {(() => {
+                    let cardIndex = 0;
+                    return entriesByDay.map((group) => (
+                      <View key={group.date} style={styles.dayGroup}>
+                        <View style={styles.dateRow}>
+                          <View style={styles.dateDot} />
+                          <Text style={styles.date}>{formatDate(group.date)}</Text>
+                          {group.entries.length > 1 && (
+                            <Text style={styles.dateCount}>
+                              · {group.entries.length}
+                            </Text>
+                          )}
+                        </View>
+                        {group.entries.map((entry) => {
+                          const position = cardIndex++;
+                          const delay =
+                            Math.min(position, Motion.staggerCap) * Motion.stagger;
+                          // Past the reveal window: hold the row's place with a
+                          // plain box so the scrollbar stays honest, but don't
+                          // mount a card or fetch its photos yet.
+                          if (position >= revealed) {
+                            return (
+                              <View
+                                key={entry.id}
+                                style={[styles.entryRow, styles.entryPlaceholder]}
+                              />
+                            );
+                          }
+                          return (
+                            <Animated.View
+                              key={entry.id}
+                              style={styles.entryRow}
+                              // The staggered entrance is a first-impression
+                              // flourish. On a month change the page is already
+                              // sliding, and running both stacks two springs on
+                              // one movement — which reads as jitter, not life.
+                              entering={
+                                travelled.current
+                                  ? undefined
+                                  : FadeInDown.delay(delay)
+                                      .springify()
+                                      .damping(16)
+                                      .stiffness(140)
+                              }
+                            >
+                              <FeedEntryCard
+                                entry={entry}
+                                timeLabel={
+                                  entry.createdAt
+                                    ? formatTime(entry.createdAt)
+                                    : undefined
+                                }
+                                onEdit={openEditor}
+                                onDelete={requestDelete}
+                                onEditPlace={setEditingPlace}
+                                savedPlaces={dataStore.places}
+                              />
+                            </Animated.View>
+                          );
+                        })}
+                      </View>
+                    ));
+                  })()}
+                </Animated.View>
+              )}
+            </Animated.View>
+          </ScrollView>
+        </GestureDetector>
+      </GestureHandlerRootView>
+
+      <PlaceEditor
+        // The resolved place, not the entry's snapshot — the sheet has to open
+        // on the name the card is actually showing.
+        place={
+          editingPlace?.place
+            ? resolvePlace(editingPlace.place, dataStore.places)
+            : null
+        }
+        savedHeading={
+          editingPlace?.place
+            ? (matchSavedPlace(editingPlace.place, dataStore.places)?.heading ??
+              null)
+            : null
+        }
+        onSave={(next, remember) => void savePlaceEdit(next, remember)}
+        onCancel={() => setEditingPlace(null)}
+        saving={savingPlace}
+      />
+
+      {/* Edit entry (FR-E3) — text and photos.
           Same chrome as ConfirmDialog (scrim, PaperCard, button row) so the
           screen doesn't run two different dialog looks. */}
       <Modal
@@ -521,6 +844,14 @@ export default function FeedScreen() {
             {/* Swallow taps so pressing the card doesn't dismiss the editor. */}
             <Pressable style={styles.editCardWrap} onPress={() => {}}>
               <PaperCard>
+                {/* Scrolls because the card now holds text AND a photo strip,
+                    and the keyboard is up the whole time — without this the
+                    buttons end up under it on a short screen. */}
+                <ScrollView
+                  keyboardShouldPersistTaps="handled"
+                  showsVerticalScrollIndicator={false}
+                  bounces={false}
+                >
                 <Text style={styles.editTitle} accessibilityRole="header">
                   Edit highlight
                 </Text>
@@ -534,6 +865,19 @@ export default function FeedScreen() {
                   placeholder="Tell me something about today..."
                   placeholderTextColor={Colors.textSecondary}
                   accessibilityLabel="Highlight text"
+                />
+                <EntryPhotoEditor
+                  paths={editKeptPaths}
+                  localUris={editNewUris}
+                  max={MAX_IMAGES}
+                  disabled={editSaving}
+                  onRemovePath={(path) =>
+                    setEditKeptPaths((prev) => prev.filter((p) => p !== path))
+                  }
+                  onRemoveLocal={(uri) =>
+                    setEditNewUris((prev) => prev.filter((u) => u !== uri))
+                  }
+                  onAdd={() => void pickEditPhotos()}
                 />
                 {editError ? (
                   <Text style={styles.editErrorText}>{editError}</Text>
@@ -571,6 +915,7 @@ export default function FeedScreen() {
                     </Text>
                   </PressableScale>
                 </View>
+                </ScrollView>
               </PaperCard>
             </Pressable>
           </Pressable>
@@ -593,35 +938,11 @@ export default function FeedScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
+  gestureRoot: {
     flex: 1,
   },
-  header: {
-    paddingHorizontal: 20,
-    paddingBottom: 24,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-end",
-  },
-  titleContainer: {
-    position: "relative",
-    paddingBottom: 12,
-  },
-  title: {
-    fontSize: 32,
-    fontWeight: "700",
-    color: Colors.ink,
-    fontFamily: Fonts.handwriting,
-    letterSpacing: 1,
-  },
-  titleUnderline: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    width: 48,
-    height: 4,
-    backgroundColor: Colors.accent,
-    borderRadius: 2,
+  container: {
+    flex: 1,
   },
   monthHeader: {
     flexDirection: "row",
@@ -636,25 +957,30 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   monthText: {
-    fontSize: 20,
-    fontWeight: "600",
+    // Larger than the Tracker's 20pt on purpose: the Feed has no page title
+    // above it, so the month is this screen's heading.
+    fontSize: 24,
     color: Colors.ink,
-    fontFamily: Fonts.handwriting,
+    // `fontWeight` is a no-op on ShantellSans — weight comes from the family.
+    fontFamily: Fonts.handwritingSemiBold,
   },
   todayPill: {
-    marginTop: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 2,
-    borderRadius: 10,
+    // Sits off the title rather than under it, so it reads as a control
+    // instead of a caption.
+    marginTop: 7,
+    paddingHorizontal: 12,
+    paddingVertical: 3,
+    borderRadius: 999,
     backgroundColor: `${Colors.accent}33`,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: Colors.accent,
   },
   todayPillText: {
-    fontSize: 11,
-    fontWeight: "700",
+    fontSize: 12,
     color: Colors.ink,
-    fontFamily: Fonts.handwriting,
+    // ShantellSans can't synthesize weight on iOS — the old `fontWeight: "700"`
+    // here rendered as regular.
+    fontFamily: Fonts.handwritingSemiBold,
     letterSpacing: 0.3,
   },
   entriesContainer: {
@@ -675,16 +1001,17 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   dateDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
     backgroundColor: Colors.accent,
   },
   date: {
-    fontSize: 14,
-    fontWeight: "700",
+    // ShantellSans can't synthesize weight on iOS, so the old `fontWeight:
+    // "700"` here rendered as regular — the bold has to come from the family.
+    fontSize: 16,
     color: Colors.ink,
-    fontFamily: Fonts.handwriting,
+    fontFamily: Fonts.handwritingSemiBold,
     letterSpacing: 0.2,
   },
   dateCount: {
@@ -695,6 +1022,8 @@ const styles = StyleSheet.create({
   entryRow: {
     marginBottom: 18,
   },
+  /** Roughly a text-only card, so scroll height doesn't lurch as cards land. */
+  entryPlaceholder: { height: 120 },
   emptyContainer: {
     marginHorizontal: 16,
     marginTop: 32,
@@ -752,6 +1081,9 @@ const styles = StyleSheet.create({
   editCardWrap: {
     width: "100%",
     maxWidth: 360,
+    // Leaves room for the keyboard rather than letting the card fill the
+    // screen and push its own buttons out of reach.
+    maxHeight: "80%",
   },
   editTitle: {
     fontFamily: Fonts.handwritingSemiBold,

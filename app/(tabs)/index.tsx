@@ -10,9 +10,8 @@ import { HighlightInput } from "@/components/highlight-input";
 import { SyncStatus } from "@/components/sync-status";
 import { IconButton } from "@/components/ui/icon-button";
 import { IconSymbol } from "@/components/ui/icon-symbol";
-import { InkIcon } from "@/components/ui/ink-icon";
+import { StreakPill } from "@/components/ui/streak-pill";
 import { PaperBackground } from "@/components/ui/paper-background";
-import { PressableScale } from "@/components/ui/pressable-scale";
 import { Motion } from "@/constants/motion";
 import { Colors, Fonts } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
@@ -27,6 +26,7 @@ import {
 } from "@/lib/dates";
 import { computeHabitStats } from "@/lib/stats";
 import { useRecentHabitLogs } from "@/lib/use-recent-logs";
+import { detectPlace } from "@/lib/location";
 import { useReduceMotion } from "@/lib/use-reduce-motion";
 import * as Haptics from "expo-haptics";
 // Photo upload has no store action yet, so this is the one data call the screen
@@ -287,6 +287,10 @@ export default function TrackerScreen() {
   const isCurrentMonthView =
     currentDate.getMonth() === today.getMonth() &&
     currentDate.getFullYear() === today.getFullYear();
+  // The return button names where it lands. A pill reading "Today" sits
+  // directly under the month title and parses as a label on it — "July is
+  // today" — which is exactly wrong when you're browsing the past.
+  const todayMonthName = today.toLocaleDateString("en-US", { month: "long" });
   const jumpToToday = () => {
     if (isCurrentMonthView) return;
     setCurrentDate(new Date());
@@ -431,6 +435,16 @@ export default function TrackerScreen() {
         return { status: "failed", reason: upload.reason };
       }
 
+      // Where you wrote it, when the setting is on. `detectPlace` returns a
+      // failure string rather than throwing, and we ignore it: a missing tag
+      // must never be the reason a journal entry fails to save.
+      // `loadPlaces` short-circuits on the in-memory cache, so this is free
+      // after the first call — and it guarantees the match runs against the
+      // names you've actually saved, without a mount effect on this screen.
+      const saved = await dataStore.loadPlaces();
+      const detected = await detectPlace(saved);
+      const place = typeof detected === "string" ? undefined : detected;
+
       const newEntry: DailyEntry = {
         id: entryId,
         // Read fresh, not from render scope — the app can be left open past
@@ -438,7 +452,9 @@ export default function TrackerScreen() {
         date: todayKey(),
         text,
         mediaPaths: upload.paths,
+        media: upload.images,
         createdAt: new Date().toISOString(),
+        place,
       };
 
       // The store does the optimistic update AND the persist, so the cache and
@@ -594,36 +610,33 @@ export default function TrackerScreen() {
                 hitSlop={{ top: 10, bottom: 10 }}
                 accessibilityRole="button"
                 accessibilityLabel={
-                  isCurrentMonthView ? monthName : `${monthName}, jump to today`
+                  isCurrentMonthView
+                    ? monthName
+                    : `${monthName}, tap to go to ${todayMonthName}`
                 }
                 accessibilityState={{ disabled: isCurrentMonthView }}
               >
                 <Text style={styles.monthText}>{monthName}</Text>
                 {!isCurrentMonthView && (
                   <View style={styles.todayPill}>
-                    <Text style={styles.todayPillText}>Today</Text>
+                    <Text style={styles.todayPillText}>
+                      Go to {todayMonthName}
+                    </Text>
                   </View>
                 )}
               </TouchableOpacity>
               {/* A zero-day pill would be a guilt badge — show nothing until
                   there's a streak to show. */}
               {currentStreak > 0 && (
-                <PressableScale
-                  style={styles.streakPill}
-                  hitSlop={10}
+                <StreakPill
+                  streak={currentStreak}
                   onPress={() => {
                     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     router.push("/analysis");
                   }}
-                  accessibilityLabel={`Current streak, ${currentStreak} day${
-                    currentStreak === 1 ? "" : "s"
-                  }`}
-                  accessibilityHint="Opens your stats and analysis"
-                >
-                  <InkIcon name="flame" size={13} />
-                  <Text style={styles.streakPillText}>{currentStreak}</Text>
-                </PressableScale>
+                />
               )}
+
             </View>
             <IconButton
               onPress={() => changeMonth(1)}
@@ -780,22 +793,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingHorizontal: 4,
   },
-  streakPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 3,
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-    borderRadius: 999,
-    backgroundColor: `${Colors.accent}33`,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: Colors.accent,
-  },
-  streakPillText: {
-    fontSize: 13,
-    color: Colors.ink,
-    fontFamily: Fonts.handwritingSemiBold,
-  },
   monthText: {
     fontSize: 20,
     fontWeight: "600",
@@ -803,19 +800,22 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwriting,
   },
   todayPill: {
-    marginTop: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 2,
-    borderRadius: 10,
+    // Sits off the title rather than under it, so it reads as a control
+    // instead of a caption.
+    marginTop: 7,
+    paddingHorizontal: 12,
+    paddingVertical: 3,
+    borderRadius: 999,
     backgroundColor: `${Colors.accent}33`,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: Colors.accent,
   },
   todayPillText: {
-    fontSize: 11,
-    fontWeight: "700",
+    fontSize: 12,
     color: Colors.ink,
-    fontFamily: Fonts.handwriting,
+    // ShantellSans can't synthesize weight on iOS — the old `fontWeight: "700"`
+    // here rendered as regular.
+    fontFamily: Fonts.handwritingSemiBold,
     letterSpacing: 0.3,
   },
   stickyHeader: {

@@ -15,7 +15,9 @@ export type {
   Account,
   AccountRow,
   DailyEntry,
+  EntryMedia,
   EntryPayload,
+  EntryPlace,
   EntryRef,
   Habit,
   HabitLog,
@@ -23,6 +25,8 @@ export type {
   HabitPayload,
   HabitRef,
   MonthRef,
+  PlacePayload,
+  SavedPlace,
   ReadResult,
   UsernameCheck,
   WriteOutcome,
@@ -86,3 +90,15 @@ export {
   pendingWriteKey,
   removePendingWrite,
 } from "./pending-writes";
+
+export { getAllEntries } from "./entries";
+export { getAllHabitLogs } from "./habit-logs";
+
+export {
+  clearPlacesCache,
+  getCachedPlaces,
+  getPlaces,
+  loadPlacesFromStorage,
+  savePlaces,
+  setCachedPlaces,
+} from "./places";

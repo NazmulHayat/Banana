@@ -73,7 +73,7 @@ This is a zero-knowledge app; the threat model includes our own server admin.
 - **DTO discipline.** `.select()` only the columns you need, and map rows to app shapes (`DailyEntry`, `ProfileData`) before they reach the UI. Never spread a raw row into state; never widen a select "just in case."
 - **Secrets.** Only `EXPO_PUBLIC_*` vars reach the client (the anon key is public by design). The service-role key never appears in app code or a committed `.env`. No `console.log` of keys, tokens, ciphertext, or payloads — gate debug logs behind `if (__DEV__)`, and even then never log secret material.
 - **Validate at the boundary** before encrypt/insert — usernames against `UsernameRules`, recovery keys via `normalizeRecoveryKey`.
-- **Photos are NOT E2E-encrypted in v1** (disclosed to users). Don't claim otherwise; don't change it without a `tasks.md` item.
+- **Photos are outside the zero-knowledge promise** — decided 2026-08-20, not a "not yet". They live in a private bucket (RLS + at-rest only), so we *could* technically read them; the app and the privacy policy both say exactly that. Encrypting them would mean downloading and decrypting every image before it renders, which rules out signed URLs and CDN caching — a real cost, not a small one. Never describe photos as end-to-end encrypted, and never soften it to "coming soon". Reversing this needs a `tasks.md` item.
 
 ## Architecture guardrails
 

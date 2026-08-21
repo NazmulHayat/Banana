@@ -1,7 +1,7 @@
 import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { useState } from "react";
 import { type LayoutChangeEvent, StyleSheet, Text, View } from "react-native";
-import Svg, { Line, Rect } from "react-native-svg";
+import Svg, { Circle, Line, Polyline, Rect } from "react-native-svg";
 
 export interface ProgressPoint {
   /** Short axis label — a month name, or a day number. */
@@ -20,6 +20,20 @@ interface ProgressChartProps {
 /** Gridlines at 0 / 25 / 50 / 75 / 100 — labelled at the quarters only. */
 const GRID = [0, 0.25, 0.5, 0.75, 1];
 const Y_AXIS_WIDTH = 30;
+const DOT_R = 4;
+/**
+ * Breathing room above and below the plot. A 100% month puts the trend line
+ * exactly on the top edge, so without this its stroke and its dot are sliced
+ * in half by the SVG bounds — and the same happens at 0%. Sized off the dot,
+ * since that's the widest thing that can sit on a boundary.
+ */
+const PAD = DOT_R + 4;
+/**
+ * Every bar the same weight. Singling the best month out with a stronger fill
+ * made the chart look like it had two categories in it when it only has one —
+ * the height already says which month was best.
+ */
+const BAR_OPACITY = 0.72;
 
 /**
  * The progress chart: completion rate per period, drawn as a proper column
@@ -43,7 +57,11 @@ export function ProgressChart({ points, height = 132 }: ProgressChartProps) {
   // Bars sit in equal slots with a gap either side; thin the bar as the series
   // grows so a 30-day window stays legible instead of becoming a solid block.
   const slot = points.length > 0 ? plotW / points.length : 0;
-  const barW = Math.max(3, Math.min(28, slot * 0.62));
+  // The cap exists to stop three months rendering as three slabs — but at 28pt
+  // in a 108pt slot they instead read as three lonely sticks. Scale it: few
+  // bars get to be wide, many bars stay slim.
+  const maxBarW = points.length <= 3 ? 40 : points.length <= 6 ? 32 : 26;
+  const barW = Math.max(3, Math.min(maxBarW, slot * 0.62));
 
   // With more than eight columns the labels would collide — show the ends and
   // the middle, which is what a reader actually needs to orient the axis.
@@ -52,17 +70,31 @@ export function ProgressChart({ points, height = 132 }: ProgressChartProps) {
   const showLabel = (i: number) =>
     !dense || i === 0 || i === points.length - 1 || i === midIndex;
 
-  const best = points.reduce((m, p) => Math.max(m, p.rate), 0);
+  // The trend line runs through the centre of each bar's top. It carries the
+  // same numbers the bars do, which is normally double-encoding — but bars of
+  // similar height read as a wall, and the direction of travel is the thing
+  // anyone actually wants from this chart. The bars step back (lower opacity)
+  // so the line is the sentence and they're the footnotes.
+  // Everything is drawn inside a plot band inset by PAD, so nothing that sits
+  // on 0% or 100% can be clipped by the canvas edge.
+  const baseline = PAD + height;
+  const centreX = (i: number) => Y_AXIS_WIDTH + i * slot + slot / 2;
+  const topY = (rate: number) => {
+    const r = Math.max(0, Math.min(1, rate));
+    // Sit on top of the 2pt stub a zero month draws, not below it.
+    return r > 0 ? baseline - r * height : baseline - 2;
+  };
+  const trend = points.map((p, i) => `${centreX(i)},${topY(p.rate)}`).join(" ");
 
   return (
     <View onLayout={onLayout}>
       {width > 0 && (
         <>
-          <Svg width={width} height={height}>
+          <Svg width={width} height={height + PAD * 2}>
             {GRID.map((g) => {
-              const y = (1 - g) * height;
-              // Clamp the end lines inward so a 1pt stroke isn't half-clipped.
-              const yy = g === 1 ? 0.5 : g === 0 ? height - 0.5 : y;
+              // The padding already keeps a 1pt stroke off the canvas edge, so
+              // the gridlines sit exactly on their values.
+              const yy = PAD + (1 - g) * height;
               return (
                 <Line
                   key={g}
@@ -79,24 +111,48 @@ export function ProgressChart({ points, height = 132 }: ProgressChartProps) {
               const r = Math.max(0, Math.min(1, p.rate));
               const h = r * height;
               const x = Y_AXIS_WIDTH + i * slot + (slot - barW) / 2;
-              const isBest = r > 0 && r === best;
               return (
                 <Rect
                   key={`${p.label}-${i}`}
                   x={x}
                   // A zero month still gets a 2pt stub so the column is
                   // visibly present-and-empty rather than missing.
-                  y={h > 0 ? height - h : height - 2}
+                  y={h > 0 ? baseline - h : baseline - 2}
                   width={barW}
                   height={h > 0 ? h : 2}
                   rx={2}
                   fill={h > 0 ? Colors.accent : Hairline.track}
-                  fillOpacity={h > 0 && !isBest ? 0.75 : 1}
+                  // Muted so the trend line reads first.
+                  fillOpacity={h > 0 ? BAR_OPACITY : 1}
                   accessible
                   accessibilityLabel={`${p.label}, ${Math.round(r * 100)} percent`}
                 />
               );
             })}
+
+            <Polyline
+              points={trend}
+              fill="none"
+              stroke={Colors.ink}
+              strokeWidth={2}
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+            {/* A dot on every point: the line shows the direction, the dots
+                show that each one is a real reading rather than an
+                interpolation. Paper-coloured centre so a dot sitting on the
+                accent bar behind it still reads as a separate mark. */}
+            {points.map((p, i) => (
+              <Circle
+                key={`dot-${p.label}-${i}`}
+                cx={centreX(i)}
+                cy={topY(p.rate)}
+                r={DOT_R}
+                fill={Colors.paper}
+                stroke={Colors.ink}
+                strokeWidth={2}
+              />
+            ))}
           </Svg>
 
           {/* Y-axis labels, positioned over the gridlines they belong to. */}
@@ -106,9 +162,13 @@ export function ProgressChart({ points, height = 132 }: ProgressChartProps) {
                 key={g}
                 style={[
                   styles.yLabel,
-                  // Nudge the end labels inward so they sit beside the line
-                  // rather than hanging off the top and bottom of the plot.
-                  { top: (1 - g) * height - (g === 1 ? 0 : g === 0 ? 12 : 6) },
+                  // Offset by PAD to follow the plot band, then nudge the end
+                  // labels inward so they sit beside their line rather than
+                  // hanging off the top and bottom of it.
+                  {
+                    top:
+                      PAD + (1 - g) * height - (g === 1 ? 0 : g === 0 ? 12 : 6),
+                  },
                 ]}
               >
                 {Math.round(g * 100)}%

@@ -351,6 +351,14 @@ export interface HeatCell {
   perfect: boolean;
   /** False before any habit existed — drawn as "not yet yours", not a miss. */
   eligible: boolean;
+  /**
+   * Single-habit only: how deep into a streak this day was, 0..1, on a smooth
+   * curve rather than the three buckets `level` gives. Three steps meant day 3
+   * and day 7 of a run looked identical while day 4 jumped — the grid showed
+   * plateaus the streak never had. Absent on the all-habits view, where `level`
+   * means share-of-habits and has real steps.
+   */
+  intensity?: number;
 }
 /** One point of a completion-rate series (for the sparkline). */
 export interface RatePoint {
@@ -531,6 +539,118 @@ export function monthlyRateSeries(
   return out;
 }
 
+export type ProgressMode = "month" | "year";
+
+export interface ProgressSeries {
+  points: RatePoint[];
+  mode: ProgressMode;
+  /** Months of history. Below `MIN_PROGRESS_MONTHS` there is nothing to compare. */
+  historyMonths: number;
+  /** Whether the yearly view has two calendar years to put side by side. */
+  yearlyAvailable: boolean;
+}
+
+/** A rolling year is as far back as the monthly view goes. */
+export const MAX_PROGRESS_MONTHS = 12;
+/** One month is a reading, not a comparison — a chart needs two. */
+export const MIN_PROGRESS_MONTHS = 2;
+/** Absolute ceiling on how far back to look. 20 years is nobody's habit app. */
+const MAX_HISTORY_MONTHS = 240;
+
+/** Months from the first thing this user ever recorded to now, inclusive. */
+function historyMonthsOf(
+  logs: HabitLog[],
+  today: string,
+  scope: StatsScope,
+): number {
+  const t = parseYMD(today);
+  if (!t) return 1;
+  const nowIdx = t.year * 12 + (t.month - 1);
+  let earliest = nowIdx;
+
+  const consider = (date: string | undefined) => {
+    if (!date) return;
+    const p = parseYMD(date.slice(0, 10));
+    if (!p) return;
+    const idx = p.year * 12 + (p.month - 1);
+    if (idx < earliest) earliest = idx;
+  };
+
+  for (const habit of scope.habits ?? []) {
+    if (scope.habitId && habit.id !== scope.habitId) continue;
+    consider(habit.createdAt);
+  }
+  for (const log of logs) {
+    if (!log.completed) continue;
+    if (scope.habitId && log.habitId !== scope.habitId) continue;
+    consider(log.date);
+  }
+  return Math.min(nowIdx - earliest + 1, MAX_HISTORY_MONTHS);
+}
+
+/** Weighted mean of a run of points — `days` is the weight, never the count. */
+function mergePoints(chunk: RatePoint[], label: string): RatePoint {
+  let days = 0;
+  let done = 0;
+  for (const p of chunk) {
+    days += p.days;
+    done += p.rate * p.days;
+  }
+  return { label, rate: days > 0 ? done / days : 0, days };
+}
+
+/**
+ * The Progress series, in one of exactly two shapes.
+ *
+ * Monthly is the default and stops at a rolling twelve — more than that and the
+ * bars thin to hairlines and the dots collide. Yearly has no ceiling: a year
+ * per bar stays readable for as long as anyone will use this.
+ *
+ * Years are whole calendar years, never a floating twelve-month window ending
+ * today: "2025 vs 2024" is a comparison someone can reason about, "the twelve
+ * months to last August" is not.
+ */
+export function progressSeries(
+  logs: HabitLog[],
+  today: string,
+  scope: StatsScope = {},
+  mode: ProgressMode = "month",
+): ProgressSeries {
+  const t = parseYMD(today);
+  const months = Math.max(1, historyMonthsOf(logs, today, scope));
+  const startIdx = t ? t.year * 12 + (t.month - 1) - (months - 1) : 0;
+  const yearsSpanned = t ? t.year - Math.floor(startIdx / 12) + 1 : 1;
+  const yearlyAvailable = yearsSpanned >= 2;
+
+  const base = { historyMonths: months, yearlyAvailable };
+  if (!t) return { points: [], mode: "month", ...base };
+
+  if (mode === "year" && yearlyAvailable) {
+    // Reach back to January of the first year so every bar is a whole year.
+    const n = Math.min((t.month - 1) + (yearsSpanned - 1) * 12 + 1, MAX_HISTORY_MONTHS);
+    const monthly = monthlyRateSeries(logs, today, n, scope);
+    const firstYear = t.year - (yearsSpanned - 1);
+    const points: RatePoint[] = [];
+    for (let i = 0; i < monthly.length; i += 12) {
+      points.push(
+        mergePoints(monthly.slice(i, i + 12), String(firstYear + i / 12)),
+      );
+    }
+    return { points, mode: "year", ...base };
+  }
+
+  return {
+    points: monthlyRateSeries(
+      logs,
+      today,
+      Math.min(months, MAX_PROGRESS_MONTHS),
+      scope,
+    ),
+    mode: "month",
+    ...base,
+  };
+}
+
 /**
  * Last `days` days as a daily series, oldest → newest. Each point is the share
  * of that day's ELIGIBLE habits that were completed (0 or 1 for a single
@@ -567,6 +687,22 @@ export function dailyRateSeries(
     });
   }
   return out;
+}
+
+/**
+ * How dark a day in a streak should be, 0..1.
+ *
+ * Saturating rather than linear: the difference between day 1 and day 5 is
+ * what the eye should notice, and by three weeks in it barely matters whether
+ * it's 21 or 40 — a linear ramp would spend most of its range on lengths
+ * almost nobody reaches. Day one already starts visibly filled, because a day
+ * you did is never nothing.
+ */
+export function streakIntensity(run: number): number {
+  if (run <= 0) return 0;
+  const FLOOR = 0.26;
+  // e-folding over ~9 days: ~54% of the way up by a week, ~90% by three.
+  return FLOOR + (1 - FLOOR) * (1 - Math.exp(-run / 9));
 }
 
 /**
@@ -613,9 +749,11 @@ export function heatmapCells(
     const day = counts.get(i);
     const done = habitId ? (day?.has(habitId) ? 1 : 0) : (day?.size ?? 0);
     let level: HeatLevel = 0;
+    let intensity: number | undefined;
     if (habitId) {
       run = done > 0 ? run + 1 : 0;
       level = run === 0 ? 0 : run >= 8 ? 3 : run >= 4 ? 2 : 1;
+      intensity = streakIntensity(run);
     } else {
       const denom = habits ? eligibleOn(habits, elig, i) : totalHabits;
       const ratio = denom > 0 ? done / denom : 0;
@@ -624,12 +762,193 @@ export function heatmapCells(
     cells.push({
       date: ymdFromIndex(i),
       level,
+      intensity,
       inLongest: range ? i >= range.startIdx && i <= range.endIdx : false,
       perfect: !habitId && perfect.has(i),
       eligible: i >= from,
     });
   }
   return cells;
+}
+
+/** One habit's week in the grid. */
+export interface WeekCell {
+  /** Days completed in that week. */
+  done: number;
+  /** Days of that week the habit actually existed. 0 = before it started. */
+  eligible: number;
+}
+
+export interface WeekRow {
+  habitId: string;
+  name: string;
+  /** Same length and order as `WeeklyTimeline.weeks`. */
+  cells: WeekCell[];
+  /** Completed / eligible across the whole window, 0..1. */
+  rate: number;
+}
+
+export interface WeeklyTimeline {
+  /** First day of each bucket, oldest → newest, as day keys. */
+  weeks: string[];
+  rows: WeekRow[];
+  /** What one column means. Weeks until the history is long, then months. */
+  bucket: "week" | "month";
+}
+
+/**
+ * Past this many weeks the grid switches to one column per month.
+ *
+ * Scrolling is fine for a season and absurd for three years — at ~31pt a
+ * column, two years of weeks is nine screens wide. Coarsening the bucket keeps
+ * the squares big (which is the whole point) and keeps the history on a couple
+ * of screens, instead of shrinking cells back to unreadable.
+ */
+const MAX_WEEK_COLUMNS = 40;
+
+// Epoch day 0 (1970-01-01) was a Thursday, so Monday falls on idx % 7 === 4.
+function mondayOf(idx: number): number {
+  return idx - ((((idx - 4) % 7) + 7) % 7);
+}
+
+/**
+ * Habits down the side, weeks across — from the week the user started to this
+ * one.
+ *
+ * This replaced an aggregated day heatmap. That grid could show *that* a
+ * stretch went badly but never *which* habit went badly, which is the only
+ * question worth asking. Weeks rather than days because a phone cannot show
+ * months of individual days at a size anyone can read, and the window runs
+ * from the real start rather than a fixed six months so it never shows empty
+ * time that was never yours.
+ */
+export function habitWeeklyTimeline(
+  habits: Habit[],
+  logs: HabitLog[],
+  today: string,
+): WeeklyTimeline {
+  const todayIdx = dayIndex(today);
+  if (Number.isNaN(todayIdx) || habits.length === 0) {
+    return { weeks: [], rows: [], bucket: "week" };
+  }
+  const elig = buildEligibility(logs, todayIdx, habits);
+  const earliest = elig.earliest ?? todayIdx;
+
+  const firstMonday = mondayOf(Math.min(earliest, todayIdx));
+  const lastMonday = mondayOf(todayIdx);
+  const weekCount = Math.floor((lastMonday - firstMonday) / 7) + 1;
+
+  // Long history: one column per calendar month instead of per week.
+  if (weekCount > MAX_WEEK_COLUMNS) {
+    return monthlyTimeline(habits, logs, elig, Math.min(earliest, todayIdx), todayIdx);
+  }
+
+  const weeks: string[] = [];
+  for (let w = 0; w < weekCount; w++) {
+    weeks.push(ymdFromIndex(firstMonday + w * 7));
+  }
+
+  // Completed (habit, day) pairs once, rather than rescanning per habit.
+  const done = new Set<string>();
+  for (const log of logs) {
+    if (!log.completed) continue;
+    const d = dayIndex(log.date);
+    if (Number.isNaN(d) || d > todayIdx || d < firstMonday) continue;
+    done.add(`${log.habitId}:${d}`);
+  }
+
+  const rows: WeekRow[] = habits.map((habit) => {
+    const from = elig.start.get(habit.id) ?? todayIdx;
+    const cells: WeekCell[] = [];
+    let totalEligible = 0;
+    let totalDone = 0;
+
+    for (let w = 0; w < weekCount; w++) {
+      const weekStart = firstMonday + w * 7;
+      let cellDone = 0;
+      let cellEligible = 0;
+      for (let d = weekStart; d < weekStart + 7; d++) {
+        // The future isn't a miss, and neither is time before the habit existed.
+        if (d > todayIdx || d < from) continue;
+        cellEligible++;
+        if (done.has(`${habit.id}:${d}`)) cellDone++;
+      }
+      cells.push({ done: cellDone, eligible: cellEligible });
+      totalEligible += cellEligible;
+      totalDone += cellDone;
+    }
+
+    return {
+      habitId: habit.id,
+      name: habit.name,
+      cells,
+      rate: totalEligible > 0 ? totalDone / totalEligible : 0,
+    };
+  });
+
+  return { weeks, rows, bucket: "week" };
+}
+
+/** Same grid, one column per calendar month. Used once history outgrows weeks. */
+function monthlyTimeline(
+  habits: Habit[],
+  logs: HabitLog[],
+  elig: Eligibility,
+  startIdx: number,
+  todayIdx: number,
+): WeeklyTimeline {
+  // Bucket boundaries by calendar month, so columns line up with the labels.
+  const starts: number[] = [];
+  const first = new Date(startIdx * MS_PER_DAY);
+  const cursor = new Date(
+    Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), 1),
+  );
+  const endIdx = todayIdx;
+  while (true) {
+    const idx = Math.floor(cursor.getTime() / MS_PER_DAY);
+    if (idx > endIdx) break;
+    starts.push(idx);
+    cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+  }
+  if (starts.length === 0) return { weeks: [], rows: [], bucket: "month" };
+
+  const done = new Set<string>();
+  for (const log of logs) {
+    if (!log.completed) continue;
+    const d = dayIndex(log.date);
+    if (Number.isNaN(d) || d > todayIdx || d < starts[0]) continue;
+    done.add(`${log.habitId}:${d}`);
+  }
+
+  const rows: WeekRow[] = habits.map((habit) => {
+    const from = elig.start.get(habit.id) ?? todayIdx;
+    const cells: WeekCell[] = [];
+    let totalEligible = 0;
+    let totalDone = 0;
+
+    starts.forEach((bucketStart, i) => {
+      const bucketEnd = i + 1 < starts.length ? starts[i + 1] - 1 : todayIdx;
+      let cellDone = 0;
+      let cellEligible = 0;
+      for (let d = bucketStart; d <= bucketEnd; d++) {
+        if (d > todayIdx || d < from) continue;
+        cellEligible++;
+        if (done.has(`${habit.id}:${d}`)) cellDone++;
+      }
+      cells.push({ done: cellDone, eligible: cellEligible });
+      totalEligible += cellEligible;
+      totalDone += cellDone;
+    });
+
+    return {
+      habitId: habit.id,
+      name: habit.name,
+      cells,
+      rate: totalEligible > 0 ? totalDone / totalEligible : 0,
+    };
+  });
+
+  return { weeks: starts.map(ymdFromIndex), rows, bucket: "month" };
 }
 
 /** The all-time longest streak as a date range, for a single habit. */

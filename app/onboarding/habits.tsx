@@ -153,7 +153,11 @@ function HabitPill({ name, selected, blocked, onToggle }: HabitPillProps) {
 
   return (
     <PressableScale
-      style={styles.pillSlot}
+      // `containerStyle`, not `style`: PressableScale puts `style` on the inner
+      // animated view. A `width: 48%` there resolves against an auto-width
+      // parent, which collapses the pill and clips its label to a sliver —
+      // which is exactly why every suggestion rendered blank.
+      containerStyle={styles.pillSlot}
       disabled={blocked}
       onPress={handlePress}
       accessibilityRole="checkbox"

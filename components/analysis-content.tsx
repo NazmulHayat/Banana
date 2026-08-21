@@ -1,6 +1,6 @@
-import { DayHighlightSheet } from "@/components/day-highlight-sheet";
 import { HabitComparison } from "@/components/habit-comparison";
 import { HabitHeatmap } from "@/components/habit-heatmap";
+import { HabitWeeks } from "@/components/habit-weeks";
 import { JournalStatsCard } from "@/components/journal-stats-card";
 import { ProgressChart } from "@/components/progress-chart";
 import { PressableScale } from "@/components/ui/pressable-scale";
@@ -10,16 +10,20 @@ import { InkIcon } from "@/components/ui/ink-icon";
 import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { todayKey } from "@/lib/dates";
 import { type DailyEntry, type Habit, type HabitLog } from "@/lib/db";
+import { earlyLine, earlyProgressLine } from "@/lib/encouragement";
 import { computeJournalStats } from "@/lib/journal-stats";
 import {
   completionForMonth,
   computeAllHabitStats,
   computeHabitStats,
   computeOverallStats,
-  dailyRateSeries,
   habitComparison,
+  habitWeeklyTimeline,
+  dayIndexOf,
   heatmapCells,
-  monthlyRateSeries,
+  MIN_PROGRESS_MONTHS,
+  progressSeries,
+  type ProgressMode,
   monthOverMonthTrend,
   type RatePoint,
   type StatsScope,
@@ -52,10 +56,13 @@ interface AnalysisContentProps {
 // too short to read as a pattern, and its trend series collapsed to a single
 // monthly point. Consistency is a question about months, not days — the month
 // you're in is already answered by the hero and the Progress delta.
-const RANGES = [
-  { label: "6 months", days: 183, months: 6 },
-  { label: "Year", days: 365, months: 12 },
-] as const;
+/** Ceiling on the per-habit day calendar. Half a year of squares fits a phone. */
+const HABIT_CALENDAR_DAYS = 183;
+/**
+ * Floor, in whole weeks. A habit three days old would otherwise draw a single
+ * column, which reads as broken rather than new.
+ */
+const MIN_CALENDAR_DAYS = 28;
 
 /**
  * The range the user last picked, remembered for the life of the app session
@@ -63,7 +70,6 @@ const RANGES = [
  * A module-level value on purpose: a preference this small doesn't earn a new
  * AsyncStorage key, and components don't own persistence in this codebase.
  */
-let lastRangeDays: number = 183;
 
 const pct = (r: number): number => Math.round(r * 100);
 
@@ -73,6 +79,7 @@ function listOf(items: string[]): string {
   if (items.length <= 1) return items[0] ?? "";
   return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
 }
+
 
 // Drop the leading points from before anything was trackable, so the line
 // starts where the user's history does instead of at a fake 0%.
@@ -114,15 +121,9 @@ export function AnalysisContent({
   failedMonths = 0,
   onRetry,
 }: AnalysisContentProps) {
-  const [rangeDays, setRangeDays] = useState<number>(lastRangeDays);
-  const [selectedDay, setSelectedDay] = useState<string | null>(null);
+  const [visibleYear, setVisibleYear] = useState<number | null>(null);
+  const [progressMode, setProgressMode] = useState<ProgressMode>("month");
 
-  const pickRange = (days: number) => {
-    if (days === rangeDays) return;
-    void Haptics.selectionAsync();
-    lastRangeDays = days;
-    setRangeDays(days);
-  };
 
   const drillInto = (id: string) => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -206,17 +207,49 @@ export function AnalysisContent({
 
   const month = completionForMonth(logs, ty, tm, today, scope);
   const trend = monthOverMonthTrend(logs, today, scope);
-  const range = RANGES.find((r) => r.days === rangeDays) ?? RANGES[1];
-  const series = trimToHistory(
-    range.months > 0
-      ? monthlyRateSeries(logs, today, range.months, scope)
-      : dailyRateSeries(logs, today, range.days, scope),
+  const progress = progressSeries(logs, today, scope, progressMode);
+  // Still trimmed, so the chart never opens on a run of fake zeroes.
+  const series = trimToHistory(progress.points);
+  const tooEarly = progress.historyMonths < MIN_PROGRESS_MONTHS;
+  // The calendar spans this habit's own life, not a flat six months. A habit
+  // 20 days old was drawing 183 squares, so ~90% of the grid was "before you
+  // started" — a wall of empty boxes that reads as failure rather than as time
+  // that was never yours. Rounded up to whole weeks so no column is a stub.
+  const habitStartIdx =
+    habitId && habit?.createdAt
+      ? dayIndexOf(habit.createdAt.slice(0, 10))
+      : NaN;
+  const habitAgeDays = Number.isNaN(habitStartIdx)
+    ? HABIT_CALENDAR_DAYS
+    : Math.max(1, dayIndexOf(today) - habitStartIdx + 1);
+  const calendarDays = Math.min(
+    HABIT_CALENDAR_DAYS,
+    Math.ceil(Math.max(MIN_CALENDAR_DAYS, habitAgeDays) / 7) * 7,
   );
-  const cells = heatmapCells(logs, today, rangeDays, {
+
+  // Days since tracking began — this habit's own life on its page, the oldest
+  // habit's on the overview. Drives every "too early to draw" state.
+  const oldestStart = habits.reduce((min, h) => {
+    const idx = dayIndexOf(h.createdAt.slice(0, 10));
+    return Number.isNaN(idx) ? min : Math.min(min, idx);
+  }, Number.POSITIVE_INFINITY);
+  const daysTracked = habitId
+    ? habitAgeDays
+    : Number.isFinite(oldestStart)
+      ? Math.max(0, dayIndexOf(today) - oldestStart + 1)
+      : 0;
+  const early = earlyLine(daysTracked);
+
+  const cells = heatmapCells(logs, today, calendarDays, {
     habitId,
     habits,
     totalHabits: habits.length || 1,
   });
+  // Overview only — the window runs from the week you started, so it takes no
+  // range and ignores the control the Progress chart still uses.
+  const weeklyTimeline = habitId
+    ? { weeks: [], rows: [], bucket: "week" as const }
+    : habitWeeklyTimeline(habits, logs, today);
 
   const journal = habitId ? null : computeJournalStats(entries, today);
   const comparison = habitId ? [] : habitComparison(habits, logs, today);
@@ -300,75 +333,106 @@ export function AnalysisContent({
         </Text>
       ) : null}
 
-      {/* Per-habit: say plainly that this is a narrower view, and how to get
-          back to the wide one. It used to drop five modules in silence. */}
-      {habitId && (
-        <TouchableOpacity
-          style={styles.scopeNote}
-          activeOpacity={0.85}
-          onPress={() => router.replace("/analysis")}
-          accessibilityRole="button"
-          accessibilityLabel={`Showing ${habit?.name ?? "this habit"} only. See the overall analysis`}
-        >
-          <Text style={styles.scopeText}>
-            Just <Text style={styles.bold}>{habit?.name}</Text>. Stamps, your
-            journal and cross-habit patterns live on the overall analysis.
-          </Text>
-          <Text style={styles.scopeLink}>See everything →</Text>
-        </TouchableOpacity>
-      )}
 
       {/* ================= HOW IT'S GOING ================= */}
       <View style={styles.group}>
         <SectionTitle>How it&apos;s going</SectionTitle>
 
-        {/* Consistency: the calendar shape, and the range that frames it. */}
+        {/* Consistency.
+            The overview shows habits × weeks: rows say which habit, columns
+            say when. The old aggregated day heatmap could show that a stretch
+            went badly but never which habit did, and months of single days
+            never fit a phone at a readable size. The range control went with
+            it — the window runs from the week you started to this one, so
+            there is nothing left to pick.
+
+            The per-habit page keeps the day calendar: with one habit there is
+            no "which", and the day-by-day rhythm is the whole point there. */}
         <View style={[styles.section, styles.sectionFirst]}>
           <View style={styles.sectionHead}>
             <Text style={styles.sectionLabel} accessibilityRole="header">
               Consistency
             </Text>
-            <View style={styles.segment} accessibilityRole="tablist">
-              {RANGES.map((r) => {
-                const on = r.days === rangeDays;
-                return (
-                  <TouchableOpacity
-                    key={r.days}
-                    onPress={() => pickRange(r.days)}
-                    activeOpacity={0.85}
-                    style={[styles.segItem, on && styles.segItemOn]}
-                    // The pill is ~30pt tall by design; hitSlop takes the
-                    // target past 44pt without changing the layout.
-                    hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
-                    accessibilityRole="tab"
-                    accessibilityLabel={`Show ${r.label.toLowerCase()}`}
-                    accessibilityState={{ selected: on }}
-                  >
-                    <Text style={[styles.segText, on && styles.segTextOn]}>{r.label}</Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
+            {/* Which year you're looking at, updated as the grid scrolls. Month
+                landmarks alone stop being enough the moment the history spans a
+                new year — "Jan" could be any of them. */}
+            {!habitId && visibleYear !== null ? (
+              <Text style={styles.yearBadge}>{visibleYear}</Text>
+            ) : null}
           </View>
-          <HabitHeatmap
-            cells={cells}
-            onDayPress={(c) => setSelectedDay(c.date)}
-            habitName={habit?.name}
-          />
-          <Text style={styles.caption}>
-            Each square is a day · tap one to look back
-            {!habitId && overall && overall.perfectDays > 0
-              ? ` · ${overall.perfectDays} perfect day${overall.perfectDays === 1 ? "" : "s"} filled in solid`
-              : ""}
-          </Text>
+          {habitId ? (
+            <>
+              {/* Tapping shows the date on the square itself — the heatmap
+                  owns that. It used to open the day sheet, which on a
+                  single-habit page had nothing to show: one habit, one tick. */}
+              <HabitHeatmap cells={cells} habitName={habit?.name} />
+              {/* While the grid is still thin, say what's coming instead of
+                  labelling a ramp that has no range yet. */}
+              <Text style={styles.caption}>
+                {early ?? "Each square is a day · tap one for the date"}
+              </Text>
+            </>
+          ) : (
+            <>
+              <HabitWeeks
+                data={weeklyTimeline}
+                emptyLabel="Add a habit and this fills in as you go."
+                onVisibleYearChange={setVisibleYear}
+              />
+              {early ? <Text style={styles.caption}>{early}</Text> : null}
+            </>
+          )}
         </View>
 
         {/* Progress — leads with the delta; the rate itself is in the hero. */}
         {showProgress && (
           <View style={styles.section}>
-            <Text style={styles.sectionLabel} accessibilityRole="header">
-              Progress
-            </Text>
+            <View style={styles.sectionHead}>
+              <Text style={styles.sectionLabel} accessibilityRole="header">
+                Progress
+              </Text>
+              <View style={styles.segment} accessibilityRole="tablist">
+                {(["month", "year"] as const).map((m) => {
+                  const on = m === progress.mode;
+                  // Yearly needs two calendar years to compare; until then it
+                  // stays visible but inert, so the option is discoverable
+                  // without pretending it would show anything.
+                  const disabled = m === "year" && !progress.yearlyAvailable;
+                  return (
+                    <TouchableOpacity
+                      key={m}
+                      onPress={() => setProgressMode(m)}
+                      disabled={disabled}
+                      activeOpacity={0.85}
+                      style={[
+                        styles.segItem,
+                        on && styles.segItemOn,
+                        disabled && styles.segItemOff,
+                      ]}
+                      hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+                      accessibilityRole="tab"
+                      accessibilityLabel={
+                        m === "month" ? "Monthly" : "Yearly"
+                      }
+                      accessibilityHint={
+                        disabled ? "Needs a second year of history" : undefined
+                      }
+                      accessibilityState={{ selected: on, disabled }}
+                    >
+                      <Text
+                        style={[
+                          styles.segText,
+                          on && styles.segTextOn,
+                          disabled && styles.segTextOff,
+                        ]}
+                      >
+                        {m === "month" ? "Monthly" : "Yearly"}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
             <Text
               style={[styles.bigDelta, { color: trendUp ? Colors.success : Colors.danger }]}
               accessibilityLabel={`${trendUp ? "Up" : "Down"} ${Math.abs(
@@ -382,12 +446,27 @@ export function AnalysisContent({
                 ? `${month.done} of ${month.days} day${month.days === 1 ? "" : "s"} counted so far this month`
                 : "This month starts counting from the day you added it"}
             </Text>
-            <View style={{ marginTop: 14 }}>
-              <ProgressChart points={series.map((p) => ({ label: p.label, rate: p.rate }))} />
-            </View>
-            <Text style={styles.caption}>
-              {range.months > 0 ? `Last ${range.months} months` : `Last ${range.days} days`}
-            </Text>
+            {tooEarly ? (
+              // One month is a reading, not a comparison. Say something worth
+              // reading instead of "not enough data", which blames the user for
+              // being new.
+              <Text style={styles.earlyNote}>
+                {earlyProgressLine(daysTracked)}
+              </Text>
+            ) : (
+              <>
+                <View style={{ marginTop: 14 }}>
+                  <ProgressChart
+                    points={series.map((p) => ({ label: p.label, rate: p.rate }))}
+                  />
+                </View>
+                <Text style={styles.caption}>
+                  {progress.mode === "year"
+                    ? `${series.length} years compared`
+                    : `Last ${series.length} months`}
+                </Text>
+              </>
+            )}
           </View>
         )}
       </View>
@@ -398,16 +477,13 @@ export function AnalysisContent({
           than a section, so the wall of what you've already done is still one
           tap away. */}
       {!habitId && (
-        <TouchableOpacity
-          style={styles.stampsCard}
-          activeOpacity={0.85}
-          onPress={() => {
-            void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            router.push("/analysis/stamps");
-          }}
-          accessibilityRole="button"
-          accessibilityLabel="Stamps"
-          accessibilityHint="Everything you've already done, kept permanently"
+        // Parked, not hidden: a plain View rather than a disabled button, so
+        // there is no tap to swallow and nothing that looks pressable. The
+        // chevron goes too — an arrow that leads nowhere is a broken promise.
+        <View
+          style={[styles.stampsCard, styles.stampsCardSoon]}
+          accessible
+          accessibilityLabel="Stamps, coming soon. Everything you've already done, kept permanently."
         >
           <View style={styles.stampsRow}>
             <View style={styles.stampsText}>
@@ -416,9 +492,9 @@ export function AnalysisContent({
                 Everything you&apos;ve already done, kept permanently.
               </Text>
             </View>
-            <Text style={styles.chev}>›</Text>
+            <Text style={styles.soonTag}>Coming soon</Text>
           </View>
-        </TouchableOpacity>
+        </View>
       )}
 
       {/* ================= PATTERNS (overview only) ================= */}
@@ -440,7 +516,11 @@ export function AnalysisContent({
       {showJournal && (
         <View style={styles.group}>
           <SectionTitle>Your journal</SectionTitle>
-          <View style={[styles.section, styles.sectionFirst]}>
+          {/* Last section on the screen — `section` pads 18 below itself, which
+              on the final card is just dead paper before the scroll ends. */}
+          <View
+            style={[styles.section, styles.sectionFirst, styles.sectionLast]}
+          >
             <JournalStatsCard stats={journal} loading={entriesLoading} />
           </View>
         </View>
@@ -452,13 +532,7 @@ export function AnalysisContent({
         <Text style={styles.locked}>Still filling in: {listOf(locked)}.</Text>
       )}
 
-      <DayHighlightSheet
-        visible={selectedDay !== null}
-        date={selectedDay}
-        habits={habits}
-        logs={logs}
-        onClose={() => setSelectedDay(null)}
-      />
+
     </View>
   );
 }
@@ -518,7 +592,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     paddingTop: 6,
-    paddingBottom: 18,
+    paddingBottom: 6,
   },
   heroRight: { alignItems: "flex-end" },
   heroLabel: {
@@ -543,31 +617,12 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   // per-habit scope note
-  scopeNote: {
-    borderWidth: 1,
-    borderColor: Hairline.strong,
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    marginTop: 4,
-  },
-  scopeText: {
-    fontSize: 13,
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
-    lineHeight: 20,
-  },
-  scopeLink: {
-    fontSize: 13,
-    color: Colors.ink,
-    fontFamily: Fonts.handwritingSemiBold,
-    marginTop: 8,
-  },
   // groups + sections: the group title carries the weight, so the first
   // section under it skips the rule and only siblings get one.
-  group: { marginTop: 36 },
+  group: { marginTop: 14 },
   section: { paddingVertical: 18, borderTopWidth: 1, borderTopColor: Hairline.strong },
   sectionFirst: { borderTopWidth: 0, paddingTop: 2 },
+  sectionLast: { paddingBottom: 0 },
   subSection: {
     marginTop: 18,
     paddingTop: 16,
@@ -579,6 +634,44 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     marginBottom: 12,
+  },
+  segment: { flexDirection: "row", gap: 6 },
+  segItem: {
+    paddingHorizontal: 11,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: Hairline.raised,
+  },
+  segItemOn: { backgroundColor: Colors.ink, borderColor: Colors.ink },
+  segItemOff: { borderColor: Hairline.faint },
+  segText: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwritingMedium,
+  },
+  segTextOn: { color: Colors.paper },
+  segTextOff: { opacity: 0.45 },
+  earlyNote: {
+    fontSize: 14,
+    lineHeight: 21,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    paddingVertical: 10,
+  },
+  stampsCardSoon: { opacity: 0.55 },
+  soonTag: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwritingMedium,
+    letterSpacing: 0.2,
+    marginLeft: 12,
+  },
+  yearBadge: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwritingSemiBold,
+    letterSpacing: 0.5,
   },
   sectionLabel: {
     fontSize: 15,
@@ -609,18 +702,6 @@ const styles = StyleSheet.create({
   },
   // segmented range
   // Two ranges now, so the pills can be generous instead of cramped.
-  segment: { flexDirection: "row", gap: 6 },
-  segItem: {
-    paddingHorizontal: 16,
-    paddingVertical: 9,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: Hairline.base,
-    backgroundColor: Colors.card,
-  },
-  segItemOn: { backgroundColor: Colors.ink, borderColor: Colors.ink },
-  segText: { fontSize: 13.5, color: Colors.textSecondary, fontFamily: Fonts.handwritingMedium },
-  segTextOn: { color: Colors.paper },
   // stamps — a standalone doorway, same card language as the Manage rows
   stampsCard: {
     marginTop: 24,
@@ -628,8 +709,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     borderRadius: 12,
     backgroundColor: Colors.card,
-    borderWidth: 1,
-    borderColor: Hairline.base,
+    // The app's card outline (PaperCard): a drawn ink box, not a hairline.
+    borderWidth: 1.5,
+    borderColor: Colors.ink,
   },
   stampsTitle: { fontSize: 17, color: Colors.ink, fontFamily: Fonts.handwritingSemiBold },
   stampsBlurb: {
@@ -640,7 +722,9 @@ const styles = StyleSheet.create({
     marginTop: 3,
   },
   // progress
-  bigDelta: { fontSize: 24, fontFamily: Fonts.handwritingSemiBold },
+  // 19, not 24: at 24 the delta was competing with the hero numbers at the top
+  // of the screen, and it's a supporting figure, not the headline.
+  bigDelta: { fontSize: 19, fontFamily: Fonts.handwritingSemiBold },
   bold: { fontFamily: Fonts.handwritingSemiBold },
   insight: { fontSize: 16, color: Colors.ink, fontFamily: Fonts.handwriting, lineHeight: 24 },
   // what's still filling in
@@ -654,5 +738,4 @@ const styles = StyleSheet.create({
   // stamps row
   stampsRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   stampsText: { flex: 1, marginRight: 12 },
-  chev: { fontSize: 18, color: Colors.textSecondary },
 });

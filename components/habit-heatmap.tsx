@@ -26,6 +26,14 @@ interface HabitHeatmapProps {
   habitName?: string;
 }
 
+/** "Tue, Aug 12" — short enough to sit over a 13pt square. */
+const tipDate = (key: string) =>
+  fromDayKey(key).toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+
 const spokenDate = (key: string) =>
   fromDayKey(key).toLocaleDateString("en-US", {
     month: "long",
@@ -65,9 +73,30 @@ const LEVEL_OPACITY = [0, 0.28, 0.52, 0.76, 1] as const;
  */
 const MIN_CELL = 13;
 
-/** Fill opacity for a cell. A perfect day is the top of the same ramp. */
-const levelOpacity = (level: number, perfect: boolean): number =>
-  perfect ? LEVEL_OPACITY[4] : LEVEL_OPACITY[Math.max(0, Math.min(3, level))];
+/**
+ * And the largest. Without a ceiling, a four-week calendar stretched its
+ * squares to fill the width — ~88pt each, a wall of giant empty boxes that
+ * reads as a broken layout rather than as a month. Matches the 26pt cells on
+ * the overview grid, so the two calendars feel like the same object.
+ */
+const MAX_CELL = 26;
+
+/** How long a tapped date stays up before it fades on its own. */
+const TIP_MS = 1600;
+
+/**
+ * Fill opacity for a cell.
+ *
+ * A single habit carries a continuous `intensity`, so its squares deepen with
+ * the streak instead of stepping between three fixed shades. The all-habits
+ * view has no such curve — its levels are real categories (share of habits
+ * done), and a perfect day is the top of that ramp.
+ */
+const levelOpacity = (cell: HeatCell): number => {
+  if (cell.perfect) return LEVEL_OPACITY[4];
+  if (cell.intensity !== undefined) return cell.intensity;
+  return LEVEL_OPACITY[Math.max(0, Math.min(3, cell.level))];
+};
 
 /**
  * A crosshatch consistency heatmap drawn as a single SVG (one node, not N).
@@ -87,6 +116,47 @@ export function HabitHeatmap({
   const [width, setWidth] = useState(0);
   const reduceMotion = useReduceMotion();
   const enter = useRef(new Animated.Value(0)).current;
+
+  // The tapped square's date, shown just above the square itself. A caption
+  // under the grid meant looking away from the thing you just touched to find
+  // out what it was.
+  const [tip, setTip] = useState<{ x: number; y: number; text: string } | null>(
+    null,
+  );
+  const [tipW, setTipW] = useState(0);
+  const tipOpacity = useRef(new Animated.Value(0)).current;
+  const tipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // A pending fade must die with the screen, or it fires into an unmounted view.
+  useEffect(() => () => {
+    if (tipTimer.current) clearTimeout(tipTimer.current);
+  }, []);
+
+  const showTip = (next: { x: number; y: number; text: string }) => {
+    if (tipTimer.current) clearTimeout(tipTimer.current);
+    setTip(next);
+    tipOpacity.setValue(reduceMotion ? 1 : 0);
+    if (!reduceMotion) {
+      Animated.timing(tipOpacity, {
+        toValue: 1,
+        duration: Motion.fast,
+        useNativeDriver: true,
+      }).start();
+    }
+    tipTimer.current = setTimeout(() => {
+      if (reduceMotion) {
+        setTip(null);
+        return;
+      }
+      Animated.timing(tipOpacity, {
+        toValue: 0,
+        duration: Motion.base,
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) setTip(null);
+      });
+    }, TIP_MS);
+  };
 
   useEffect(() => {
     // The entrance is decoration — with Reduce Motion on, just be there.
@@ -116,7 +186,8 @@ export function HabitHeatmap({
   // on a phone — a grey smear with no readable days and no possible tap
   // target. Scrolling is what GitHub's own graph does on a narrow screen.
   const fitted = width > 0 ? (width - gap * (cols - 1)) / cols : 0;
-  const cell = fitted > 0 ? Math.max(MIN_CELL, fitted) : 0;
+  const cell =
+    fitted > 0 ? Math.min(MAX_CELL, Math.max(MIN_CELL, fitted)) : 0;
   const scrolls = cell > fitted + 0.01;
   const contentW = cell > 0 ? cell * cols + gap * (cols - 1) : 0;
   const height = cell > 0 ? cell * rows + gap * (rows - 1) : 0;
@@ -130,21 +201,18 @@ export function HabitHeatmap({
   const grid = cells.map((c, i) => {
     const x = Math.floor(i / rows) * (cell + gap);
     const y = (i % rows) * (cell + gap);
-    const op = levelOpacity(c.level, c.perfect);
-    // The fill is the accent, so the longest run can't be outlined in accent
-    // too — ink reads against every step of the ramp.
-    const stroke = c.inLongest
-      ? Colors.ink
-      : c.eligible
-        ? Hairline.outline
-        : Hairline.faint;
+    const op = levelOpacity(c);
+    // Every square gets the same hairline. Outlining the all-time longest run
+    // in ink meant a square carried two encodings at once — shade for streak
+    // depth, outline for personal best — and nothing on screen explained the
+    // second one. One meaning per mark.
+    const stroke = c.eligible ? Hairline.outline : Hairline.faint;
     // A square carries no text, so the label has to say the whole thing:
     // which habit, which day, how it went.
     const label = [
       habitName,
       spokenDate(c.date),
       spokenState(c, !!habitName),
-      c.inLongest ? "part of your longest streak" : null,
     ]
       .filter(Boolean)
       .join(", ");
@@ -160,14 +228,40 @@ export function HabitHeatmap({
         fillOpacity={op}
         stroke={stroke}
         strokeWidth={c.inLongest ? 1.5 : 1}
-        onPress={onDayPress ? () => onDayPress(c) : undefined}
+        onPress={() => {
+          showTip({ x, y, text: tipDate(c.date) });
+          onDayPress?.(c);
+        }}
         accessible
         // react-native-svg only forwards `accessible` + `accessibilityLabel`
         // to shapes — no role, no hint — so the affordance rides in the label.
-        accessibilityLabel={onDayPress ? `${label}. Double tap to look back` : label}
+        accessibilityLabel={`${label}. Double tap for the date`}
       />
     );
   });
+
+  // Centred over the square, clamped so it can't hang off either edge, and
+  // flipped below when the square is on the top row and there's no room above.
+  const tipNode =
+    tip && cell > 0 ? (
+      <Animated.View
+        pointerEvents="none"
+        onLayout={(e) => setTipW(e.nativeEvent.layout.width)}
+        style={[
+          styles.tip,
+          {
+            opacity: tipOpacity,
+            left: Math.max(
+              0,
+              Math.min(contentW - tipW, tip.x + cell / 2 - tipW / 2),
+            ),
+            top: tip.y >= cell + gap ? tip.y - 26 : tip.y + cell + 6,
+          },
+        ]}
+      >
+        <Text style={styles.tipText}>{tip.text}</Text>
+      </Animated.View>
+    ) : null;
 
   return (
     <Animated.View
@@ -189,14 +283,22 @@ export function HabitHeatmap({
             // history and look empty.
             contentOffset={{ x: Math.max(0, contentW - width), y: 0 }}
           >
+            <View style={{ width: contentW, height }}>
+              <Svg width={contentW} height={height}>
+                {grid}
+              </Svg>
+              {tipNode}
+            </View>
+          </ScrollView>
+        ) : (
+          // Left-aligned: a short calendar sits under the heading it belongs
+          // to rather than drifting to the centre of an empty row.
+          <View style={{ width: contentW, height, alignSelf: "flex-start" }}>
             <Svg width={contentW} height={height}>
               {grid}
             </Svg>
-          </ScrollView>
-        ) : (
-          <Svg width={contentW} height={height}>
-            {grid}
-          </Svg>
+            {tipNode}
+          </View>
         ))}
       {cell > 0 && <HeatmapLegend />}
     </Animated.View>
@@ -211,9 +313,8 @@ function HeatmapLegend() {
   return (
     <View
       style={styles.legend}
-      accessibilityLabel="Lighter squares are fewer habits done, darker squares are more"
+      accessibilityLabel="The longer you keep it up, the darker each square gets"
     >
-      <Text style={styles.legendText}>Less</Text>
       {LEVEL_OPACITY.map((op, i) => (
         <View
           key={i}
@@ -225,16 +326,32 @@ function HeatmapLegend() {
           ]}
         />
       ))}
-      <Text style={styles.legendText}>More</Text>
+      {/* "Less … More" begged the question — less of what? A binary habit has
+          no "more" in a day. What actually deepens is the streak. */}
+      <Text style={styles.legendText}>
+        the longer the streak, the darker
+      </Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  tip: {
+    position: "absolute",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    backgroundColor: Colors.ink,
+  },
+  tipText: {
+    fontSize: 11,
+    color: Colors.paper,
+    fontFamily: Fonts.handwritingMedium,
+  },
   legend: {
     flexDirection: "row",
     alignItems: "center",
-    alignSelf: "flex-end",
+    alignSelf: "flex-start",
     gap: 3,
     marginTop: 10,
   },
@@ -243,7 +360,7 @@ const styles = StyleSheet.create({
     fontSize: 11.5,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
-    marginHorizontal: 3,
+    marginLeft: 7,
   },
   empty: {
     fontSize: 14,

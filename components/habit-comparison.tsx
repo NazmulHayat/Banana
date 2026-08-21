@@ -84,10 +84,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     marginBottom: 8,
     borderRadius: 12,
-    borderBottomWidth: 0,
     backgroundColor: Colors.card,
-    borderWidth: 1,
-    borderColor: Hairline.base,
+    // The app's card outline (PaperCard): a drawn ink box, not a hairline.
+    borderWidth: 1.5,
+    borderColor: Colors.ink,
+    // `row` above sets a bottom *divider* (width 1, Hairline.strong). Those
+    // longhands beat the `border*` shorthands here no matter the order, so
+    // both have to be restated or the card renders with no bottom edge.
+    borderBottomWidth: 1.5,
+    borderBottomColor: Colors.ink,
   },
   chev: { fontSize: 18, color: Colors.textSecondary, marginLeft: 10 },
   head: {

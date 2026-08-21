@@ -15,7 +15,9 @@
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "Aight Bet needs access to your photo library so you can attach photos to your journal entries.",
         "NSCameraUsageDescription": "Aight Bet needs camera access so you can attach photos to your journal entries.",
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSLocationWhenInUseUsageDescription": "Aight Bet tags an entry with the name of the place you wrote it. Only while you're writing, and only when you turn it on.",
+        "NSPhotoLibraryAddUsageDescription": "Aight Bet saves a photo to your library when you tap Save on it."
       }
     },
     "android": {
@@ -56,7 +58,21 @@
       "expo-notifications",
       "expo-image-picker",
       "expo-font",
-      "expo-web-browser"
+      "expo-web-browser",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Aight Bet tags an entry with the name of the place you wrote it. Only while you're writing, and only when you turn it on."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Aight Bet needs access to your photo library so you can attach photos to your journal entries.",
+          "savePhotosPermission": "Aight Bet saves a photo to your library when you tap Save on it.",
+          "isAccessMediaLocationEnabled": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
