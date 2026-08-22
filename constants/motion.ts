@@ -25,6 +25,12 @@ export const Motion = {
   springPress: { damping: 19, stiffness: 592 },
   /** Per-item delay for staggered list entrances. */
   stagger: 40,
+  /**
+   * Beat between elements of a hero entrance (the onboarding welcome). Much
+   * longer than `stagger`: a list wants to arrive as one block, a hero wants
+   * each piece read before the next lands.
+   */
+  heroBeat: 110,
   /** Max items that get a stagger delay (rest enter together). */
   staggerCap: 8,
   /** Skeleton pulse — one half-cycle (breathe in, breathe out). */
