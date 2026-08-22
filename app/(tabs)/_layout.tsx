@@ -11,8 +11,11 @@ export default function TabLayout() {
   return (
     <Tabs
         screenOptions={{
+          // Active vs inactive used to be ink against textSecondary — 16.3:1
+          // and 8.3:1 on paper, close enough that the whole bar read as one
+          // dark row. textMuted opens that gap while still clearing AA.
           tabBarActiveTintColor: Colors.ink,
-          tabBarInactiveTintColor: Colors.textSecondary,
+          tabBarInactiveTintColor: Colors.textMuted,
           headerShown: false,
           tabBarButton: HapticTab,
           tabBarBackground: () => (
@@ -32,9 +35,10 @@ export default function TabLayout() {
             elevation: 0,
           },
           tabBarLabelStyle: {
-            fontFamily: Fonts.handwriting,
+            // ShantellSans can't synthesize weight on iOS, so the old
+            // `fontWeight: "600"` here rendered as plain regular.
+            fontFamily: Fonts.handwritingSemiBold,
             fontSize: 11,
-            fontWeight: "600",
             marginTop: 2,
             letterSpacing: 0.2,
           },
