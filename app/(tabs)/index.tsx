@@ -579,6 +579,12 @@ export default function TrackerScreen() {
         <Animated.ScrollView
           ref={scrollViewRef}
           style={styles.container}
+          // Same fix as the Feed: RN forces
+          // UIScrollViewContentInsetAdjustmentNever, which leaves the
+          // content origin at the top of the screen and the refresh spinner
+          // parked behind the Dynamic Island. The safe area now comes from
+          // the inset, so the header below carries plain padding.
+          contentInsetAdjustmentBehavior="automatic"
           onScroll={Animated.event(
             [{ nativeEvent: { contentOffset: { y: scrollY } } }],
             { useNativeDriver: false },
@@ -592,9 +598,7 @@ export default function TrackerScreen() {
             />
           }
         >
-          <View
-            style={[styles.header, { paddingTop: Math.max(insets.top, 16) }]}
-          >
+          <View style={styles.header}>
             <IconButton
               onPress={() => changeMonth(-1)}
               accessibilityLabel="Previous month"
@@ -782,7 +786,11 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     paddingHorizontal: 16,
-    paddingVertical: 16,
+    // paddingTop is overridden inline with the safe-area inset; this is the
+    // floor. The bottom is tighter than the top on purpose — the month row
+    // and the composer below it are one block, not two.
+    paddingTop: 16,
+    paddingBottom: 8,
   },
   monthCenter: {
     flexDirection: "row",
@@ -794,10 +802,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   monthText: {
+    // Stays 20pt — the Feed's 24pt is because the month is that screen's only
+    // heading, whereas here it sits above the grid and the composer.
     fontSize: 20,
-    fontWeight: "600",
     color: Colors.ink,
-    fontFamily: Fonts.handwriting,
+    // `fontWeight` is a no-op on ShantellSans — weight comes from the family.
+    // This read as plain regular until the family was corrected.
+    fontFamily: Fonts.handwritingSemiBold,
   },
   todayPill: {
     // Sits off the title rather than under it, so it reads as a control
