@@ -96,7 +96,7 @@ function ProfileAvatar({ path, initial, pending }: ProfileAvatarProps) {
   if (pending || (path && resolving)) {
     return (
       <View style={styles.avatar}>
-        <ActivityIndicator size="small" color={Colors.textSecondary} />
+        <ActivityIndicator size="small" color={Colors.ink} />
       </View>
     );
   }
@@ -209,10 +209,16 @@ export default function ProfileScreen() {
     setRefreshing(true);
     const now = new Date();
     try {
+      // `force` is what makes this a refresh. Without it both reads
+      // short-circuit on the cache tier, so pulling down re-rendered the same
+      // numbers and nothing was ever fetched. (refreshProfile always hits the
+      // network, which is why it takes no options.)
       await Promise.all([
-        dataStore.refreshHabits(),
+        dataStore.refreshHabits({ force: true }),
         dataStore.refreshProfile(),
-        dataStore.refreshEntries(now.getFullYear(), now.getMonth() + 1),
+        dataStore.refreshEntries(now.getFullYear(), now.getMonth() + 1, {
+          force: true,
+        }),
       ]);
       setStatsRefresh((n) => n + 1);
     } finally {
@@ -290,13 +296,23 @@ export default function ProfileScreen() {
       <ScrollView
         style={styles.container}
         showsVerticalScrollIndicator={false}
+        // Same fix as the Feed: RN forces
+        // UIScrollViewContentInsetAdjustmentNever, which leaves the
+        // content origin at the top of the screen and the refresh spinner
+        // parked behind the Dynamic Island. The safe area now comes from
+        // the inset, so the header below carries plain padding.
+        contentInsetAdjustmentBehavior="automatic"
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.ink} />
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={Colors.ink}
+          />
         }
       >
         {/* No page title — the tab bar already says "Profile". This is purely
             the safe-area spacer that title block used to provide. */}
-        <View style={[styles.header, { paddingTop: Math.max(insets.top, 16) }]} />
+        <View style={styles.header} />
 
         {/* The same one-line sync truth the Tracker shows. Whether your work
             has reached the server is account information; it belongs here. */}
@@ -535,7 +551,7 @@ export default function ProfileScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  header: { paddingHorizontal: 16, paddingBottom: 8 },
+  header: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 8 },
   userCard: { marginHorizontal: 16, marginVertical: 12, alignItems: "center", paddingVertical: 24 },
   editSlot: { position: "absolute", top: 12, right: 12 },
   editPill: {

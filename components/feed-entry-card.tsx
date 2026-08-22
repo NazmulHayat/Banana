@@ -23,6 +23,59 @@ import { IconButton } from "./ui/icon-button";
 import { IconSymbol } from "./ui/icon-symbol";
 import { ImageViewer } from "./ui/image-viewer";
 import { PaperCard } from "./ui/paper-card";
+import { PressableScale } from "./ui/pressable-scale";
+
+/** Lines a long entry collapses to before "Read more" is offered. */
+const COLLAPSED_LINES = 6;
+
+/**
+ * An entry's body text, collapsed behind "Read more" once it runs long.
+ *
+ * An entry can be 500 characters, which is tall enough to push every other
+ * card off the screen — the feed stops being scannable exactly when someone
+ * has been writing properly. Short entries never show the control.
+ */
+function EntryText({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  // Real line count of the UNCLAMPED text. Null until measured.
+  const [fullLines, setFullLines] = useState<number | null>(null);
+
+  return (
+    <View>
+      <Text
+        style={styles.text}
+        numberOfLines={expanded ? undefined : COLLAPSED_LINES}
+      >
+        {text}
+      </Text>
+      {/* Measuring twin: a clamped Text reports its post-truncation lines, so
+          the visible copy can't answer "did this overflow?" on its own. This
+          one is unclamped, invisible, out of flow, and unmounts the moment it
+          has produced a number. */}
+      {fullLines === null && (
+        <Text
+          style={[styles.text, styles.measureTwin]}
+          onTextLayout={(event) => setFullLines(event.nativeEvent.lines.length)}
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+        >
+          {text}
+        </Text>
+      )}
+      {fullLines !== null && fullLines > COLLAPSED_LINES && (
+        <PressableScale
+          onPress={() => setExpanded((prev) => !prev)}
+          hitSlop={10}
+          accessibilityLabel={expanded ? "Show less" : "Read more"}
+        >
+          <Text style={styles.readMore}>
+            {expanded ? "Show less" : "Read more"}
+          </Text>
+        </PressableScale>
+      )}
+    </View>
+  );
+}
 
 interface FeedEntryCardProps {
   entry: DailyEntry;
@@ -322,10 +375,10 @@ export function FeedEntryCard({
           onEditPlace={onEditPlace}
           savedPlaces={savedPlaces}
         />
-        {entry.text ? <Text style={styles.text}>{entry.text}</Text> : null}
+        {entry.text ? <EntryText text={entry.text} /> : null}
         {(entry.mediaPaths ?? []).length > 0 && (
           <View style={styles.loadingImages}>
-            <ActivityIndicator size="small" color={Colors.textSecondary} />
+            <ActivityIndicator size="small" color={Colors.ink} />
           </View>
         )}
       </PaperCard>
@@ -350,7 +403,7 @@ export function FeedEntryCard({
         />
         {layoutType === "TEXT_ONLY" && (
           <>
-            {entry.text ? <Text style={styles.text}>{entry.text}</Text> : null}
+            {entry.text ? <EntryText text={entry.text} /> : null}
           </>
         )}
         {layoutType === "TEXT_WITH_IMAGES" && (
@@ -406,7 +459,7 @@ function TextWithImagesLayout({
 
   return (
     <>
-      {entry.text ? <Text style={styles.text}>{entry.text}</Text> : null}
+      {entry.text ? <EntryText text={entry.text} /> : null}
       <View style={[styles.imagesContainer, { width: contentWidth }]}>
         {resolved.map((item, index) => {
           const aspectRatio = item.dim.width / item.dim.height;
@@ -595,6 +648,20 @@ const styles = StyleSheet.create({
     color: Colors.ink,
     lineHeight: 24,
     fontFamily: Fonts.handwriting,
+    marginBottom: 10,
+  },
+  // Invisible and out of flow — it exists only to be measured.
+  measureTwin: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    top: 0,
+    opacity: 0,
+  },
+  readMore: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwritingSemiBold,
     marginBottom: 10,
   },
   imagesContainer: {

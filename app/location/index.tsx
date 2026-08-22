@@ -206,7 +206,7 @@ export default function LocationScreen() {
               /* Never claim "nothing named yet" before the list has loaded —
                  that empty state is a statement of fact, not a placeholder. */
               <View style={styles.loadingRow}>
-                <ActivityIndicator size="small" color={Colors.textSecondary} />
+                <ActivityIndicator size="small" color={Colors.ink} />
               </View>
             ) : places.length === 0 ? (
               <Text style={styles.emptyText}>

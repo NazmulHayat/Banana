@@ -47,7 +47,7 @@ function Thumb({
     <View style={styles.thumbWrap}>
       <View style={styles.thumb}>
         {loading || !uri ? (
-          <ActivityIndicator size="small" color={Colors.textSecondary} />
+          <ActivityIndicator size="small" color={Colors.ink} />
         ) : (
           <Image
             source={{ uri }}

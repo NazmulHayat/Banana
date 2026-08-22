@@ -7,6 +7,13 @@ export const Colors = {
   accent: '#FFB380',
   completed: '#1A1A1A',
   textSecondary: '#4A4A4A',
+  /**
+   * Muted warm ink for de-emphasised UI chrome — currently the inactive tab
+   * tint. Sits between `textSecondary` and the paper so an active tab reads as
+   * active; `textSecondary` was close enough to `ink` that the tab bar looked
+   * uniformly dark. 5.34:1 on paper, so it still clears AA (NFR-5).
+   */
+  textMuted: '#6B665E',
   border: '#A8C4C4',
   danger: '#C62828',
   success: '#2E7D32',

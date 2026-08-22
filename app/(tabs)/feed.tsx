@@ -56,7 +56,6 @@ import Animated, {
   withSpring,
   withTiming,
 } from "react-native-reanimated";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 
@@ -88,7 +87,6 @@ const FUTURE_RESISTANCE = 0.25;
 const SWIPE_FADE_FLOOR = 0.75;
 
 export default function FeedScreen() {
-  const insets = useSafeAreaInsets();
   const { session } = useAuth();
   const dataStore = useDataStore();
   // Pulled out so effects can depend on stable callbacks rather than the
@@ -584,6 +582,14 @@ export default function FeedScreen() {
         <GestureDetector gesture={monthSwipe}>
           <ScrollView
             style={styles.container}
+            // RN forces UIScrollViewContentInsetAdjustmentNever
+            // (RCTScrollView.m), so the scroll view's content origin sits at
+            // the very top of the screen and UIKit parks the refresh spinner
+            // just above it — behind the Dynamic Island, invisible. Letting
+            // UIKit apply the safe area moves the origin, and the spinner with
+            // it. The month row's own paddingTop drops to a plain 16 below,
+            // because the inset now supplies the safe area.
+            contentInsetAdjustmentBehavior="automatic"
             onScroll={handleScroll}
             // Four times a second is plenty to top up a reveal window.
             scrollEventThrottle={250}
@@ -600,12 +606,7 @@ export default function FeedScreen() {
 
             {/* Same month control as the Tracker, including its Today shortcut —
                 eight taps to reach last spring is not navigation. */}
-            <View
-              style={[
-                styles.monthHeader,
-                { paddingTop: Math.max(insets.top, 16) },
-              ]}
-            >
+            <View style={styles.monthHeader}>
               <IconButton
                 onPress={() => changeMonth(-1)}
                 accessibilityLabel="Previous month"
@@ -945,6 +946,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   monthHeader: {
+    // The safe area arrives via contentInsetAdjustmentBehavior on the
+    // ScrollView, so this is just the page's own breathing room.
+    paddingTop: 16,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",

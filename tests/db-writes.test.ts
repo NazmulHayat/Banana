@@ -972,6 +972,10 @@ test("account deletion DOES clear the queue", async () => {
 
   stubs["../media"] = { clearMediaCache: () => {} };
   stubs["../reminder"] = { clearReminder: async () => {} };
+  // lib/location pulls in expo-location -> expo-modules-core, which reads the
+  // native `expo` global at import time and throws under the Node harness.
+  // Stubbed for the same reason as media and reminder above.
+  stubs["../location"] = { clearLocationPref: async () => {} };
   const purge =
     require("../lib/auth/local-purge") as typeof import("../lib/auth/local-purge");
   await purge.purgeLocalUserData(USER);
