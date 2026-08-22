@@ -28,6 +28,17 @@ interface PressableScaleProps extends A11yProps {
   disabled?: boolean;
   /** Visual style — applied to the inner animated view. */
   style?: StyleProp<ViewStyle>;
+  /**
+   * Layout style for the OUTER Pressable — use this for `flex`, `width` or
+   * `alignSelf`, i.e. anything about how this control sits among its siblings.
+   *
+   * `style` deliberately lands on the inner animated view so the whole
+   * painted surface scales on press. The cost is that layout props passed
+   * there never reach the row: a `flex: 1` in `style` gives the Pressable no
+   * flex at all, and its child then resolves to zero width against an
+   * auto-sized parent — the control vanishes while its card still renders.
+   */
+  containerStyle?: StyleProp<ViewStyle>;
   /** Scale while pressed. Defaults to 0.97. */
   scaleTo?: number;
   hitSlop?: number;
@@ -43,6 +54,7 @@ export function PressableScale({
   children,
   disabled,
   style,
+  containerStyle,
   scaleTo = 0.97,
   hitSlop,
   accessibilityLabel,
@@ -67,6 +79,7 @@ export function PressableScale({
       onPressIn={() => springTo(scaleTo)}
       onPressOut={() => springTo(1)}
       disabled={disabled}
+      style={containerStyle}
       hitSlop={hitSlop}
       accessibilityLabel={accessibilityLabel}
       accessibilityHint={accessibilityHint}

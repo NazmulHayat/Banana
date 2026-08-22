@@ -12,7 +12,7 @@ import { purgeLocalUserData } from "@/lib/auth/local-purge";
 import { useDataStore } from "@/lib/data-store";
 import { clearUserMedia, getImageUrl } from "@/lib/media";
 import { useOnboarding } from "@/lib/onboarding-context";
-import { formatReminderTime, loadReminder, syncReminder } from "@/lib/reminder";
+import { describeReminder, loadReminder, syncReminder } from "@/lib/reminder";
 import { supabase } from "@/lib/supabase";
 import * as Clipboard from "expo-clipboard";
 import Constants from "expo-constants";
@@ -160,11 +160,7 @@ export default function ProfileScreen() {
       void (async () => {
         const pref = await loadReminder();
         if (cancelled) return;
-        setReminderSubtitle(
-          pref.enabled
-            ? `Every day at ${formatReminderTime(pref.hour, pref.minute)}`
-            : "Off",
-        );
+        setReminderSubtitle(describeReminder(pref));
         if (habitsReady) await syncReminder(pref, hasHabits);
       })();
       return () => {
@@ -298,11 +294,9 @@ export default function ProfileScreen() {
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.ink} />
         }
       >
-        <View style={[styles.header, { paddingTop: Math.max(insets.top, 16) }]}>
-          <Text style={styles.title} accessibilityRole="header">
-            Profile
-          </Text>
-        </View>
+        {/* No page title — the tab bar already says "Profile". This is purely
+            the safe-area spacer that title block used to provide. */}
+        <View style={[styles.header, { paddingTop: Math.max(insets.top, 16) }]} />
 
         {/* The same one-line sync truth the Tracker shows. Whether your work
             has reached the server is account information; it belongs here. */}
@@ -391,6 +385,35 @@ export default function ProfileScreen() {
               subtitle={reminderSubtitle}
               onPress={() => router.push("/reminder" as Href)}
             />
+            <View style={styles.rowDivider} />
+            <SettingsRow
+              icon="mappin.and.ellipse"
+              title="Location"
+              subtitle="Tag entries with where you wrote them"
+              onPress={() => router.push("/location" as Href)}
+            />
+            <View style={styles.rowDivider} />
+            <SettingsRow
+              icon="square.and.arrow.down"
+              title="Download my journal"
+              subtitle="Keep a copy you can read without us"
+              onPress={() => router.push("/export" as Href)}
+            />
+            {/* Dev only. `__DEV__` compiles to `false` in a release build and
+                the whole branch is dropped, so this can't reach a user. It
+                lives here rather than hidden behind a gesture — a dev door
+                nobody can find is a dev door nobody uses. */}
+            {__DEV__ ? (
+              <>
+                <View style={styles.rowDivider} />
+                <SettingsRow
+                  icon="flame"
+                  title="Streak preview (dev)"
+                  subtitle="Watch the flame grow without waiting 100 days"
+                  onPress={() => router.push("/analysis/streak-preview" as Href)}
+                />
+              </>
+            ) : null}
             <View style={styles.rowDivider} />
             <SettingsRow
               icon="lock.fill"
@@ -513,7 +536,6 @@ export default function ProfileScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   header: { paddingHorizontal: 16, paddingBottom: 8 },
-  title: { fontSize: 32, fontWeight: "700", color: Colors.ink, fontFamily: Fonts.handwriting },
   userCard: { marginHorizontal: 16, marginVertical: 12, alignItems: "center", paddingVertical: 24 },
   editSlot: { position: "absolute", top: 12, right: 12 },
   editPill: {

@@ -9,31 +9,112 @@ import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { useDataStore } from "@/lib/data-store";
 import {
   DEFAULT_REMINDER,
+  describeReminder,
   formatReminderTime,
   loadReminder,
+  MAX_REMINDERS,
+  MESSAGE_MAX_LENGTH,
+  minutesOfDay,
   type ReminderPref,
   type ReminderStatus,
+  type ReminderTime,
+  reminderBody,
   requestReminderPermission,
   saveReminder,
+  STANDARD_MESSAGE,
   syncReminder,
+  tidyMessage,
+  tidyTimes,
 } from "@/lib/reminder";
+import * as Haptics from "expo-haptics";
 import { Href, router } from "expo-router";
-import { useEffect, useState } from "react";
-import { Linking, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import {
+  Keyboard,
+  type LayoutChangeEvent,
+  Linking,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 /** The time steps in 15-minute nudges — fine enough to matter, coarse enough to be one tap. */
 const STEP_MINUTES = 15;
+/** Guard on the collision walk below: 1440 / 15 slots in a day. */
+const SLOTS_PER_DAY = 1440 / STEP_MINUTES;
 
-function step(pref: ReminderPref, direction: 1 | -1): ReminderPref {
-  const total = (pref.hour * 60 + pref.minute + direction * STEP_MINUTES + 1440) % 1440;
-  return { ...pref, hour: Math.floor(total / 60), minute: total % 60 };
+/**
+ * Wait for the keyboard's inset to land before scrolling to the field. Without
+ * it the scroll runs against the old content size and stops short, leaving the
+ * input under the keyboard — the exact thing it's there to prevent.
+ */
+const KEYBOARD_SETTLE_MS = 120;
+
+/**
+ * Where a second or third reminder lands by default: morning, midday, then
+ * evening. Anything already taken is skipped, so "add" never produces a
+ * duplicate the list would silently collapse.
+ */
+const NEW_TIME_CANDIDATES: ReminderTime[] = [
+  { hour: 9, minute: 0 },
+  { hour: 13, minute: 0 },
+  { hour: 20, minute: 0 },
+  { hour: 7, minute: 30 },
+  { hour: 22, minute: 0 },
+];
+
+/**
+ * Nudge one time, stepping over any slot another reminder already holds.
+ * Without the walk, pressing + into a neighbour would make this row vanish
+ * when the list de-duplicates.
+ */
+function stepTimeAt(
+  times: ReminderTime[],
+  index: number,
+  direction: 1 | -1,
+): ReminderTime[] {
+  const taken = new Set(
+    times.filter((_, i) => i !== index).map(minutesOfDay),
+  );
+  let minutes = minutesOfDay(times[index]);
+  for (let guard = 0; guard < SLOTS_PER_DAY; guard++) {
+    minutes = (minutes + direction * STEP_MINUTES + 1440) % 1440;
+    if (!taken.has(minutes)) break;
+  }
+  const next = times.map((t, i) =>
+    i === index
+      ? { hour: Math.floor(minutes / 60), minute: minutes % 60 }
+      : t,
+  );
+  // Sorted, so the list always reads earliest-first even mid-edit.
+  return tidyTimes(next);
+}
+
+function addTime(times: ReminderTime[]): ReminderTime[] {
+  const taken = new Set(times.map(minutesOfDay));
+  for (const candidate of NEW_TIME_CANDIDATES) {
+    if (!taken.has(minutesOfDay(candidate))) {
+      return tidyTimes([...times, candidate]);
+    }
+  }
+  for (let m = 0; m < 1440; m += STEP_MINUTES) {
+    if (!taken.has(m)) {
+      return tidyTimes([
+        ...times,
+        { hour: Math.floor(m / 60), minute: m % 60 },
+      ]);
+    }
+  }
+  return times;
 }
 
 /**
- * The one reminder setting (FR-N1). Off until asked for, one time a day, local
- * to this device. Deliberately small: a switch, a time, and honest copy about
- * what it will and won't do.
+ * Reminders (FR-N1). Off until asked for, up to three times a day, local to
+ * this device. The copy is the app's own by default and yours if you'd rather.
  */
 export default function ReminderScreen() {
   const insets = useSafeAreaInsets();
@@ -42,6 +123,13 @@ export default function ReminderScreen() {
 
   const [pref, setPref] = useState<ReminderPref | null>(null);
   const [status, setStatus] = useState<ReminderStatus | null>(null);
+  // The message is edited locally and saved on demand: rescheduling three
+  // notifications on every keystroke would be absurd, and an explicit Save
+  // means you can see the change land.
+  const [messageDraft, setMessageDraft] = useState("");
+  const scrollRef = useRef<ScrollView>(null);
+  /** Y of the "What it says" card inside the scroll content. */
+  const editorY = useRef(0);
 
   // Load the saved preference, then reconcile the OS with it — a reminder can
   // be revoked in Settings while the app is closed, so what's on disk is only
@@ -52,6 +140,7 @@ export default function ReminderScreen() {
       const saved = await loadReminder();
       if (cancelled) return;
       setPref(saved);
+      setMessageDraft(saved.message ?? "");
       const result = await syncReminder(saved, hasHabits);
       if (!cancelled) setStatus(result);
     })();
@@ -84,34 +173,61 @@ export default function ReminderScreen() {
     await apply({ ...pref, enabled: true });
   };
 
+  /** Empty, or the standard copy typed out by hand, both mean "use standard". */
+  const draftAsMessage = (): string | null => {
+    const tidied = tidyMessage(messageDraft);
+    return tidied.length === 0 || tidied === STANDARD_MESSAGE ? null : tidied;
+  };
+
+  const saveMessage = () => {
+    if (!pref) return;
+    const next = draftAsMessage();
+    setMessageDraft(next ?? "");
+    Keyboard.dismiss();
+    if (next === pref.message) return;
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    void apply({ ...pref, message: next });
+  };
+
+  // The keyboard covers the bottom half of the screen, so bring the field up
+  // to meet it rather than leaving you typing blind.
+  const handleMessageFocus = () => {
+    setTimeout(() => {
+      scrollRef.current?.scrollTo({
+        y: Math.max(editorY.current - 16, 0),
+        animated: true,
+      });
+    }, KEYBOARD_SETTLE_MS);
+  };
+
   const current = pref ?? DEFAULT_REMINDER;
-  const timeLabel = formatReminderTime(current.hour, current.minute);
-  const timeEditable = current.enabled && status === "scheduled";
+  const editable = current.enabled && status === "scheduled";
+  const canAdd = editable && current.times.length < MAX_REMINDERS;
+  const usingStandard = current.message === null;
+  const dirty = pref !== null && draftAsMessage() !== pref.message;
 
   return (
     <PaperBackground>
       <ScreenHeader title="Daily reminder" />
       <ScrollView
+        ref={scrollRef}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        // Gives the content somewhere to scroll to once the keyboard is up.
+        automaticallyAdjustKeyboardInsets
         contentContainerStyle={{
           paddingHorizontal: 20,
+          paddingTop: 8,
           paddingBottom: insets.bottom + 40,
         }}
       >
-        <Text style={styles.intro}>
-          One quiet nudge a day, scheduled on this device. It never leaves your
-          phone, and it never mentions what you wrote or how you&apos;re doing.
-        </Text>
-
         <View style={styles.section}>
           <PaperCard style={styles.card}>
             <View style={styles.toggleRow}>
               <View style={styles.toggleText}>
                 <Text style={styles.rowTitle}>Remind me</Text>
                 <Text style={styles.rowSubtitle}>
-                  {status === "scheduled"
-                    ? `Every day at ${timeLabel}`
-                    : "Off"}
+                  {status === "scheduled" ? describeReminder(current) : "Off"}
                 </Text>
               </View>
               <Switch
@@ -122,39 +238,100 @@ export default function ReminderScreen() {
                 thumbColor={Colors.card}
                 ios_backgroundColor={Hairline.wash}
                 accessibilityLabel="Daily reminder"
-                accessibilityHint="Schedules one gentle notification a day on this device"
+                accessibilityHint="Schedules gentle notifications on this device"
               />
             </View>
 
-            <View style={styles.divider} />
+            {current.times.map((time, index) => {
+              const label = formatReminderTime(time.hour, time.minute);
+              return (
+                <View key={minutesOfDay(time)}>
+                  <View style={styles.divider} />
+                  <View style={styles.timeRow}>
+                    <Text
+                      style={[styles.rowTitle, !editable && styles.muted]}
+                      accessibilityLabel={`Reminder ${index + 1}, ${label}`}
+                    >
+                      {label}
+                    </Text>
+                    <View style={styles.stepper}>
+                      <IconButton
+                        size={40}
+                        disabled={!editable}
+                        onPress={() =>
+                          void apply({
+                            ...current,
+                            times: stepTimeAt(current.times, index, -1),
+                          })
+                        }
+                        accessibilityLabel={`Move ${label} earlier`}
+                      >
+                        <IconSymbol name="minus" size={18} color={Colors.ink} />
+                      </IconButton>
+                      <IconButton
+                        size={40}
+                        disabled={!editable}
+                        onPress={() =>
+                          void apply({
+                            ...current,
+                            times: stepTimeAt(current.times, index, 1),
+                          })
+                        }
+                        accessibilityLabel={`Move ${label} later`}
+                      >
+                        <IconSymbol name="plus" size={18} color={Colors.ink} />
+                      </IconButton>
+                      {/* The last remaining time can't be removed — that's what
+                          the switch above is for. */}
+                      {current.times.length > 1 ? (
+                        <IconButton
+                          size={40}
+                          disabled={!editable}
+                          onPress={() =>
+                            void apply({
+                              ...current,
+                              times: current.times.filter((_, i) => i !== index),
+                            })
+                          }
+                          accessibilityLabel={`Remove the ${label} reminder`}
+                        >
+                          <IconSymbol
+                            name="trash"
+                            size={16}
+                            color={Colors.textSecondary}
+                          />
+                        </IconButton>
+                      ) : null}
+                    </View>
+                  </View>
+                </View>
+              );
+            })}
 
-            <View style={styles.timeRow}>
-              <Text
-                style={[styles.rowTitle, !timeEditable && styles.muted]}
-                accessibilityLabel={`Reminder time, ${timeLabel}`}
+            <View style={styles.divider} />
+            <View style={styles.addRow}>
+              <PressableScale
+                containerStyle={styles.selfStart}
+                disabled={!canAdd}
+                onPress={() =>
+                  void apply({ ...current, times: addTime(current.times) })
+                }
+                style={[styles.addButton, !canAdd && styles.addButtonOff]}
+                accessibilityLabel="Add another time"
+                accessibilityHint={
+                  current.times.length >= MAX_REMINDERS
+                    ? `Three a day is the most this app will send`
+                    : undefined
+                }
               >
-                {timeLabel}
-              </Text>
-              <View style={styles.stepper}>
-                <IconButton
-                  size={44}
-                  disabled={!timeEditable}
-                  onPress={() => void apply(step(current, -1))}
-                  accessibilityLabel="Earlier"
-                  accessibilityHint={`Moves the reminder ${STEP_MINUTES} minutes earlier`}
+                <Text
+                  style={[styles.addButtonText, !canAdd && styles.muted]}
                 >
-                  <IconSymbol name="minus" size={18} color={Colors.ink} />
-                </IconButton>
-                <IconButton
-                  size={44}
-                  disabled={!timeEditable}
-                  onPress={() => void apply(step(current, 1))}
-                  accessibilityLabel="Later"
-                  accessibilityHint={`Moves the reminder ${STEP_MINUTES} minutes later`}
-                >
-                  <IconSymbol name="plus" size={18} color={Colors.ink} />
-                </IconButton>
-              </View>
+                  {current.times.length >= MAX_REMINDERS
+                    ? "Three a day is the most"
+                    : "Add another time"}
+                </Text>
+              </PressableScale>
             </View>
           </PaperCard>
         </View>
@@ -168,6 +345,7 @@ export default function ReminderScreen() {
                 reminder will be here waiting.
               </Text>
               <PressableScale
+                containerStyle={styles.selfStart}
                 style={styles.noticeButton}
                 onPress={() => router.push("/habits" as Href)}
                 accessibilityLabel="Add a habit"
@@ -185,6 +363,7 @@ export default function ReminderScreen() {
                 depends on it.
               </Text>
               <PressableScale
+                containerStyle={styles.selfStart}
                 style={styles.noticeButton}
                 onPress={() => void Linking.openSettings()}
                 accessibilityLabel="Open Settings"
@@ -196,16 +375,76 @@ export default function ReminderScreen() {
           </View>
         ) : null}
 
-        <View style={styles.section}>
+        <View
+          style={styles.section}
+          onLayout={(e: LayoutChangeEvent) => {
+            editorY.current = e.nativeEvent.layout.y;
+          }}
+        >
           <SectionTitle>What it says</SectionTitle>
           <PaperCard style={styles.card}>
-            <Text style={styles.preview}>
-              A quiet minute for today, whenever you&apos;re ready.
-            </Text>
+            <Text style={styles.preview}>{reminderBody(current)}</Text>
             <Text style={styles.previewNote}>
-              Always this, word for word. No streak counts, no habit names, no
-              catching up on what you missed.
+              {usingStandard
+                ? "The standard nudge. No streak counts, no habit names, no catching up on what you missed."
+                : "Your own words, sent exactly as written."}
             </Text>
+
+            <View style={styles.divider} />
+
+            <View style={styles.editorBlock}>
+              <Text style={styles.editorLabel}>Write your own</Text>
+              <TextInput
+                value={messageDraft}
+                onChangeText={setMessageDraft}
+                onFocus={handleMessageFocus}
+                onSubmitEditing={saveMessage}
+                placeholder={STANDARD_MESSAGE}
+                placeholderTextColor={Colors.textSecondary}
+                maxLength={MESSAGE_MAX_LENGTH}
+                returnKeyType="done"
+                style={styles.input}
+                accessibilityLabel="Custom reminder message"
+                accessibilityHint="Leave empty to use the standard message"
+              />
+              <View style={styles.editorFooter}>
+                {/* It lands on a lock screen, so say so before they type
+                    something they'd rather nobody read over their shoulder. */}
+                <Text style={styles.editorHint}>
+                  Shows on your lock screen.
+                </Text>
+                <Text style={styles.editorCount}>
+                  {tidyMessage(messageDraft).length}/{MESSAGE_MAX_LENGTH}
+                </Text>
+              </View>
+              {/* Save while there's an unsaved edit; otherwise the way back to
+                  the standard copy. Never both — one action per state. */}
+              {dirty ? (
+                <PressableScale
+                  containerStyle={styles.selfStart}
+                  style={styles.saveButton}
+                  onPress={saveMessage}
+                  accessibilityLabel="Save this message"
+                >
+                  <Text style={styles.saveButtonText}>Save</Text>
+                </PressableScale>
+              ) : !usingStandard ? (
+                <PressableScale
+                  containerStyle={styles.selfStart}
+                  style={styles.resetButton}
+                  onPress={() => {
+                    setMessageDraft("");
+                    Keyboard.dismiss();
+                    void apply({ ...current, message: null });
+                  }}
+                  accessibilityLabel="Use the standard message"
+                >
+                  <Text style={styles.resetButtonText}>
+                    Use the standard one
+                  </Text>
+                </PressableScale>
+              ) : null}
+            </View>
           </PaperCard>
         </View>
       </ScrollView>
@@ -214,14 +453,13 @@ export default function ReminderScreen() {
 }
 
 const styles = StyleSheet.create({
-  intro: {
-    fontSize: 14,
-    lineHeight: 21,
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
-    marginTop: 4,
-    marginBottom: 20,
-  },
+  /**
+   * Goes on PressableScale's `containerStyle`, never its `style`.
+   * `style` lands on the inner animated view, so shrinking the
+   * button there leaves the outer Pressable stretched full width —
+   * a tap target far wider than anything the user can see.
+   */
+  selfStart: { alignSelf: "flex-start" },
   section: { marginBottom: 22 },
   card: { paddingHorizontal: 18, paddingVertical: 6 },
   toggleRow: {
@@ -247,9 +485,23 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 6,
+    paddingVertical: 4,
   },
-  stepper: { flexDirection: "row", alignItems: "center", gap: 4 },
+  stepper: { flexDirection: "row", alignItems: "center", gap: 2 },
+  addRow: { paddingVertical: 12 },
+  addButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: Colors.ink,
+  },
+  addButtonOff: { borderColor: Hairline.raised, opacity: 0.6 },
+  addButtonText: {
+    fontSize: 14,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingSemiBold,
+  },
   noticeCard: { paddingHorizontal: 18, paddingVertical: 18 },
   noticeText: {
     fontSize: 14,
@@ -259,7 +511,6 @@ const styles = StyleSheet.create({
   },
   noticeButton: {
     marginTop: 14,
-    alignSelf: "flex-start",
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderRadius: 10,
@@ -284,6 +535,67 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
     marginTop: 10,
-    paddingBottom: 16,
+    marginBottom: 14,
+  },
+  editorBlock: { paddingTop: 14, paddingBottom: 16 },
+  editorLabel: {
+    fontSize: 14,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingSemiBold,
+    marginBottom: 8,
+  },
+  input: {
+    fontSize: 15,
+    lineHeight: 22,
+    color: Colors.ink,
+    fontFamily: Fonts.handwriting,
+    borderWidth: 1,
+    borderColor: Hairline.raised,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    minHeight: 44,
+  },
+  editorFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 8,
+  },
+  editorHint: {
+    flex: 1,
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+  },
+  editorCount: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+  },
+  saveButton: {
+    marginTop: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: Colors.ink,
+  },
+  saveButtonText: {
+    fontSize: 14,
+    color: Colors.paper,
+    fontFamily: Fonts.handwritingSemiBold,
+  },
+  resetButton: {
+    marginTop: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: Colors.ink,
+  },
+  resetButtonText: {
+    fontSize: 14,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingSemiBold,
   },
 });

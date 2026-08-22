@@ -145,7 +145,11 @@ function payloadToEntries(payload: EntryPayload): DailyEntry[] {
     date: payload.date,
     text: e.text,
     mediaPaths: e.mediaPaths ?? [],
+    media: e.media,
     createdAt: e.createdAt,
+    // Absent on every entry written before place tagging, and whenever the
+    // setting is off — stays `undefined` rather than becoming an empty shape.
+    place: e.place,
   }));
 }
 
@@ -157,6 +161,8 @@ function entriesToPayload(date: string, entries: DailyEntry[]): EntryPayload {
       text: e.text,
       createdAt: e.createdAt,
       mediaPaths: e.mediaPaths,
+      media: e.media,
+      place: e.place,
     })),
   };
 }
@@ -357,6 +363,58 @@ async function fetchByMonthBuckets(
     rows.push(...page);
     if (page.length < PAGE_SIZE) return { ok: true, data: rows };
   }
+}
+
+/**
+ * Every entry this user has, oldest first. For export only.
+ *
+ * Deliberately unfiltered by bucket: an export that quietly missed a month
+ * because its HMAC didn't match a computed window would be worse than no
+ * export at all. Paged with `.range()` so PostgREST's row cap can't truncate
+ * it silently, and a row that won't decrypt is skipped rather than aborting
+ * the whole file.
+ */
+export async function getAllEntries(
+  userId: string,
+): Promise<ReadResult<DailyEntry[]>> {
+  if (!keyring.isUnlocked()) return { ok: false, reason: "locked" };
+  const mk = keyring.getMasterKey();
+
+  const all: DailyEntry[] = [];
+  let skipped = 0;
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from("entries")
+      .select("ciphertext, nonce, day_bucket")
+      .eq("owner_id", userId)
+      .range(from, from + PAGE_SIZE - 1);
+
+    if (error) {
+      if (__DEV__) console.warn("[entries] export fetch failed:", error.message);
+      return { ok: false, reason: error.message };
+    }
+    const rows = data ?? [];
+    for (const row of rows) {
+      try {
+        const decrypted = decryptJson<EntryPayload>(
+          mk,
+          { ciphertext: row.ciphertext, nonce: row.nonce },
+          AAD.entry(row.day_bucket, userId),
+        );
+        all.push(...payloadToEntries(decrypted));
+      } catch {
+        // One unreadable row must not cost the user the rest of their journal.
+        skipped += 1;
+      }
+    }
+    if (rows.length < PAGE_SIZE) break;
+  }
+
+  if (__DEV__ && skipped > 0) {
+    console.warn(`[entries] export skipped ${skipped} unreadable row(s)`);
+  }
+  all.sort((a, b) => a.date.localeCompare(b.date) || a.createdAt.localeCompare(b.createdAt));
+  return { ok: true, data: all };
 }
 
 /**

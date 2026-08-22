@@ -1,3 +1,4 @@
+import { IconSymbol } from "@/components/ui/icon-symbol";
 import { InkIcon } from "@/components/ui/ink-icon";
 import { PaperCard } from "@/components/ui/paper-card";
 import { PressableScale } from "@/components/ui/pressable-scale";
@@ -30,15 +31,21 @@ interface MetricProps {
 }
 
 /**
- * One supporting number in the momentum card's right-hand column. Value first,
- * then its unit — these used to be a run-on sentence ("2 done · 1 active
- * days"), which read as prose and hid the figures.
+ * One column of the stat strip: the figure, then its unit underneath.
+ *
+ * These were a left-aligned stack beside the hero ("26 done" / "16 active
+ * days" / "4 perfect"), which read as a ragged list — different digit counts
+ * and different label lengths meant nothing lined up. As centred columns of
+ * equal width they read as one tabular set, and they match the KPI tiles on
+ * the analysis screen.
  */
 function Metric({ value, label }: MetricProps) {
   return (
     <View style={styles.metric}>
       <Text style={styles.metricValue}>{value}</Text>
-      <Text style={styles.metricLabel}>{label}</Text>
+      <Text style={styles.metricLabel} numberOfLines={1}>
+        {label}
+      </Text>
     </View>
   );
 }
@@ -53,8 +60,13 @@ interface CardActionProps {
 }
 
 /**
- * The card's footer action. A real button — filled with the accent wash, with
- * its own press target — not the underlined-looking text link it used to be.
+ * The card's footer action, in the app's primary-button language: ink fill,
+ * paper text, same as "Create Account" and "Finish setup".
+ *
+ * It used to wear the card fill + hairline of a Manage row, which was quieter
+ * but left the whole card reading as a passive readout — users didn't know the
+ * numbers went anywhere. A filled button is the one control on the page that
+ * can't be mistaken for text.
  *
  * It nests inside the card-wide PressableScale on purpose: React Native's
  * responder system hands the touch to the innermost pressable, so a tap on the
@@ -69,7 +81,7 @@ function CardAction({ label, chart, onPress, accessibilityHint }: CardActionProp
       accessibilityLabel={label}
       accessibilityHint={accessibilityHint}
     >
-      {chart ? <InkIcon name="chart" size={18} /> : null}
+      {chart ? <InkIcon name="chart" size={18} color={Colors.paper} /> : null}
       <Text style={styles.actionLabel}>{label}</Text>
       <Text style={styles.arrow}>→</Text>
     </PressableScale>
@@ -108,11 +120,13 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
         <PaperCard style={styles.card}>
           <Skeleton width="40%" height={12} />
           <View style={{ height: 14 }} />
-          <Skeleton width="55%" height={40} />
-          <View style={{ height: 16 }} />
+          <Skeleton width="50%" height={52} />
+          <View style={{ height: 14 }} />
           <Skeleton width="85%" height={13} />
+          <View style={{ height: 18 }} />
+          <Skeleton width="100%" height={72} borderRadius={12} />
           <View style={{ height: 16 }} />
-          <Skeleton width="100%" height={44} borderRadius={12} />
+          <Skeleton width="100%" height={48} borderRadius={12} />
         </PaperCard>
       </PressableScale>
     );
@@ -127,7 +141,14 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
         accessibilityHint="Opens your habits"
       >
         <PaperCard style={styles.card}>
-          <Text style={styles.eyebrow}>your momentum</Text>
+          <View style={styles.header}>
+            <Text style={styles.eyebrow}>your momentum</Text>
+            <IconSymbol
+              name="chevron.right"
+              size={13}
+              color={Colors.textSecondary}
+            />
+          </View>
           <Text style={styles.emptyText}>
             Nothing to measure yet. Add a habit and your streaks, records and
             story start filling in from day one.
@@ -154,7 +175,7 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
   );
   const standing =
     overall.totalCompletions === 0
-      ? "Nothing ticked yet — today can be day one."
+      ? "Nothing ticked yet. Today can be day one."
       : overall.bestLongestStreak === 0
         ? "Your first streak starts with two days in a row."
         : toRecord > 0
@@ -171,41 +192,52 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
       accessibilityHint="Opens your full analysis"
     >
       <PaperCard style={styles.card}>
-        <Text style={styles.eyebrow}>your momentum</Text>
+        <View style={styles.header}>
+          <Text style={styles.eyebrow}>your momentum</Text>
+          <Text style={styles.headerHint}>tap for details</Text>
+          <IconSymbol
+            name="chevron.right"
+            size={13}
+            color={Colors.textSecondary}
+          />
+        </View>
 
         {/* Hero band: the label sits ABOVE its number (same order as the
             analysis screen's hero), so the big figure isn't chased by a
             "day best streak" caption competing with the flame beside it. */}
+        {/* Hero: `bestCurrentStreak` is a LIVE streak — "best" is reserved
+            for records, so the label says what the number is: current. */}
         <View style={styles.hero}>
-          <View>
-            {/* `bestCurrentStreak` is a LIVE streak — "best" is reserved for
-                records, so the label says what the number is: current. */}
+          <InkIcon name="flame" size={30} />
+          <Text style={styles.heroValue}>{overall.bestCurrentStreak}</Text>
+          <View style={styles.heroCaption}>
+            <Text style={styles.heroUnit}>
+              {overall.bestCurrentStreak === 1 ? "day" : "days"}
+            </Text>
             <Text style={styles.heroLabel}>current streak</Text>
-            <View style={styles.heroValueRow}>
-              <InkIcon name="flame" size={26} />
-              <Text style={styles.heroValue}>{overall.bestCurrentStreak}</Text>
-              <Text style={styles.heroUnit}>
-                {overall.bestCurrentStreak === 1 ? "day" : "days"}
-              </Text>
-            </View>
-          </View>
-          <View style={styles.heroRule} />
-          <View style={styles.metrics}>
-            <Metric value={overall.totalCompletions} label="done" />
-            <Metric
-              value={overall.activeDays}
-              label={overall.activeDays === 1 ? "active day" : "active days"}
-            />
-            {overall.perfectDays > 0 ? (
-              <Metric value={overall.perfectDays} label="perfect" />
-            ) : null}
           </View>
         </View>
 
         <Text style={styles.standing}>{standing}</Text>
 
+        {/* The supporting figures, as one divided strip. */}
+        <View style={styles.metrics}>
+          <Metric value={overall.totalCompletions} label="done" />
+          <View style={styles.metricRule} />
+          <Metric
+            value={overall.activeDays}
+            label={overall.activeDays === 1 ? "active day" : "active days"}
+          />
+          {overall.perfectDays > 0 ? (
+            <>
+              <View style={styles.metricRule} />
+              <Metric value={overall.perfectDays} label="perfect days" />
+            </>
+          ) : null}
+        </View>
+
         <CardAction
-          label="Stats & analysis"
+          label="See your full stats"
           chart
           onPress={() => open("/analysis")}
           accessibilityHint="Opens your full analysis"
@@ -224,88 +256,114 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     marginTop: 4,
   },
+  // The card is a door, so it says so at the top: eyebrow, a quiet hint, and
+  // the same chevron the Manage rows use. The bottom button alone sat below
+  // the fold of the eye's first pass over the numbers.
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 10,
+  },
   eyebrow: {
+    flex: 1,
     fontSize: 12,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwritingMedium,
     letterSpacing: 0.4,
     textTransform: "uppercase",
-    marginBottom: 10,
   },
-  hero: { flexDirection: "row", alignItems: "center" },
+  headerHint: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+  },
+  // The headline gets its own line now. Sharing a row with the supporting
+  // numbers squeezed both: a 44pt figure beside a three-line column left the
+  // card lopsided and the metrics cramped into half the width.
+  hero: { flexDirection: "row", alignItems: "center", gap: 10 },
+  heroValue: {
+    fontSize: 52,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingSemiBold,
+    letterSpacing: -1,
+    lineHeight: 58,
+  },
+  // Unit and label stack beside the figure so the number owns the baseline.
+  heroCaption: { justifyContent: "center", paddingTop: 6 },
+  heroUnit: {
+    fontSize: 15,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingMedium,
+  },
   heroLabel: {
     fontSize: 12,
     color: Colors.textSecondary,
-    fontFamily: Fonts.handwritingMedium,
-    marginBottom: 2,
-  },
-  heroValueRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-  heroValue: {
-    fontSize: 44,
-    color: Colors.ink,
-    fontFamily: Fonts.handwritingSemiBold,
-    letterSpacing: -0.5,
-    lineHeight: 50,
-  },
-  heroUnit: {
-    fontSize: 13,
-    color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
-    alignSelf: "flex-end",
-    marginBottom: 10,
   },
-  // A drawn rule between the headline and its supporting data — the two
-  // groups are different kinds of number and shouldn't share a column.
-  heroRule: {
-    width: StyleSheet.hairlineWidth,
+  // The stat strip: equal centred columns divided by hairlines, inset on the
+  // paper so it reads as one grouped block rather than three loose numbers.
+  metrics: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    marginTop: 18,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Hairline.base,
+    backgroundColor: Colors.card,
+  },
+  metric: { flex: 1, alignItems: "center", paddingHorizontal: 4 },
+  // A real 1pt rule, inset top and bottom so it separates the columns without
+  // touching the strip's own border. At `hairlineWidth` in `Hairline.base` it
+  // was there but invisible — 0.33pt of 8%-alpha ink reads as nothing.
+  metricRule: {
+    width: 1,
     alignSelf: "stretch",
-    backgroundColor: Hairline.strong,
-    marginHorizontal: 16,
+    marginVertical: 2,
+    backgroundColor: Hairline.divider,
   },
-  metrics: { flex: 1, gap: 2 },
-  metric: { flexDirection: "row", alignItems: "baseline", gap: 6 },
   metricValue: {
     // Accent on the figures only — the numbers are what the eye should catch,
     // the units stay quiet in secondary ink.
-    fontSize: 16,
+    fontSize: 24,
+    lineHeight: 30,
     color: Colors.accent,
     fontFamily: Fonts.handwritingSemiBold,
-    minWidth: 24,
-    textAlign: "right",
+    textAlign: "center",
   },
   metricLabel: {
-    fontSize: 13,
+    fontSize: 12,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
-    flexShrink: 1,
+    textAlign: "center",
+    marginTop: 1,
   },
   standing: {
     fontSize: 14.5,
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
     lineHeight: 22,
-    marginTop: 16,
+    marginTop: 14,
   },
   action: {
-    // Same surface language as the Manage rows — card fill, ink hairline —
-    // so it reads as one of the app's category rows rather than a stray
-    // accent-washed button.
+    // The app's primary button: solid ink, paper text. The card fill + hairline
+    // it wore before matched the Manage rows, which was exactly the problem —
+    // it read as another line of the readout instead of the way out of it.
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
     height: 48,
-    paddingHorizontal: 14,
+    paddingHorizontal: 16,
     borderRadius: 12,
-    backgroundColor: Colors.card,
-    borderWidth: 1,
-    borderColor: Hairline.base,
+    backgroundColor: Colors.ink,
     marginTop: 16,
   },
   actionLabel: {
     flex: 1,
     fontSize: 15,
-    color: Colors.ink,
+    color: Colors.paper,
     fontFamily: Fonts.handwritingSemiBold,
   },
-  arrow: { fontSize: 17, color: Colors.ink },
+  arrow: { fontSize: 17, color: Colors.paper },
 });

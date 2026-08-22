@@ -17,6 +17,10 @@ import {
   perfectDays,
   monthOverMonthTrend,
   monthlyRateSeries,
+  habitWeeklyTimeline,
+  MIN_PROGRESS_MONTHS,
+  progressSeries,
+  streakIntensity,
   heatmapCells,
   longestStreakRange,
   daysToRecord,
@@ -603,6 +607,270 @@ test("dailyRateSeries: one point per day, share of eligible habits", () => {
   assertEq(series[29].rate, 1); // both habits today
   assertEq(series[28].rate, 0.5); // one of two yesterday
   assertEq(series[0].days, 0); // before either habit existed
+});
+
+// ---------------------------------------------------------------------------
+// habitWeeklyTimeline — the Consistency grid (habits x weeks)
+// ---------------------------------------------------------------------------
+const WH = (id: string, createdAt: string): Habit => ({ id, name: id, createdAt });
+const WL = (habitId: string, date: string): HabitLog => ({
+  habitId,
+  date,
+  completed: true,
+});
+
+test("weekly: window runs from the week you started to this one", () => {
+  // Habit created Mon 2026-08-03; today Thu 2026-08-20 -> 3 weeks.
+  const t = habitWeeklyTimeline([WH("a", "2026-08-03T00:00:00.000Z")], [], "2026-08-20");
+  assertEq(t.weeks.length, 3);
+  assertEq(t.weeks[0], "2026-08-03");
+  assertEq(t.weeks[2], "2026-08-17");
+});
+
+test("weekly: every column starts on a Monday", () => {
+  const t = habitWeeklyTimeline([WH("a", "2026-06-10T00:00:00.000Z")], [], "2026-08-20");
+  for (const week of t.weeks) {
+    assertEq(new Date(`${week}T00:00:00Z`).getUTCDay(), 1, `${week} must be Monday`);
+  }
+});
+
+test("weekly: starts at the OLDEST habit, so there's no empty history", () => {
+  const t = habitWeeklyTimeline(
+    [WH("old", "2026-08-03T00:00:00.000Z"), WH("new", "2026-08-17T00:00:00.000Z")],
+    [],
+    "2026-08-20",
+  );
+  assertEq(t.weeks[0], "2026-08-03");
+});
+
+test("weekly: weeks before a habit existed are not misses", () => {
+  const t = habitWeeklyTimeline(
+    [WH("old", "2026-08-03T00:00:00.000Z"), WH("new", "2026-08-17T00:00:00.000Z")],
+    [],
+    "2026-08-20",
+  );
+  const later = t.rows[1];
+  assertEq(later.cells[0].eligible, 0);
+  assertEq(later.cells[1].eligible, 0);
+  assertTrue(later.cells[2].eligible > 0, "its own week counts");
+});
+
+test("weekly: the current week counts only up to today, never the future", () => {
+  // Week of Mon 2026-08-17, today Thu the 20th -> Mon..Thu = 4 days.
+  const t = habitWeeklyTimeline([WH("a", "2026-08-17T00:00:00.000Z")], [], "2026-08-20");
+  assertEq(t.rows[0].cells[t.weeks.length - 1].eligible, 4);
+});
+
+test("weekly: completions land in the right week", () => {
+  const t = habitWeeklyTimeline(
+    [WH("a", "2026-08-03T00:00:00.000Z")],
+    [WL("a", "2026-08-04"), WL("a", "2026-08-06"), WL("a", "2026-08-11")],
+    "2026-08-20",
+  );
+  assertEq(t.rows[0].cells[0].done, 2);
+  assertEq(t.rows[0].cells[1].done, 1);
+});
+
+test("weekly: rate is scored against eligible days only", () => {
+  const t = habitWeeklyTimeline(
+    [WH("a", "2026-08-17T00:00:00.000Z")],
+    [WL("a", "2026-08-17"), WL("a", "2026-08-18")],
+    "2026-08-20",
+  );
+  assertEq(t.rows[0].rate, 0.5);
+});
+
+test("weekly: another habit's log never lands in this row", () => {
+  const t = habitWeeklyTimeline(
+    [WH("a", "2026-08-03T00:00:00.000Z"), WH("b", "2026-08-03T00:00:00.000Z")],
+    [WL("b", "2026-08-04")],
+    "2026-08-20",
+  );
+  assertEq(t.rows[0].cells[0].done, 0);
+  assertEq(t.rows[1].cells[0].done, 1);
+});
+
+test("weekly: long history switches to one column per month", () => {
+  // Started Jan 2024, today Aug 2026 — far past the week-column ceiling.
+  const t = habitWeeklyTimeline(
+    [WH("a", "2024-01-15T00:00:00.000Z")],
+    [],
+    "2026-08-20",
+  );
+  assertEq(t.bucket, "month");
+  // Jan 2024 .. Aug 2026 inclusive = 32 months, not ~137 weeks.
+  assertEq(t.weeks.length, 32);
+  assertEq(t.weeks[0], "2024-01-01");
+});
+
+test("weekly: month columns start on the 1st", () => {
+  const t = habitWeeklyTimeline(
+    [WH("a", "2024-01-15T00:00:00.000Z")],
+    [],
+    "2026-08-20",
+  );
+  for (const col of t.weeks) {
+    assertEq(col.slice(-2), "01", `${col} must be a month start`);
+  }
+});
+
+test("weekly: month mode still counts only up to today", () => {
+  const t = habitWeeklyTimeline(
+    [WH("a", "2024-01-15T00:00:00.000Z")],
+    [],
+    "2026-08-20",
+  );
+  // August 2026 is the last column; today is the 20th.
+  assertEq(t.rows[0].cells[t.weeks.length - 1].eligible, 20);
+});
+
+test("weekly: month mode scores completions in the right month", () => {
+  const t = habitWeeklyTimeline(
+    [WH("a", "2024-01-15T00:00:00.000Z")],
+    [WL("a", "2024-01-20"), WL("a", "2024-02-03")],
+    "2026-08-20",
+  );
+  assertEq(t.rows[0].cells[0].done, 1, "January");
+  assertEq(t.rows[0].cells[1].done, 1, "February");
+});
+
+test("weekly: short history stays in week columns", () => {
+  const t = habitWeeklyTimeline(
+    [WH("a", "2026-08-03T00:00:00.000Z")],
+    [],
+    "2026-08-20",
+  );
+  assertEq(t.bucket, "week");
+});
+
+test("weekly: no habits yields an empty grid, not a crash", () => {
+  const t = habitWeeklyTimeline([], [], "2026-08-20");
+  assertEq(t.weeks.length, 0);
+  assertEq(t.rows.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// progressSeries — monthly (capped at a year) or yearly, nothing else
+// ---------------------------------------------------------------------------
+const PH = (id: string, createdAt: string): Habit => ({ id, name: id, createdAt });
+
+test("progress: defaults to monthly", () => {
+  const r = progressSeries([], "2026-08-20", {
+    habits: [PH("a", "2026-06-01T00:00:00.000Z")],
+  });
+  assertEq(r.mode, "month");
+  assertEq(r.points.length, 3, "Jun, Jul, Aug");
+});
+
+test("progress: monthly is capped at a rolling year", () => {
+  const r = progressSeries([], "2026-08-20", {
+    habits: [PH("a", "2020-01-01T00:00:00.000Z")],
+  });
+  assertEq(r.mode, "month");
+  assertEq(r.points.length, 12, "never more than 12 bars");
+});
+
+test("progress: yearly is unavailable inside a single calendar year", () => {
+  const r = progressSeries([], "2026-08-20", {
+    habits: [PH("a", "2026-01-01T00:00:00.000Z")],
+  });
+  assertEq(r.yearlyAvailable, false);
+});
+
+test("progress: yearly unlocks once a second calendar year exists", () => {
+  const r = progressSeries([], "2026-08-20", {
+    habits: [PH("a", "2025-11-01T00:00:00.000Z")],
+  });
+  assertTrue(r.yearlyAvailable, "Nov 2025 -> Aug 2026 spans two years");
+});
+
+test("progress: asking for yearly before it's available falls back to monthly", () => {
+  const r = progressSeries(
+    [],
+    "2026-08-20",
+    { habits: [PH("a", "2026-06-01T00:00:00.000Z")] },
+    "year",
+  );
+  assertEq(r.mode, "month", "must not return an unusable yearly series");
+});
+
+test("progress: yearly gives one point per calendar year, in order", () => {
+  const r = progressSeries(
+    [],
+    "2026-08-20",
+    { habits: [PH("a", "2024-05-01T00:00:00.000Z")] },
+    "year",
+  );
+  assertEq(r.mode, "year");
+  assertEq(r.points.map((p) => p.label).join(","), "2024,2025,2026");
+});
+
+test("progress: yearly has no ceiling", () => {
+  const r = progressSeries(
+    [],
+    "2026-08-20",
+    { habits: [PH("a", "2010-01-01T00:00:00.000Z")] },
+    "year",
+  );
+  assertEq(r.mode, "year");
+  assertTrue(r.points.length > 12, `expected many years, got ${r.points.length}`);
+});
+
+test("progress: historyMonths reports how new the account is", () => {
+  const r = progressSeries([], "2026-08-20", {
+    habits: [PH("a", "2026-08-01T00:00:00.000Z")],
+  });
+  assertEq(r.historyMonths, 1, "one month in — nothing to compare yet");
+  assertTrue(r.historyMonths < MIN_PROGRESS_MONTHS, "drives the early state");
+});
+
+test("progress: rates stay inside 0..1 after merging", () => {
+  const r = progressSeries(
+    [],
+    "2026-08-20",
+    { habits: [PH("a", "2023-01-01T00:00:00.000Z")] },
+    "year",
+  );
+  for (const p of r.points) {
+    assertTrue(p.rate >= 0 && p.rate <= 1, `rate out of range: ${p.rate}`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// streakIntensity — the shade of a day inside a streak
+// ---------------------------------------------------------------------------
+test("intensity: a day not done is empty", () => {
+  assertEq(streakIntensity(0), 0);
+});
+
+test("intensity: day one is already visibly filled", () => {
+  // A day you did is never nothing — it must not render as near-blank.
+  assertTrue(streakIntensity(1) > 0.28, `got ${streakIntensity(1)}`);
+});
+
+test("intensity: never leaves 0..1", () => {
+  for (const run of [0, 1, 5, 30, 365, 5000]) {
+    const v = streakIntensity(run);
+    assertTrue(v >= 0 && v <= 1, `run ${run} gave ${v}`);
+  }
+});
+
+test("intensity: rises with every extra day, with no plateaus", () => {
+  // The bug this replaces: days 4..7 all shared one shade, then day 8 jumped.
+  for (let run = 1; run < 40; run++) {
+    assertTrue(
+      streakIntensity(run + 1) > streakIntensity(run),
+      `no increase from ${run} to ${run + 1}`,
+    );
+  }
+});
+
+test("intensity: saturates, so long streaks stay distinguishable from mid ones", () => {
+  const week = streakIntensity(7);
+  const threeWeeks = streakIntensity(21);
+  const year = streakIntensity(365);
+  assertTrue(threeWeeks - week > 0.15, "a week to three weeks must be visible");
+  assertTrue(year - threeWeeks < 0.12, "past three weeks it should flatten");
 });
 
 (async () => {

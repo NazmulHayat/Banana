@@ -49,21 +49,26 @@ export function SyncStatus({
     );
   }
 
+  // Nothing to say when everything is on the server: a permanent "Saved" is
+  // chrome, not information. The row still renders at its floor height so the
+  // composer below doesn't jump when a real state does appear.
   const label = syncing
     ? "Syncing…"
     : pendingCount > 0
       ? "Waiting for connection"
-      : "Saved";
+      : null;
 
   return (
     <View style={styles.row}>
-      <Text
-        style={styles.label}
-        accessibilityRole="text"
-        accessibilityLabel={`Sync status: ${label}`}
-      >
-        {label}
-      </Text>
+      {label ? (
+        <Text
+          style={styles.label}
+          accessibilityRole="text"
+          accessibilityLabel={`Sync status: ${label}`}
+        >
+          {label}
+        </Text>
+      ) : null}
     </View>
   );
 }

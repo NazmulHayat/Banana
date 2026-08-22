@@ -40,6 +40,12 @@ export const Hairline = {
   raised: 'rgba(26,26,26,0.15)',
   /** Ink outline on stamps and heatmap cells. */
   outline: 'rgba(26,26,26,0.16)',
+  /**
+   * Heaviest rule — a divider that has to hold its own between two blocks of
+   * content (the columns of the profile stat strip). Everything lighter than
+   * this disappears against paper at 1pt.
+   */
+  divider: 'rgba(26,26,26,0.28)',
 };
 
 /** Translucent washes laid over other content — backdrops, frosted bars, tints. */

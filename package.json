@@ -6,8 +6,8 @@
     "start": "expo start",
     "start:tunnel": "expo start --tunnel",
     "start:clear": "expo start --clear",
-    "ios": "expo start --ios",
-    "android": "expo start --android",
+    "ios": "expo run:ios",
+    "android": "expo run:android",
     "web": "expo start --web",
     "ios:device": "expo run:ios --device",
     "android:device": "expo run:android --device",
@@ -15,7 +15,7 @@
     "build:preview:android": "npx --yes eas-cli build --profile preview --platform android",
     "reset-project": "node ./scripts/reset-project.js",
     "lint": "expo lint",
-    "test": "npx tsx tests/crypto.test.ts && npx tsx tests/stats.test.ts && npx tsx tests/gamification.test.ts && npx tsx tests/pending-writes.test.ts && npx tsx tests/dates.test.ts && npx tsx tests/db-cache.test.ts && npx tsx tests/db-writes.test.ts"
+    "test": "npx tsx tests/crypto.test.ts && npx tsx tests/stats.test.ts && npx tsx tests/gamification.test.ts && npx tsx tests/pending-writes.test.ts && npx tsx tests/dates.test.ts && npx tsx tests/grid-layout.test.ts && npx tsx tests/db-cache.test.ts && npx tsx tests/db-writes.test.ts"
   },
   "dependencies": {
     "@expo-google-fonts/shantell-sans": "^0.4.1",
@@ -35,12 +35,16 @@
     "expo-font": "~14.0.12",
     "expo-haptics": "~15.0.8",
     "expo-image": "~3.0.11",
+    "expo-image-manipulator": "~14.0.8",
     "expo-image-picker": "~17.0.11",
     "expo-linear-gradient": "~15.0.8",
     "expo-linking": "~8.0.12",
+    "expo-location": "~19.0.8",
+    "expo-media-library": "~18.2.1",
     "expo-notifications": "~0.32.17",
     "expo-router": "~6.0.24",
     "expo-secure-store": "^15.0.8",
+    "expo-sharing": "~14.0.8",
     "expo-splash-screen": "~31.0.13",
     "expo-status-bar": "~3.0.9",
     "expo-symbols": "~1.0.8",
@@ -61,6 +65,7 @@
     "supabase": "^2.72.8"
   },
   "devDependencies": {
+    "@expo/ngrok": "^4.1.3",
     "@types/node": "^25.9.2",
     "@types/react": "~19.1.0",
     "eslint": "^9.25.0",

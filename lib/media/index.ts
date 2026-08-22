@@ -3,6 +3,7 @@ export type {
   MediaCleanupStatus,
   MediaDeleteResult,
   UploadAvatarResult,
+  UploadedImage,
   UploadEntryImagesResult,
 } from "./storage";
 
@@ -14,6 +15,9 @@ export {
   discardAvatar,
   discardEntryImages,
   getImageUrl,
+  getImageUrls,
+  objectPathsFor,
+  thumbPathFor,
   uploadAvatar,
   uploadEntryImages,
   uploadImage,

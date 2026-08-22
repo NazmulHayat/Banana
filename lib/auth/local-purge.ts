@@ -13,7 +13,14 @@
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { keyring } from "../crypto";
-import { clearEntriesCache, clearHabitLogsCache, clearHabitsCache, clearPendingWrites } from "../db";
+import {
+  clearEntriesCache,
+  clearHabitLogsCache,
+  clearHabitsCache,
+  clearPendingWrites,
+  clearPlacesCache,
+} from "../db";
+import { clearLocationPref } from "../location";
 import { clearMediaCache } from "../media";
 import { clearReminder } from "../reminder";
 
@@ -24,6 +31,7 @@ const USER_SCOPED_PREFIXES = [
   "banana_entries_v2",
   "banana_habits_v2",
   "banana_habit_logs_v2",
+  "banana_places_v2",
   "banana_pending_writes_v1",
 ];
 
@@ -40,6 +48,7 @@ export async function purgeLocalUserData(userId: string): Promise<void> {
   clearEntriesCache();
   clearHabitsCache();
   clearHabitLogsCache();
+  clearPlacesCache();
   clearMediaCache();
 
   try {
@@ -54,6 +63,15 @@ export async function purgeLocalUserData(userId: string): Promise<void> {
     await clearReminder();
   } catch (e) {
     if (__DEV__) console.warn("[purge] reminder clear failed:", e);
+  }
+
+  // Location tagging is a device setting like the reminder, so it has to be
+  // switched off here too — a deleted account must not leave a phone still
+  // configured to geocode where the next person writes.
+  try {
+    await clearLocationPref();
+  } catch (e) {
+    if (__DEV__) console.warn("[purge] location pref clear failed:", e);
   }
 
   try {

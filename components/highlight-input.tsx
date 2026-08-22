@@ -3,6 +3,7 @@ import { Colors, Fonts, Hairline } from "@/constants/theme";
 import type { WriteOutcome } from "@/lib/db";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
+import * as MediaLibrary from "expo-media-library";
 import { useEffect, useRef, useState } from "react";
 import {
   Alert,
@@ -98,7 +99,7 @@ interface HighlightInputProps {
   saving?: boolean;
 }
 
-const MAX_IMAGES = 4;
+export const MAX_IMAGES = 4;
 
 export function HighlightInput({
   todayEntryCount,
@@ -146,6 +147,25 @@ export function HighlightInput({
     appendUris(newUris);
   };
 
+  /**
+   * Keep a copy in the phone's own library, so the journal is never the only
+   * place a photo exists. Deliberately fire-and-forget: permission is asked
+   * once for the batch, and any failure is silent — losing the camera-roll
+   * copy is a minor inconvenience, losing the photo is not.
+   */
+  const saveToCameraRoll = async (uris: string[]) => {
+    if (uris.length === 0) return;
+    try {
+      const permission = await MediaLibrary.requestPermissionsAsync(true);
+      if (!permission.granted) return;
+      for (const uri of uris) {
+        await MediaLibrary.saveToLibraryAsync(uri);
+      }
+    } catch (e) {
+      if (__DEV__) console.warn("[composer] camera roll save failed:", e);
+    }
+  };
+
   const takePhoto = async () => {
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
     if (status !== "granted") {
@@ -163,7 +183,13 @@ export function HighlightInput({
     const newUris = (result.assets ?? [])
       .map((a) => a.uri)
       .filter(Boolean) as string[];
+
+    // Show it FIRST. The camera-roll copy is a background nicety, and awaiting
+    // it here put a permission prompt between the shutter and the photo
+    // appearing — if that prompt stalls, the shot never shows up at all.
+    // Nothing the user can see may ever wait on a side effect.
     appendUris(newUris);
+    void saveToCameraRoll(newUris);
   };
 
   const appendUris = (newUris: string[]) => {
@@ -426,12 +452,6 @@ export function HighlightInput({
           </Text>
         </View>
       )}
-      {/* Photos are NOT end-to-end encrypted in v1 (private Storage bucket
-          only) — disclosed plainly, right where photos get attached. */}
-      <Text style={styles.privacyNote}>
-        Your words and habits are end-to-end encrypted. Photos are stored
-        privately, but not encrypted yet.
-      </Text>
     </PaperCard>
   );
 }
@@ -473,13 +493,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-  },
-  privacyNote: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
-    lineHeight: 16,
-    marginTop: 12,
   },
   errorRow: {
     marginTop: 10,

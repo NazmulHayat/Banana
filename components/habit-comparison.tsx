@@ -14,6 +14,10 @@ interface HabitComparisonProps {
  * FR-AN2 — habits ranked by this month's completion rate, drawn as bars so the
  * one that's slipping is visible at a glance. No red, no scolding: the bar is
  * just shorter. A habit with no eligible days yet reads "new", never 0%.
+ *
+ * When `onSelect` is given each row is a doorway into that habit's deep-dive,
+ * so it has to *look* like one: card surface, hairline border and a chevron.
+ * Without the affordance the rows read as a static chart and nobody taps them.
  */
 export function HabitComparison({ rows, onSelect }: HabitComparisonProps) {
   if (rows.length === 0) {
@@ -25,13 +29,15 @@ export function HabitComparison({ rows, onSelect }: HabitComparisonProps) {
       {rows.map((row) => {
         const isNew = row.days === 0;
         const pct = Math.round(row.rate * 100);
+        const tappable = Boolean(onSelect);
         const bar = (
-          <View style={styles.row}>
+          <View style={[styles.row, tappable && styles.rowTappable]}>
             <View style={styles.head}>
               <Text style={styles.name} numberOfLines={1}>
                 {row.name}
               </Text>
               <Text style={styles.value}>{isNew ? "new" : `${pct}%`}</Text>
+              {tappable && <Text style={styles.chev}>›</Text>}
             </View>
             <View style={styles.track}>
               <View style={[styles.fill, { width: `${isNew ? 0 : pct}%` }]} />
@@ -71,6 +77,24 @@ export function HabitComparison({ rows, onSelect }: HabitComparisonProps) {
 
 const styles = StyleSheet.create({
   row: { paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Hairline.strong },
+  // Tappable rows leave the divider language behind and become cards — the
+  // same surface as the Manage rows, which is what "you can open this" looks
+  // like everywhere else in the app.
+  rowTappable: {
+    paddingHorizontal: 14,
+    marginBottom: 8,
+    borderRadius: 12,
+    backgroundColor: Colors.card,
+    // The app's card outline (PaperCard): a drawn ink box, not a hairline.
+    borderWidth: 1.5,
+    borderColor: Colors.ink,
+    // `row` above sets a bottom *divider* (width 1, Hairline.strong). Those
+    // longhands beat the `border*` shorthands here no matter the order, so
+    // both have to be restated or the card renders with no bottom edge.
+    borderBottomWidth: 1.5,
+    borderBottomColor: Colors.ink,
+  },
+  chev: { fontSize: 18, color: Colors.textSecondary, marginLeft: 10 },
   head: {
     flexDirection: "row",
     alignItems: "baseline",

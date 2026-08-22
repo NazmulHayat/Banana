@@ -47,6 +47,12 @@ import {
   setCachedHabits,
 } from "./db/habits";
 import {
+  getCachedPlaces,
+  getPlaces,
+  loadPlacesFromStorage,
+  savePlaces as dbSavePlaces,
+} from "./db/places";
+import {
   enqueuePendingWrite,
   flushPendingWrites,
   pendingWriteCount as dbPendingWriteCount,
@@ -60,6 +66,7 @@ import type {
   Habit,
   HabitLog,
   MonthRef,
+  SavedPlace,
   UsernameCheck,
   WriteOutcome,
 } from "./db/types";
@@ -291,6 +298,10 @@ interface DataState {
   habitsLoading: boolean;
   habitsReady: boolean;
 
+  // Saved place names (location tagging). Small, read rarely, written by hand.
+  places: SavedPlace[];
+  placesReady: boolean;
+
   // Habit logs per month - progressively loaded
   habitLogs: Map<string, HabitLog[]>; // key: "YYYY-MM"
   habitLogsByDay: Map<string, HabitLog[]>; // key: "YYYY-MM-DD" for progressive render
@@ -357,6 +368,11 @@ interface DataActions {
   updateHabits: (habits: Habit[]) => void;
   updateHabitLog: (log: HabitLog) => void;
   updateEntry: (entry: DailyEntry) => void;
+
+  /** Pull the saved place names in (3-tier, same as habits). */
+  loadPlaces: (opts?: { force?: boolean }) => Promise<SavedPlace[]>;
+  /** Replace the whole saved-place set. Reverts local state if the write fails. */
+  savePlaces: (next: SavedPlace[]) => Promise<WriteOutcome>;
 
   // Persisted writes. These update local state optimistically, then write
   // through — and they NEVER throw: the WriteOutcome is the channel (NFR-1).
@@ -438,6 +454,8 @@ export function DataProvider({ children, session }: DataProviderProps) {
   const [habits, setHabits] = useState<Habit[]>([]);
   const [habitsLoading, setHabitsLoading] = useState(false);
   const [habitsReady, setHabitsReady] = useState(false);
+  const [places, setPlaces] = useState<SavedPlace[]>([]);
+  const [placesReady, setPlacesReady] = useState(false);
 
   const [habitLogs, setHabitLogs] = useState<Map<string, HabitLog[]>>(
     new Map(),
@@ -559,6 +577,59 @@ export function DataProvider({ children, session }: DataProviderProps) {
       );
     },
     [session],
+  );
+
+  // ============================================================================
+  // Saved places (location tagging)
+  // ============================================================================
+  // Same three tiers as habits, minus the ceremony: the set is tiny, changes
+  // only when the user renames somewhere, and nothing else depends on it.
+  const loadPlaces = useCallback(
+    async (opts?: { force?: boolean }): Promise<SavedPlace[]> => {
+      if (!session) return [];
+      const userId = session.user.id;
+      const force = opts?.force === true;
+
+      const apply = (list: SavedPlace[]): SavedPlace[] => {
+        setPlaces(list);
+        setPlacesReady(true);
+        return list;
+      };
+
+      if (!force) {
+        const cached = getCachedPlaces(userId);
+        if (cached !== null) return apply(cached);
+        const stored = await loadPlacesFromStorage(userId);
+        if (stored !== null) return apply(stored);
+      }
+      // A failed read keeps whatever we already hold — never blanks the list.
+      const fresh = await getPlaces(userId);
+      if (!fresh.ok) return getCachedPlaces(userId) ?? [];
+      return apply(fresh.data);
+    },
+    [session],
+  );
+
+  const savePlaces = useCallback(
+    async (next: SavedPlace[]): Promise<WriteOutcome> => {
+      if (!session) return { status: "failed", reason: "Not signed in" };
+      const previous = places;
+      setPlaces(next); // optimistic
+      setPlacesReady(true);
+      try {
+        await dbSavePlaces(next, session.user.id);
+        return { status: "synced" };
+      } catch (e) {
+        // Not queued: a place name is a preference, and silently replaying it
+        // later would fight whatever the user did in the meantime. Put the old
+        // list back so the screen never shows a change that didn't happen.
+        setPlaces(previous);
+        const reason = e instanceof Error ? e.message : "Couldn't save";
+        if (__DEV__) console.warn("[store] savePlaces failed:", reason);
+        return { status: "failed", reason };
+      }
+    },
+    [session, places],
   );
 
   // ============================================================================
@@ -1377,8 +1448,12 @@ export function DataProvider({ children, session }: DataProviderProps) {
       profileFailed,
       initialLoadComplete,
       pendingWriteCount,
+      places,
+      placesReady,
 
       // Actions
+      loadPlaces,
+      savePlaces,
       refreshHabits,
       refreshHabitLogs,
       refreshEntries,
@@ -1417,6 +1492,10 @@ export function DataProvider({ children, session }: DataProviderProps) {
       profileFailed,
       initialLoadComplete,
       pendingWriteCount,
+      places,
+      placesReady,
+      loadPlaces,
+      savePlaces,
       refreshHabits,
       refreshHabitLogs,
       refreshEntries,

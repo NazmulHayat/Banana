@@ -589,14 +589,19 @@ Three advisor warnings remain and are **intentional** — `username_available` m
 `anon` (signup checks a name before a session exists) and `delete_my_account` by `authenticated`
 (that is the feature). Both are SECURITY DEFINER by necessity and return the minimum possible.
 
-Open, and **not** fixable from code — Auth config lives in the dashboard:
-- `password_min_length` is **6** while every client screen enforces 8 (`app/auth/signup.tsx:47`,
-  `app/auth/recover-with-key.tsx:58`, `app/security/index.tsx:141`). The master key is scrypt-derived
-  from this password, so the server being laxer than the UI is the weakest link in the crypto model.
-- Leaked-password protection (HaveIBeenPwned) is off.
-- `site_url` is still the `http://localhost:3000` default.
-- `mailer_autoconfirm` is **on** — no email verification. A launch-gate decision, not a bug: turning
-  it on makes every new signup wait for an email, which breaks throwaway test accounts.
+Auth config is applied by `scripts/supabase-auth-config.sh` (Management API — these settings have
+no migration equivalent). Live values: `password_min_length` 8 (matching every client screen —
+the master key is scrypt-derived from this password, so the server must not be laxer than the UI),
+`site_url` `aightbet://`, and an allow-list of three exact reset-password redirects — the app
+scheme plus the localhost and LAN `exp://` forms for Expo Go. Never widen that list to a wildcard;
+those URLs carry live recovery tokens.
+
+Two Auth items remain open **on purpose**:
+- **Leaked-password protection is off** — it is a Supabase Pro-plan feature and this project is on
+  Free. The script attempts it, reports, and continues. Revisit on upgrade.
+- **`mailer_autoconfirm` is on** — no email verification. A launch gate, not a bug: turning it on
+  makes every signup wait for an email, which breaks throwaway test accounts. Flip it as the last
+  pre-ship change.
 
 **Environment.** `.env` holds the public client vars only — `EXPO_PUBLIC_SUPABASE_URL` and
 `EXPO_PUBLIC_SUPABASE_KEY` (the anon key is public by design; RLS is the boundary).

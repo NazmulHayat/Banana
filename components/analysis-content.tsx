@@ -1,11 +1,8 @@
-import { ConsistencyScore } from "@/components/consistency-score";
-import { DayHighlightSheet } from "@/components/day-highlight-sheet";
 import { HabitComparison } from "@/components/habit-comparison";
-import { HabitCorrelations } from "@/components/habit-correlations";
 import { HabitHeatmap } from "@/components/habit-heatmap";
+import { HabitWeeks } from "@/components/habit-weeks";
 import { JournalStatsCard } from "@/components/journal-stats-card";
-import { RecordsBoard } from "@/components/records-board";
-import { StatSparkline } from "@/components/stat-sparkline";
+import { ProgressChart } from "@/components/progress-chart";
 import { PressableScale } from "@/components/ui/pressable-scale";
 import { SectionTitle } from "@/components/ui/settings-row";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -13,26 +10,23 @@ import { InkIcon } from "@/components/ui/ink-icon";
 import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { todayKey } from "@/lib/dates";
 import { type DailyEntry, type Habit, type HabitLog } from "@/lib/db";
-import { computeRecords, type PersonalRecord } from "@/lib/gamification";
+import { earlyLine, earlyProgressLine } from "@/lib/encouragement";
 import { computeJournalStats } from "@/lib/journal-stats";
 import {
-  bestDayOfWeek,
-  buildInsight,
   completionForMonth,
   computeAllHabitStats,
   computeHabitStats,
   computeOverallStats,
-  consistencyScore,
-  dailyRateSeries,
   habitComparison,
-  habitCorrelations,
-  hadRecentComeback,
+  habitWeeklyTimeline,
+  dayIndexOf,
   heatmapCells,
-  monthlyRateSeries,
+  MIN_PROGRESS_MONTHS,
+  progressSeries,
+  type ProgressMode,
   monthOverMonthTrend,
   type RatePoint,
   type StatsScope,
-  weekendComparison,
 } from "@/lib/stats";
 import * as Haptics from "expo-haptics";
 import { type Href, router } from "expo-router";
@@ -55,14 +49,20 @@ interface AnalysisContentProps {
   onRetry?: () => void;
 }
 
-// Each range drives BOTH the heatmap window and the trend series. Short range
-// = a daily series (a month of monthly points would be a single dot); longer
-// ranges = monthly points, which is what the eye can actually read.
-const RANGES = [
-  { label: "Month", days: 30, months: 0 },
-  { label: "6 mo", days: 183, months: 6 },
-  { label: "Year", days: 365, months: 12 },
-] as const;
+// Each range drives BOTH the heatmap window and the trend series, always as
+// monthly points.
+//
+// There is deliberately no "Month" option: a 30-square heatmap shows a shape
+// too short to read as a pattern, and its trend series collapsed to a single
+// monthly point. Consistency is a question about months, not days — the month
+// you're in is already answered by the hero and the Progress delta.
+/** Ceiling on the per-habit day calendar. Half a year of squares fits a phone. */
+const HABIT_CALENDAR_DAYS = 183;
+/**
+ * Floor, in whole weeks. A habit three days old would otherwise draw a single
+ * column, which reads as broken rather than new.
+ */
+const MIN_CALENDAR_DAYS = 28;
 
 /**
  * The range the user last picked, remembered for the life of the app session
@@ -70,7 +70,6 @@ const RANGES = [
  * A module-level value on purpose: a preference this small doesn't earn a new
  * AsyncStorage key, and components don't own persistence in this codebase.
  */
-let lastRangeDays: number = 183;
 
 const pct = (r: number): number => Math.round(r * 100);
 
@@ -80,6 +79,7 @@ function listOf(items: string[]): string {
   if (items.length <= 1) return items[0] ?? "";
   return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
 }
+
 
 // Drop the leading points from before anything was trackable, so the line
 // starts where the user's history does instead of at a fake 0%.
@@ -94,16 +94,14 @@ function trimToHistory(points: RatePoint[]): RatePoint[] {
  * INFORMATION HIERARCHY (three titled groups, one hero, no nav bar):
  *
  *   hero            current streak · this month %   ← the only place both appear
- *   How it's going  your story · consistency (heatmap + score) · progress
- *   Against your best  records board (streak record leads it) · stamps
- *   Patterns        by habit · what goes together
+ *   How it's going  consistency (heatmap) · progress (column chart)
+ *   Patterns        by habit (each row opens that habit's deep-dive)
  *   Your journal    FR-AN1 stats
  *
  * Each number lives in exactly ONE place: the current streak is in the hero,
- * the longest streak lives only on the records board (its top row — there is
- * no separate "longest run" section, and no milestone marks: 7/30/100 are the
- * stamps' job), and this month's rate is in the hero (Progress leads with the
- * month-over-month delta instead).
+ * and this month's rate is in the hero (Progress leads with the
+ * month-over-month delta instead). Personal records were cut on 2026-08-20:
+ * "now vs best" restated numbers the hero and Progress already carry.
  *
  * PROGRESSIVE DISCLOSURE: a module that could only say "nothing here yet" is
  * not rendered at all. A new user gets the hero, their story, the heatmap and
@@ -123,15 +121,9 @@ export function AnalysisContent({
   failedMonths = 0,
   onRetry,
 }: AnalysisContentProps) {
-  const [rangeDays, setRangeDays] = useState<number>(lastRangeDays);
-  const [selectedDay, setSelectedDay] = useState<string | null>(null);
+  const [visibleYear, setVisibleYear] = useState<number | null>(null);
+  const [progressMode, setProgressMode] = useState<ProgressMode>("month");
 
-  const pickRange = (days: number) => {
-    if (days === rangeDays) return;
-    void Haptics.selectionAsync();
-    lastRangeDays = days;
-    setRangeDays(days);
-  };
 
   const drillInto = (id: string) => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -209,66 +201,58 @@ export function AnalysisContent({
     ? null
     : computeOverallStats(computeAllHabitStats(habits, logs, today), logs, today, habits);
   const currentStreak = hs ? hs.currentStreak : (overall?.bestCurrentStreak ?? 0);
-  const longestStreak = hs ? hs.longestStreak : (overall?.bestLongestStreak ?? 0);
   const totalCompletions = hs
     ? hs.totalCompletions
     : (overall?.totalCompletions ?? 0);
 
   const month = completionForMonth(logs, ty, tm, today, scope);
   const trend = monthOverMonthTrend(logs, today, scope);
-  const range = RANGES.find((r) => r.days === rangeDays) ?? RANGES[1];
-  const series = trimToHistory(
-    range.months > 0
-      ? monthlyRateSeries(logs, today, range.months, scope)
-      : dailyRateSeries(logs, today, range.days, scope),
+  const progress = progressSeries(logs, today, scope, progressMode);
+  // Still trimmed, so the chart never opens on a run of fake zeroes.
+  const series = trimToHistory(progress.points);
+  const tooEarly = progress.historyMonths < MIN_PROGRESS_MONTHS;
+  // The calendar spans this habit's own life, not a flat six months. A habit
+  // 20 days old was drawing 183 squares, so ~90% of the grid was "before you
+  // started" — a wall of empty boxes that reads as failure rather than as time
+  // that was never yours. Rounded up to whole weeks so no column is a stub.
+  const habitStartIdx =
+    habitId && habit?.createdAt
+      ? dayIndexOf(habit.createdAt.slice(0, 10))
+      : NaN;
+  const habitAgeDays = Number.isNaN(habitStartIdx)
+    ? HABIT_CALENDAR_DAYS
+    : Math.max(1, dayIndexOf(today) - habitStartIdx + 1);
+  const calendarDays = Math.min(
+    HABIT_CALENDAR_DAYS,
+    Math.ceil(Math.max(MIN_CALENDAR_DAYS, habitAgeDays) / 7) * 7,
   );
-  const cells = heatmapCells(logs, today, rangeDays, {
+
+  // Days since tracking began — this habit's own life on its page, the oldest
+  // habit's on the overview. Drives every "too early to draw" state.
+  const oldestStart = habits.reduce((min, h) => {
+    const idx = dayIndexOf(h.createdAt.slice(0, 10));
+    return Number.isNaN(idx) ? min : Math.min(min, idx);
+  }, Number.POSITIVE_INFINITY);
+  const daysTracked = habitId
+    ? habitAgeDays
+    : Number.isFinite(oldestStart)
+      ? Math.max(0, dayIndexOf(today) - oldestStart + 1)
+      : 0;
+  const early = earlyLine(daysTracked);
+
+  const cells = heatmapCells(logs, today, calendarDays, {
     habitId,
     habits,
     totalHabits: habits.length || 1,
   });
-  const consistency = consistencyScore(
-    habit ? [habit] : habits,
-    logs,
-    today,
-    30,
-  );
-
-  const best = bestDayOfWeek(logs, today, scope);
-  const weekend = weekendComparison(logs, today, 90, scope);
-  const insight = buildInsight(
-    {
-      bestDow: best?.dow ?? null,
-      weekendDrop: weekend.weekdayRate > 0 && weekend.weekendRate < weekend.weekdayRate * 0.6,
-      currentStreak,
-      longestStreak,
-      trendDelta: trend.delta,
-      hadComeback: hadRecentComeback(logs, today, scope),
-    },
-    ty * 12 + tm, // rotates month to month
-  );
+  // Overview only — the window runs from the week you started, so it takes no
+  // range and ignores the control the Progress chart still uses.
+  const weeklyTimeline = habitId
+    ? { weeks: [], rows: [], bucket: "week" as const }
+    : habitWeeklyTimeline(habits, logs, today);
 
   const journal = habitId ? null : computeJournalStats(entries, today);
   const comparison = habitId ? [] : habitComparison(habits, logs, today);
-  const correlations = habitId ? [] : habitCorrelations(habits, logs, today);
-  // The records board is the one home of every "best ever" number, streak
-  // included — its top row. Per-habit, the board narrows to the one record
-  // that exists at habit scope, built from the same stats the hero reads.
-  const records: PersonalRecord[] = habitId
-    ? hs && hs.longestStreak > 0
-      ? [
-          {
-            key: "longestStreak",
-            current: hs.currentStreak,
-            record: hs.longestStreak,
-            unit: "days",
-            detail: "",
-            atRecord: hs.currentStreak >= hs.longestStreak,
-            distance: Math.max(0, hs.longestStreak - hs.currentStreak),
-          },
-        ]
-      : []
-    : computeRecords({ habits, logs, entries, today }).filter((r) => r.record > 0);
 
   const trendUp = trend.delta >= 0;
   const activeDays = overall?.activeDays ?? hs?.totalCompletions ?? 0;
@@ -277,17 +261,10 @@ export function AnalysisContent({
   // Render a module only when it has something to say; collect what's still
   // locked into one honest line instead of a column of empty panels.
   const showProgress = series.length > 1;
-  const showScore = consistency.daysCounted > 0;
-  const showRecords = records.length > 0;
-  const showCorrelations = !habitId && correlations.length > 0;
   const showJournal = !habitId && (entriesLoading || (journal?.totalEntries ?? 0) > 0);
 
   const locked: string[] = [];
   if (!showProgress) locked.push("your trend line, after a few more days");
-  if (!showRecords && !habitId) locked.push("records, once there's a best to beat");
-  if (!showCorrelations && !habitId) {
-    locked.push("what goes together, after a couple of weeks");
-  }
   if (!showJournal && !habitId) locked.push("your journal, from the first highlight you write");
 
   return (
@@ -316,7 +293,7 @@ export function AnalysisContent({
       {/* Each stat is one VoiceOver stop — a label and a bare number read as
           two unrelated fragments otherwise. */}
       <View style={styles.heroRow}>
-        {/* "Current streak" everywhere — "best" is reserved for records. On
+        {/* "Current streak" everywhere — never "best streak". On
             the overview it's the best LIVE streak across habits, which is
             still the user's current streak in every sense that matters. */}
         <View
@@ -356,90 +333,106 @@ export function AnalysisContent({
         </Text>
       ) : null}
 
-      {/* Per-habit: say plainly that this is a narrower view, and how to get
-          back to the wide one. It used to drop five modules in silence. */}
-      {habitId && (
-        <TouchableOpacity
-          style={styles.scopeNote}
-          activeOpacity={0.85}
-          onPress={() => router.replace("/analysis")}
-          accessibilityRole="button"
-          accessibilityLabel={`Showing ${habit?.name ?? "this habit"} only. See the overall analysis`}
-        >
-          <Text style={styles.scopeText}>
-            Just <Text style={styles.bold}>{habit?.name}</Text>. Stamps, your
-            journal and cross-habit patterns live on the overall analysis.
-          </Text>
-          <Text style={styles.scopeLink}>See everything →</Text>
-        </TouchableOpacity>
-      )}
 
       {/* ================= HOW IT'S GOING ================= */}
       <View style={styles.group}>
         <SectionTitle>How it&apos;s going</SectionTitle>
 
-        {/* Your story — the one rotating sentence, and the only prose here. */}
-        <View style={[styles.section, styles.sectionFirst]}>
-          <Text style={styles.insight}>{insight}</Text>
-        </View>
+        {/* Consistency.
+            The overview shows habits × weeks: rows say which habit, columns
+            say when. The old aggregated day heatmap could show that a stretch
+            went badly but never which habit did, and months of single days
+            never fit a phone at a readable size. The range control went with
+            it — the window runs from the week you started to this one, so
+            there is nothing left to pick.
 
-        {/* Consistency: the calendar shape, then the score built from it. */}
-        <View style={styles.section}>
+            The per-habit page keeps the day calendar: with one habit there is
+            no "which", and the day-by-day rhythm is the whole point there. */}
+        <View style={[styles.section, styles.sectionFirst]}>
           <View style={styles.sectionHead}>
             <Text style={styles.sectionLabel} accessibilityRole="header">
               Consistency
             </Text>
-            <View style={styles.segment} accessibilityRole="tablist">
-              {RANGES.map((r) => {
-                const on = r.days === rangeDays;
-                return (
-                  <TouchableOpacity
-                    key={r.days}
-                    onPress={() => pickRange(r.days)}
-                    activeOpacity={0.85}
-                    style={[styles.segItem, on && styles.segItemOn]}
-                    // The pill is ~30pt tall by design; hitSlop takes the
-                    // target past 44pt without changing the layout.
-                    hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
-                    accessibilityRole="tab"
-                    accessibilityLabel={`Show ${r.label.toLowerCase()}`}
-                    accessibilityState={{ selected: on }}
-                  >
-                    <Text style={[styles.segText, on && styles.segTextOn]}>{r.label}</Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
+            {/* Which year you're looking at, updated as the grid scrolls. Month
+                landmarks alone stop being enough the moment the history spans a
+                new year — "Jan" could be any of them. */}
+            {!habitId && visibleYear !== null ? (
+              <Text style={styles.yearBadge}>{visibleYear}</Text>
+            ) : null}
           </View>
-          <HabitHeatmap
-            cells={cells}
-            onDayPress={(c) => setSelectedDay(c.date)}
-            habitName={habit?.name}
-          />
-          <Text style={styles.caption}>
-            Each square is a day · darker is stronger · tap to look back
-            {!habitId && overall && overall.perfectDays > 0
-              ? ` · ${overall.perfectDays} perfect day${overall.perfectDays === 1 ? "" : "s"} filled in solid`
-              : ""}
-          </Text>
-
-          {/* FR-AN3 — the score, sitting under the shape it's derived from. */}
-          {showScore && (
-            <View style={styles.subSection}>
-              <Text style={styles.subLabel} accessibilityRole="header">
-                Your score
+          {habitId ? (
+            <>
+              {/* Tapping shows the date on the square itself — the heatmap
+                  owns that. It used to open the day sheet, which on a
+                  single-habit page had nothing to show: one habit, one tick. */}
+              <HabitHeatmap cells={cells} habitName={habit?.name} />
+              {/* While the grid is still thin, say what's coming instead of
+                  labelling a ramp that has no range yet. */}
+              <Text style={styles.caption}>
+                {early ?? "Each square is a day · tap one for the date"}
               </Text>
-              <ConsistencyScore result={consistency} />
-            </View>
+            </>
+          ) : (
+            <>
+              <HabitWeeks
+                data={weeklyTimeline}
+                emptyLabel="Add a habit and this fills in as you go."
+                onVisibleYearChange={setVisibleYear}
+              />
+              {early ? <Text style={styles.caption}>{early}</Text> : null}
+            </>
           )}
         </View>
 
         {/* Progress — leads with the delta; the rate itself is in the hero. */}
         {showProgress && (
           <View style={styles.section}>
-            <Text style={styles.sectionLabel} accessibilityRole="header">
-              Progress
-            </Text>
+            <View style={styles.sectionHead}>
+              <Text style={styles.sectionLabel} accessibilityRole="header">
+                Progress
+              </Text>
+              <View style={styles.segment} accessibilityRole="tablist">
+                {(["month", "year"] as const).map((m) => {
+                  const on = m === progress.mode;
+                  // Yearly needs two calendar years to compare; until then it
+                  // stays visible but inert, so the option is discoverable
+                  // without pretending it would show anything.
+                  const disabled = m === "year" && !progress.yearlyAvailable;
+                  return (
+                    <TouchableOpacity
+                      key={m}
+                      onPress={() => setProgressMode(m)}
+                      disabled={disabled}
+                      activeOpacity={0.85}
+                      style={[
+                        styles.segItem,
+                        on && styles.segItemOn,
+                        disabled && styles.segItemOff,
+                      ]}
+                      hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+                      accessibilityRole="tab"
+                      accessibilityLabel={
+                        m === "month" ? "Monthly" : "Yearly"
+                      }
+                      accessibilityHint={
+                        disabled ? "Needs a second year of history" : undefined
+                      }
+                      accessibilityState={{ selected: on, disabled }}
+                    >
+                      <Text
+                        style={[
+                          styles.segText,
+                          on && styles.segTextOn,
+                          disabled && styles.segTextOff,
+                        ]}
+                      >
+                        {m === "month" ? "Monthly" : "Yearly"}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
             <Text
               style={[styles.bigDelta, { color: trendUp ? Colors.success : Colors.danger }]}
               accessibilityLabel={`${trendUp ? "Up" : "Down"} ${Math.abs(
@@ -453,64 +446,54 @@ export function AnalysisContent({
                 ? `${month.done} of ${month.days} day${month.days === 1 ? "" : "s"} counted so far this month`
                 : "This month starts counting from the day you added it"}
             </Text>
-            <View style={{ marginTop: 10 }}>
-              <StatSparkline values={series.map((p) => p.rate)} />
-            </View>
-            <Text style={styles.caption}>
-              {range.months > 0 ? `Last ${range.months} months` : `Last ${range.days} days`}
-            </Text>
+            {tooEarly ? (
+              // One month is a reading, not a comparison. Say something worth
+              // reading instead of "not enough data", which blames the user for
+              // being new.
+              <Text style={styles.earlyNote}>
+                {earlyProgressLine(daysTracked)}
+              </Text>
+            ) : (
+              <>
+                <View style={{ marginTop: 14 }}>
+                  <ProgressChart
+                    points={series.map((p) => ({ label: p.label, rate: p.rate }))}
+                  />
+                </View>
+                <Text style={styles.caption}>
+                  {progress.mode === "year"
+                    ? `${series.length} years compared`
+                    : `Last ${series.length} months`}
+                </Text>
+              </>
+            )}
           </View>
         )}
       </View>
 
-      {/* ================= AGAINST YOUR BEST ================= */}
-      {/* One module, not three: the records board leads with the streak
-          record (current vs best, distance to tie), so the old "Longest run"
-          section and its 7/30/100 milestone row are gone — milestones are the
-          stamps' mechanic, one tap away. */}
-      {(showRecords || !habitId) && (
-        <View style={styles.group}>
-          <SectionTitle>Against your best</SectionTitle>
-
-          {/* FR-G2 — records board, streak record on top. */}
-          {showRecords && (
-            <View style={[styles.section, styles.sectionFirst]}>
-              <Text style={styles.sectionLabel} accessibilityRole="header">
-                Records
+      {/* FR-G3 — stamps. The records board that used to head this group is
+          gone (cut 2026-08-20: "now vs best" repeated numbers the hero and
+          Progress already carry). Stamps stay as a standalone doorway rather
+          than a section, so the wall of what you've already done is still one
+          tap away. */}
+      {!habitId && (
+        // Parked, not hidden: a plain View rather than a disabled button, so
+        // there is no tap to swallow and nothing that looks pressable. The
+        // chevron goes too — an arrow that leads nowhere is a broken promise.
+        <View
+          style={[styles.stampsCard, styles.stampsCardSoon]}
+          accessible
+          accessibilityLabel="Stamps, coming soon. Everything you've already done, kept permanently."
+        >
+          <View style={styles.stampsRow}>
+            <View style={styles.stampsText}>
+              <Text style={styles.stampsTitle}>Stamps</Text>
+              <Text style={styles.stampsBlurb}>
+                Everything you&apos;ve already done, kept permanently.
               </Text>
-              <Text style={styles.caption2}>
-                Beaten or tied — never lost. Every one of these is you against you.
-              </Text>
-              <View style={{ height: 6 }} />
-              <RecordsBoard records={records} />
             </View>
-          )}
-
-          {/* FR-G3 — stamps (overview only). A link, not a panel: it stays
-              even when empty, because the stamp wall explains itself. */}
-          {!habitId && (
-            <TouchableOpacity
-              style={[styles.section, !showRecords && styles.sectionFirst]}
-              activeOpacity={0.85}
-              onPress={() => {
-                void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                router.push("/analysis/stamps");
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="Stamps"
-              accessibilityHint="Everything you've already done, kept permanently"
-            >
-              <View style={styles.stampsRow}>
-                <View style={styles.stampsText}>
-                  <Text style={styles.sectionLabel}>Stamps</Text>
-                  <Text style={styles.insight}>
-                    Everything you&apos;ve already done, kept permanently.
-                  </Text>
-                </View>
-                <Text style={styles.chev}>›</Text>
-              </View>
-            </TouchableOpacity>
-          )}
+            <Text style={styles.soonTag}>Coming soon</Text>
+          </View>
         </View>
       )}
 
@@ -526,16 +509,6 @@ export function AnalysisContent({
             </Text>
             <HabitComparison rows={comparison} onSelect={drillInto} />
           </View>
-
-          {/* FR-AN4 — correlations, once there's a pattern worth the name */}
-          {showCorrelations && (
-            <View style={styles.section}>
-              <Text style={styles.sectionLabel} accessibilityRole="header">
-                What goes together
-              </Text>
-              <HabitCorrelations correlations={correlations} habits={habits} />
-            </View>
-          )}
         </View>
       )}
 
@@ -543,7 +516,11 @@ export function AnalysisContent({
       {showJournal && (
         <View style={styles.group}>
           <SectionTitle>Your journal</SectionTitle>
-          <View style={[styles.section, styles.sectionFirst]}>
+          {/* Last section on the screen — `section` pads 18 below itself, which
+              on the final card is just dead paper before the scroll ends. */}
+          <View
+            style={[styles.section, styles.sectionFirst, styles.sectionLast]}
+          >
             <JournalStatsCard stats={journal} loading={entriesLoading} />
           </View>
         </View>
@@ -555,13 +532,7 @@ export function AnalysisContent({
         <Text style={styles.locked}>Still filling in: {listOf(locked)}.</Text>
       )}
 
-      <DayHighlightSheet
-        visible={selectedDay !== null}
-        date={selectedDay}
-        habits={habits}
-        logs={logs}
-        onClose={() => setSelectedDay(null)}
-      />
+
     </View>
   );
 }
@@ -621,7 +592,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     paddingTop: 6,
-    paddingBottom: 18,
+    paddingBottom: 6,
   },
   heroRight: { alignItems: "flex-end" },
   heroLabel: {
@@ -646,31 +617,12 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   // per-habit scope note
-  scopeNote: {
-    borderWidth: 1,
-    borderColor: Hairline.strong,
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    marginTop: 4,
-  },
-  scopeText: {
-    fontSize: 13,
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
-    lineHeight: 20,
-  },
-  scopeLink: {
-    fontSize: 13,
-    color: Colors.ink,
-    fontFamily: Fonts.handwritingSemiBold,
-    marginTop: 8,
-  },
   // groups + sections: the group title carries the weight, so the first
   // section under it skips the rule and only siblings get one.
-  group: { marginTop: 28 },
+  group: { marginTop: 14 },
   section: { paddingVertical: 18, borderTopWidth: 1, borderTopColor: Hairline.strong },
   sectionFirst: { borderTopWidth: 0, paddingTop: 2 },
+  sectionLast: { paddingBottom: 0 },
   subSection: {
     marginTop: 18,
     paddingTop: 16,
@@ -683,11 +635,49 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginBottom: 12,
   },
-  sectionLabel: {
+  segment: { flexDirection: "row", gap: 6 },
+  segItem: {
+    paddingHorizontal: 11,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: Hairline.raised,
+  },
+  segItemOn: { backgroundColor: Colors.ink, borderColor: Colors.ink },
+  segItemOff: { borderColor: Hairline.faint },
+  segText: {
     fontSize: 13,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwritingMedium,
-    letterSpacing: 0.3,
+  },
+  segTextOn: { color: Colors.paper },
+  segTextOff: { opacity: 0.45 },
+  earlyNote: {
+    fontSize: 14,
+    lineHeight: 21,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    paddingVertical: 10,
+  },
+  stampsCardSoon: { opacity: 0.55 },
+  soonTag: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwritingMedium,
+    letterSpacing: 0.2,
+    marginLeft: 12,
+  },
+  yearBadge: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwritingSemiBold,
+    letterSpacing: 0.5,
+  },
+  sectionLabel: {
+    fontSize: 15,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingSemiBold,
+    letterSpacing: 0.2,
     marginBottom: 10,
   },
   subLabel: {
@@ -711,13 +701,30 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   // segmented range
-  segment: { flexDirection: "row", gap: 4, marginBottom: 10 },
-  segItem: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999 },
-  segItemOn: { backgroundColor: Colors.ink },
-  segText: { fontSize: 12, color: Colors.textSecondary, fontFamily: Fonts.handwritingMedium },
-  segTextOn: { color: Colors.paper },
+  // Two ranges now, so the pills can be generous instead of cramped.
+  // stamps — a standalone doorway, same card language as the Manage rows
+  stampsCard: {
+    marginTop: 24,
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    backgroundColor: Colors.card,
+    // The app's card outline (PaperCard): a drawn ink box, not a hairline.
+    borderWidth: 1.5,
+    borderColor: Colors.ink,
+  },
+  stampsTitle: { fontSize: 17, color: Colors.ink, fontFamily: Fonts.handwritingSemiBold },
+  stampsBlurb: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    lineHeight: 20,
+    marginTop: 3,
+  },
   // progress
-  bigDelta: { fontSize: 24, fontFamily: Fonts.handwritingSemiBold },
+  // 19, not 24: at 24 the delta was competing with the hero numbers at the top
+  // of the screen, and it's a supporting figure, not the headline.
+  bigDelta: { fontSize: 19, fontFamily: Fonts.handwritingSemiBold },
   bold: { fontFamily: Fonts.handwritingSemiBold },
   insight: { fontSize: 16, color: Colors.ink, fontFamily: Fonts.handwriting, lineHeight: 24 },
   // what's still filling in
@@ -731,5 +738,4 @@ const styles = StyleSheet.create({
   // stamps row
   stampsRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   stampsText: { flex: 1, marginRight: 12 },
-  chev: { fontSize: 18, color: Colors.textSecondary },
 });

@@ -77,6 +77,7 @@ export const AAD = {
   entry: (dayBucket: string, ownerId: string): string =>
     `banana:v1:entry:${dayBucket}:${ownerId}`,
   habit: (ownerId: string): string => `banana:v1:habit:${ownerId}`,
+  place: (ownerId: string): string => `banana:v1:place:${ownerId}`,
   habitLog: (dayBucket: string, ownerId: string): string =>
     `banana:v1:habitlog:${dayBucket}:${ownerId}`,
   wrapMaster: (userId: string): string => `banana:v1:wrap:master:${userId}`,

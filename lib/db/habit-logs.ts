@@ -327,6 +327,51 @@ async function fetchByMonthBuckets(
 }
 
 /**
+ * Every habit log this user has. For export only — same reasoning as
+ * `getAllEntries`: unfiltered by bucket, paged, and tolerant of a bad row.
+ */
+export async function getAllHabitLogs(
+  userId: string,
+): Promise<ReadResult<HabitLog[]>> {
+  if (!keyring.isUnlocked()) return { ok: false, reason: "locked" };
+  const mk = keyring.getMasterKey();
+
+  const all: HabitLog[] = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from("habit_logs")
+      .select("ciphertext, nonce, day_bucket")
+      .eq("owner_id", userId)
+      .range(from, from + PAGE_SIZE - 1);
+
+    if (error) {
+      if (__DEV__) console.warn("[habit_logs] export fetch failed:", error.message);
+      return { ok: false, reason: error.message };
+    }
+    const rows = data ?? [];
+    for (const row of rows) {
+      try {
+        const payload = decryptJson<HabitLogPayload>(
+          mk,
+          { ciphertext: row.ciphertext, nonce: row.nonce },
+          AAD.habitLog(row.day_bucket, userId),
+        );
+        all.push({
+          habitId: payload.habitId,
+          date: payload.date,
+          completed: payload.completed,
+        });
+      } catch {
+        // Skip the row, keep the export.
+      }
+    }
+    if (rows.length < PAGE_SIZE) break;
+  }
+  all.sort((a, b) => a.date.localeCompare(b.date));
+  return { ok: true, data: all };
+}
+
+/**
  * Read a whole window of months in ONE round trip — the analysis screens
  * asked for twelve months as twelve queries. The client computes the month
  * buckets, so the server learns nothing new; rows are regrouped locally by

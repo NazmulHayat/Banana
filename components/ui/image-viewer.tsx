@@ -1,13 +1,17 @@
 import { Colors, Scrim } from "@/constants/theme";
+import { Image as ExpoImage } from "expo-image";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useState } from "react";
 import {
   Dimensions,
+  FlatList,
   Image,
   Modal,
   Pressable,
   StyleSheet,
   View,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
 } from "react-native";
 import {
   Gesture,
@@ -24,21 +28,53 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { IconSymbol } from "./icon-symbol";
 
 interface ImageViewerProps {
-  uri: string | null;
+  /** Photos to page through, in the order they appear on the card. */
+  uris: string[];
+  /** Which photo opens first. Clamped into range. */
+  initialIndex?: number;
   visible: boolean;
   onClose: () => void;
 }
 
-const AnimatedImage = Animated.createAnimatedComponent(Image);
+interface ZoomablePageProps {
+  uri: string;
+  /** Page size — one full screen per photo, so paging lands on a photo. */
+  width: number;
+  height: number;
+  /** Only the photo on screen keeps its zoom; the rest snap back to 1x. */
+  isActive: boolean;
+  /** Lifted so the pager can stop scrolling while a photo is zoomed in. */
+  onZoomChange: (zoomed: boolean) => void;
+  onClose: () => void;
+  label: string;
+}
 
-export function ImageViewer({ uri, visible, onClose }: ImageViewerProps) {
-  const insets = useSafeAreaInsets();
-  const { width: screenWidth, height: screenHeight } =
-    Dimensions.get("window");
+const AnimatedImage = Animated.createAnimatedComponent(ExpoImage);
+
+/** Anything above this counts as zoomed — pinch never settles exactly on 1. */
+const ZOOM_EPSILON = 1.01;
+const MAX_ZOOM = 5;
+const DOUBLE_TAP_ZOOM = 2.5;
+
+/**
+ * One photo in the pager: pinch, pan and double-tap to zoom, tap to close.
+ * Each page owns its own zoom state so paging away from a zoomed photo and
+ * back doesn't hand the next one a stale transform.
+ */
+function ZoomablePage({
+  uri,
+  width,
+  height,
+  isActive,
+  onZoomChange,
+  onClose,
+  label,
+}: ZoomablePageProps) {
   const [naturalDim, setNaturalDim] = useState<{
     width: number;
     height: number;
   } | null>(null);
+  const [zoomed, setZoomed] = useState(false);
 
   const scale = useSharedValue(1);
   const savedScale = useSharedValue(1);
@@ -48,29 +84,36 @@ export function ImageViewer({ uri, visible, onClose }: ImageViewerProps) {
   const savedTranslateY = useSharedValue(0);
 
   useEffect(() => {
-    if (visible && uri) {
-      Image.getSize(
-        uri,
-        (w, h) => setNaturalDim({ width: w, height: h }),
-        () => setNaturalDim({ width: screenWidth, height: screenHeight }),
-      );
-    }
-    if (!visible) {
-      scale.value = 1;
-      savedScale.value = 1;
-      translateX.value = 0;
-      translateY.value = 0;
-      savedTranslateX.value = 0;
-      savedTranslateY.value = 0;
-      setNaturalDim(null);
-    }
+    let cancelled = false;
+    Image.getSize(
+      uri,
+      (w, h) => {
+        if (!cancelled) setNaturalDim({ width: w, height: h });
+      },
+      // Unmeasurable photo falls back to screen size rather than breaking layout.
+      () => {
+        if (!cancelled) setNaturalDim({ width, height });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [uri, width, height]);
+
+  // A page scrolled off screen returns to 1x, so coming back to it is predictable.
+  useEffect(() => {
+    if (isActive) return;
+    scale.value = 1;
+    savedScale.value = 1;
+    translateX.value = 0;
+    translateY.value = 0;
+    savedTranslateX.value = 0;
+    savedTranslateY.value = 0;
+    setZoomed(false);
     // useSharedValue refs are stable across renders; listing them here
     // satisfies exhaustive-deps without changing when this runs.
   }, [
-    visible,
-    uri,
-    screenWidth,
-    screenHeight,
+    isActive,
     scale,
     savedScale,
     translateX,
@@ -79,28 +122,39 @@ export function ImageViewer({ uri, visible, onClose }: ImageViewerProps) {
     savedTranslateY,
   ]);
 
+  function applyZoomed(next: boolean) {
+    setZoomed(next);
+    onZoomChange(next);
+  }
+
   const pinch = Gesture.Pinch()
+    .onStart(() => {
+      // Claim the gesture immediately so the pager doesn't scroll mid-pinch.
+      runOnJS(applyZoomed)(true);
+    })
     .onUpdate((e) => {
-      scale.value = Math.max(1, Math.min(savedScale.value * e.scale, 5));
+      scale.value = Math.max(1, Math.min(savedScale.value * e.scale, MAX_ZOOM));
     })
     .onEnd(() => {
       savedScale.value = scale.value;
-      if (scale.value <= 1.01) {
+      if (scale.value <= ZOOM_EPSILON) {
         scale.value = withTiming(1);
         translateX.value = withTiming(0);
         translateY.value = withTiming(0);
         savedScale.value = 1;
         savedTranslateX.value = 0;
         savedTranslateY.value = 0;
+        runOnJS(applyZoomed)(false);
       }
     });
 
+  // Only enabled while zoomed: at 1x a horizontal drag belongs to the pager,
+  // and an always-on Pan would swallow the swipe before the list ever saw it.
   const pan = Gesture.Pan()
+    .enabled(zoomed)
     .onUpdate((e) => {
-      if (scale.value > 1) {
-        translateX.value = savedTranslateX.value + e.translationX;
-        translateY.value = savedTranslateY.value + e.translationY;
-      }
+      translateX.value = savedTranslateX.value + e.translationX;
+      translateY.value = savedTranslateY.value + e.translationY;
     })
     .onEnd(() => {
       savedTranslateX.value = translateX.value;
@@ -117,9 +171,11 @@ export function ImageViewer({ uri, visible, onClose }: ImageViewerProps) {
         savedScale.value = 1;
         savedTranslateX.value = 0;
         savedTranslateY.value = 0;
+        runOnJS(applyZoomed)(false);
       } else {
-        scale.value = withTiming(2.5);
-        savedScale.value = 2.5;
+        scale.value = withTiming(DOUBLE_TAP_ZOOM);
+        savedScale.value = DOUBLE_TAP_ZOOM;
+        runOnJS(applyZoomed)(true);
       }
     });
 
@@ -127,7 +183,7 @@ export function ImageViewer({ uri, visible, onClose }: ImageViewerProps) {
     .numberOfTaps(1)
     .requireExternalGestureToFail(doubleTap)
     .onEnd(() => {
-      if (scale.value <= 1.01) {
+      if (scale.value <= ZOOM_EPSILON) {
         runOnJS(onClose)();
       }
     });
@@ -145,22 +201,69 @@ export function ImageViewer({ uri, visible, onClose }: ImageViewerProps) {
     ],
   }));
 
-  if (!uri) return null;
-
+  // Fit the photo inside the page without cropping it.
   const aspectRatio = naturalDim
     ? naturalDim.width / naturalDim.height
-    : screenWidth / screenHeight;
-  const displayWidth = screenWidth;
-  const displayHeight =
-    aspectRatio >= screenWidth / screenHeight
-      ? screenWidth / aspectRatio
-      : screenHeight;
-  const finalWidth =
-    aspectRatio >= screenWidth / screenHeight
-      ? displayWidth
-      : screenHeight * aspectRatio;
-  const finalHeight =
-    aspectRatio >= screenWidth / screenHeight ? displayHeight : screenHeight;
+    : width / height;
+  const fitsByWidth = aspectRatio >= width / height;
+  const finalWidth = fitsByWidth ? width : height * aspectRatio;
+  const finalHeight = fitsByWidth ? width / aspectRatio : height;
+
+  return (
+    <View style={{ width, height }}>
+      <GestureDetector gesture={composed}>
+        <Animated.View style={styles.page}>
+          <AnimatedImage
+            // `cacheKey` is the uri here: viewer sources are already full
+            // signed URLs handed down per photo, and the pager remounts pages
+            // by index, so the path isn't available. The feed's thumbnail
+            // cache is what carries the repeat-view win.
+            source={{ uri }}
+            style={[{ width: finalWidth, height: finalHeight }, imageStyle]}
+            contentFit="contain"
+            cachePolicy="memory-disk"
+            recyclingKey={uri}
+            transition={120}
+            accessibilityRole="image"
+            accessibilityLabel={label}
+            accessibilityHint="Double tap to zoom, tap once to close"
+          />
+        </Animated.View>
+      </GestureDetector>
+    </View>
+  );
+}
+
+/**
+ * Full-screen photo viewer. Opens on the photo that was tapped and pages
+ * horizontally through the rest of the entry's photos.
+ */
+export function ImageViewer({
+  uris,
+  initialIndex = 0,
+  visible,
+  onClose,
+}: ImageViewerProps) {
+  const insets = useSafeAreaInsets();
+  const { width: screenWidth, height: screenHeight } = Dimensions.get("window");
+
+  const lastIndex = Math.max(uris.length - 1, 0);
+  const start = Math.min(Math.max(initialIndex, 0), lastIndex);
+  const [index, setIndex] = useState(start);
+  const [scrollEnabled, setScrollEnabled] = useState(true);
+  // Every open starts on the tapped photo, at 1x, scrollable again.
+  useEffect(() => {
+    if (!visible) return;
+    setIndex(start);
+    setScrollEnabled(true);
+  }, [visible, start]);
+
+  if (uris.length === 0) return null;
+
+  function handleMomentumEnd(e: NativeSyntheticEvent<NativeScrollEvent>) {
+    const next = Math.round(e.nativeEvent.contentOffset.x / screenWidth);
+    setIndex(Math.min(Math.max(next, 0), lastIndex));
+  }
 
   return (
     <Modal
@@ -175,21 +278,54 @@ export function ImageViewer({ uri, visible, onClose }: ImageViewerProps) {
         {/* The viewer covers everything — hide the page behind it from
             VoiceOver so swiping can't wander off the photo. */}
         <View style={styles.backdrop} accessibilityViewIsModal>
-          <GestureDetector gesture={composed}>
-            <Animated.View style={styles.imageContainer}>
-              <AnimatedImage
-                source={{ uri }}
-                style={[
-                  { width: finalWidth, height: finalHeight },
-                  imageStyle,
-                ]}
-                resizeMode="contain"
-                accessibilityRole="image"
-                accessibilityLabel="Attached photo"
-                accessibilityHint="Double tap to zoom, swipe down to close"
+          <FlatList
+            // Remounting per open is what makes initialScrollIndex land on the
+            // tapped photo; it only applies on mount.
+            key={visible ? `open-${start}` : "closed"}
+            data={uris}
+            keyExtractor={(uri, i) => `${i}:${uri}`}
+            horizontal
+            pagingEnabled
+            scrollEnabled={scrollEnabled}
+            showsHorizontalScrollIndicator={false}
+            initialScrollIndex={start}
+            getItemLayout={(_, i) => ({
+              length: screenWidth,
+              offset: screenWidth * i,
+              index: i,
+            })}
+            onMomentumScrollEnd={handleMomentumEnd}
+            renderItem={({ item, index: i }) => (
+              <ZoomablePage
+                uri={item}
+                width={screenWidth}
+                height={screenHeight}
+                isActive={i === index}
+                onZoomChange={(zoomed) => setScrollEnabled(!zoomed)}
+                onClose={onClose}
+                label={
+                  uris.length > 1
+                    ? `Photo ${i + 1} of ${uris.length}`
+                    : "Attached photo"
+                }
               />
-            </Animated.View>
-          </GestureDetector>
+            )}
+          />
+          {uris.length > 1 ? (
+            <View
+              style={[styles.dots, { bottom: insets.bottom + 24 }]}
+              pointerEvents="none"
+              accessibilityElementsHidden
+              importantForAccessibility="no-hide-descendants"
+            >
+              {uris.map((uri, i) => (
+                <View
+                  key={`${i}:${uri}`}
+                  style={[styles.dot, i === index ? styles.dotActive : null]}
+                />
+              ))}
+            </View>
+          ) : null}
           <Pressable
             onPress={onClose}
             style={[styles.closeButton, { top: insets.top + 12 }]}
@@ -215,16 +351,31 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
-  imageContainer: {
+  page: {
     flex: 1,
-    width: "100%",
     justifyContent: "center",
     alignItems: "center",
+  },
+  dots: {
+    position: "absolute",
+    flexDirection: "row",
+    alignSelf: "center",
+    gap: 6,
+  },
+  dot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: Scrim.photoBorder,
+  },
+  dotActive: {
+    backgroundColor: Colors.paper,
   },
   closeButton: {
     position: "absolute",
     right: 16,
   },
+
   closeButtonInner: {
     width: 36,
     height: 36,

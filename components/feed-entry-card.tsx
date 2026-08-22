@@ -5,12 +5,15 @@ import {
   ImageDimension,
   LayoutType,
 } from "@/lib/layout-algorithm";
-import { getImageUrl } from "@/lib/media";
+import type { SavedPlace } from "@/lib/db";
+import { resolvePlaceHeading } from "@/lib/location";
+import { getImageUrls, thumbPathFor } from "@/lib/media";
 import { useEffect, useState } from "react";
+import { Image } from "expo-image";
 import {
   ActivityIndicator,
+  Image as RNImage,
   Dimensions,
-  Image,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -23,73 +26,162 @@ import { PaperCard } from "./ui/paper-card";
 
 interface FeedEntryCardProps {
   entry: DailyEntry;
-  /** Optional small timestamp shown in the top-right of the card. */
+  /** Small timestamp in the card's top-left — each entry has its own. */
   timeLabel?: string;
   /** Show the edit pencil; called when tapped. */
   onEdit?: (entry: DailyEntry) => void;
   /** Show the delete affordance; called when tapped. */
   onDelete?: (entry: DailyEntry) => void;
+  /** Tapping the place tag. Omit to render the tag as plain, untappable text. */
+  onEditPlace?: (entry: DailyEntry) => void;
+  /**
+   * The user's saved place names. The tag is resolved against these at render
+   * time, so renaming a place re-labels every entry there at once.
+   */
+  savedPlaces?: SavedPlace[];
 }
 
 interface ResolvedImage {
   path: string;
   /** null when the signed URL couldn't be minted — the tile becomes a retry. */
   url: string | null;
+  /** Small derivative for the grid; falls back to `url` when there isn't one. */
+  thumbUrl: string | null;
   dim: ImageDimension;
 }
 
 /** Fallback size for a photo we couldn't measure (or couldn't reach at all). */
 const FALLBACK_DIM: ImageDimension = { width: 400, height: 300 };
 
-/** Top row: optional timestamp on the left, edit/delete actions on the right. */
+// ----------------------------------------------------------------------------
+// Resolution cache
+// ----------------------------------------------------------------------------
+// Swiping months unmounts every card and mounts a new set, so without this the
+// whole resolve ran again on the way back: URLs re-read, legacy photos
+// re-measured over the network, and a spinner flashed over images already
+// sitting in expo-image's disk cache. Module scope on purpose — it has to
+// outlive the component, and it holds only URLs and sizes, never image bytes.
+const resolvedCache = new Map<string, ResolvedImage[]>();
+/** Measured sizes for pre-`media` photos, keyed by path. Measured once, ever. */
+const measuredDims = new Map<string, ImageDimension>();
+
+/** Cache key: the entry AND its photo set, so an edit invalidates it. */
+function resolutionKey(entry: DailyEntry): string {
+  return `${entry.id}:${(entry.mediaPaths ?? []).join(",")}`;
+}
+
+/** Dropped on sign-out / account purge via the store's clearAll path. */
+export function clearFeedImageCache(): void {
+  resolvedCache.clear();
+  measuredDims.clear();
+}
+
+/**
+ * Last resort for entries written before dimensions were stored. This downloads
+ * the file to read its header, which is exactly why nothing new relies on it.
+ */
+function measureRemote(url: string): Promise<ImageDimension> {
+  return new Promise((resolve) => {
+    RNImage.getSize(
+      url,
+      (width, height) => resolve({ width, height }),
+      () => resolve(FALLBACK_DIM),
+    );
+  });
+}
+
+/**
+ * The place tag. Underlined on purpose: it's the app's guess at where you were,
+ * and an underline is the plainest way to say "this is editable" without adding
+ * a button to every card.
+ */
+function PlaceTag({
+  entry,
+  onEditPlace,
+  savedPlaces,
+}: {
+  entry: DailyEntry;
+  onEditPlace?: (entry: DailyEntry) => void;
+  savedPlaces?: SavedPlace[];
+}) {
+  if (!entry.place) return null;
+  // The saved name wins over the one the entry was given, which is what makes
+  // a rename in Manage propagate everywhere without rewriting any history.
+  const heading = resolvePlaceHeading(entry.place, savedPlaces ?? []);
+  const label = `@${heading}`;
+  if (!onEditPlace) {
+    return <Text style={styles.placeTag}>{label}</Text>;
+  }
+  return (
+    <TouchableOpacity
+      activeOpacity={0.85}
+      onPress={() => onEditPlace(entry)}
+      style={styles.placeTagHit}
+      accessibilityRole="button"
+      accessibilityLabel={`Written at ${heading}`}
+      accessibilityHint="Tap to rename this place"
+    >
+      <Text style={[styles.placeTag, styles.placeTagLink]}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
+/** Top strip: time and place on the left, edit/delete on the right. */
 function CardHeader({
   entry,
   timeLabel,
   onEdit,
   onDelete,
+  onEditPlace,
+  savedPlaces,
 }: {
   entry: DailyEntry;
   timeLabel?: string;
   onEdit?: (entry: DailyEntry) => void;
   onDelete?: (entry: DailyEntry) => void;
+  onEditPlace?: (entry: DailyEntry) => void;
+  savedPlaces?: SavedPlace[];
 }) {
   const showActions = Boolean(onEdit || onDelete);
-  if (!timeLabel && !showActions) return null;
+  if (!timeLabel && !showActions && !entry.place) return null;
   return (
     <View style={styles.header}>
-      {timeLabel ? (
-        <Text style={styles.timeLabel}>{timeLabel}</Text>
-      ) : (
-        <View />
-      )}
-      {showActions && (
+      <View style={styles.headerLeft}>
+        {timeLabel ? <Text style={styles.timeLabel}>{timeLabel}</Text> : null}
+        <PlaceTag
+          entry={entry}
+          onEditPlace={onEditPlace}
+          savedPlaces={savedPlaces}
+        />
+      </View>
+      {showActions ? (
         <View style={styles.actions}>
           {onEdit && (
             <IconButton
-              size={32}
+              size={28}
               onPress={() => onEdit(entry)}
               accessibilityLabel="Edit highlight"
               accessibilityHint={
                 timeLabel ? `Saved at ${timeLabel}` : undefined
               }
             >
-              <IconSymbol name="pencil" size={17} color={Colors.textSecondary} />
+              <IconSymbol name="pencil" size={15} color={Colors.textSecondary} />
             </IconButton>
           )}
           {onDelete && (
             <IconButton
-              size={32}
+              size={28}
               onPress={() => onDelete(entry)}
               accessibilityLabel="Delete highlight"
               accessibilityHint={
                 timeLabel ? `Saved at ${timeLabel}` : undefined
               }
             >
-              <IconSymbol name="trash" size={16} color={Colors.textSecondary} />
+              <IconSymbol name="trash" size={15} color={Colors.textSecondary} />
             </IconButton>
           )}
         </View>
-      )}
+      ) : null}
     </View>
   );
 }
@@ -99,14 +191,30 @@ export function FeedEntryCard({
   timeLabel,
   onEdit,
   onDelete,
+  onEditPlace,
+  savedPlaces,
 }: FeedEntryCardProps) {
-  const [resolved, setResolved] = useState<ResolvedImage[]>([]);
+  // Seeded straight from the cache when we've resolved this entry before, so
+  // a revisited month paints immediately instead of flashing a spinner.
+  const cached = resolvedCache.get(resolutionKey(entry)) ?? null;
+  const [resolved, setResolved] = useState<ResolvedImage[]>(cached ?? []);
   const [layoutDecision, setLayoutDecision] = useState<{
     layoutType: LayoutType;
     imageCount: number;
-  } | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [viewerUri, setViewerUri] = useState<string | null>(null);
+  } | null>(
+    cached
+      ? {
+          layoutType: determineLayout(
+            entry,
+            cached.map((i) => i.dim),
+          ).layoutType,
+          imageCount: cached.length,
+        }
+      : null,
+  );
+  const [loading, setLoading] = useState(cached === null);
+  // Index into `viewerUris` — the viewer opens on the tapped photo and pages.
+  const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   // Bumped by the retry tile: signed URLs are only cached on success, so a
   // re-run asks the server again.
   const [attempt, setAttempt] = useState(0);
@@ -116,6 +224,23 @@ export function FeedEntryCard({
 
     async function load() {
       const paths = entry.mediaPaths ?? [];
+      // Already resolved this exact entry + photo set — nothing to fetch.
+      // `attempt` is bumped only by the retry tile, which must bypass this.
+      const key = resolutionKey(entry);
+      const hit = attempt === 0 ? resolvedCache.get(key) : undefined;
+      if (hit) {
+        setResolved(hit);
+        const decision = determineLayout(
+          entry,
+          hit.map((i) => i.dim),
+        );
+        setLayoutDecision({
+          layoutType: decision.layoutType,
+          imageCount: hit.length,
+        });
+        setLoading(false);
+        return;
+      }
       if (paths.length === 0) {
         setResolved([]);
         setLayoutDecision({ layoutType: "TEXT_ONLY", imageCount: 0 });
@@ -123,27 +248,49 @@ export function FeedEntryCard({
         return;
       }
 
-      // Resolve signed URLs for each path, then fetch dimensions
-      const items: ResolvedImage[] = [];
-      for (const path of paths) {
-        const url = await getImageUrl(path);
+      // Mint every URL at once — full sizes and thumbnails together. These
+      // used to run one after another, so a four-photo card paid four
+      // sequential round trips before it could draw anything.
+      const [fullUrls, thumbUrls] = await Promise.all([
+        getImageUrls(paths),
+        getImageUrls(paths.map(thumbPathFor)),
+      ]);
+      if (cancelled) return;
+
+      // Dimensions come from the entry, written at upload time. Entries from
+      // before that field existed are measured once, in parallel, and only
+      // those.
+      const known = new Map(
+        (entry.media ?? []).map((m) => [m.path, m] as const),
+      );
+      const measured = await Promise.all(
+        paths.map(async (path, i) => {
+          const stored = known.get(path);
+          if (stored) return { width: stored.width, height: stored.height };
+          // Pre-`media` photo: measuring downloads the file, so remember it.
+          const remembered = measuredDims.get(path);
+          if (remembered) return remembered;
+          const url = fullUrls[i];
+          if (!url) return FALLBACK_DIM;
+          const dim = await measureRemote(url);
+          measuredDims.set(path, dim);
+          return dim;
+        }),
+      );
+
+      const items: ResolvedImage[] = paths.map((path, i) => ({
+        path,
         // A photo whose URL failed used to vanish, so a photo-only entry
         // rendered as an empty card. Keep its place and offer a retry.
-        if (!url) {
-          items.push({ path, url: null, dim: FALLBACK_DIM });
-          continue;
-        }
-        const dim = await new Promise<ImageDimension>((resolveDim) => {
-          Image.getSize(
-            url,
-            (width, height) => resolveDim({ width, height }),
-            () => resolveDim(FALLBACK_DIM),
-          );
-        });
-        items.push({ path, url, dim });
-      }
+        url: fullUrls[i],
+        thumbUrl: thumbUrls[i],
+        dim: measured[i],
+      }));
 
       if (cancelled) return;
+      // Only cache a fully resolved set — a card that failed to mint URLs must
+      // be allowed to try again on the next mount.
+      if (items.every((i) => i.url !== null)) resolvedCache.set(key, items);
       setResolved(items);
       const decision = determineLayout(
         entry,
@@ -156,7 +303,7 @@ export function FeedEntryCard({
       setLoading(false);
     }
 
-    setLoading(true);
+    if (!resolvedCache.has(resolutionKey(entry)) || attempt > 0) setLoading(true);
     void load();
 
     return () => {
@@ -172,6 +319,8 @@ export function FeedEntryCard({
           timeLabel={timeLabel}
           onEdit={onEdit}
           onDelete={onDelete}
+          onEditPlace={onEditPlace}
+          savedPlaces={savedPlaces}
         />
         {entry.text ? <Text style={styles.text}>{entry.text}</Text> : null}
         {(entry.mediaPaths ?? []).length > 0 && (
@@ -184,6 +333,9 @@ export function FeedEntryCard({
   }
 
   const { layoutType, imageCount } = layoutDecision;
+  // Only photos that actually resolved are pageable; a failed tile is a retry
+  // button, not a photo, so it must not take up a slot in the viewer.
+  const viewerUris = resolved.flatMap((item) => (item.url ? [item.url] : []));
 
   return (
     <>
@@ -193,6 +345,8 @@ export function FeedEntryCard({
           timeLabel={timeLabel}
           onEdit={onEdit}
           onDelete={onDelete}
+          onEditPlace={onEditPlace}
+          savedPlaces={savedPlaces}
         />
         {layoutType === "TEXT_ONLY" && (
           <>
@@ -204,15 +358,16 @@ export function FeedEntryCard({
             entry={entry}
             resolved={resolved}
             imageCount={imageCount}
-            onImagePress={(url) => setViewerUri(url)}
+            onImagePress={(i) => setViewerIndex(i)}
             onRetry={() => setAttempt((a) => a + 1)}
           />
         )}
       </PaperCard>
       <ImageViewer
-        uri={viewerUri}
-        visible={viewerUri !== null}
-        onClose={() => setViewerUri(null)}
+        uris={viewerUris}
+        initialIndex={viewerIndex ?? 0}
+        visible={viewerIndex !== null}
+        onClose={() => setViewerIndex(null)}
       />
     </>
   );
@@ -228,7 +383,8 @@ function TextWithImagesLayout({
   entry: DailyEntry;
   resolved: ResolvedImage[];
   imageCount: number;
-  onImagePress: (url: string) => void;
+  /** Index of the tapped photo among the ones that resolved. */
+  onImagePress: (viewerIndex: number) => void;
   /** Ask for the signed URLs again after one couldn't be minted. */
   onRetry: () => void;
 }) {
@@ -240,6 +396,13 @@ function TextWithImagesLayout({
   // Single-image height cap so a tall portrait doesn't take over the screen.
   // Multi-image grids fill the full card width with square thumbnails.
   const MAX_SINGLE_HEIGHT = 320;
+
+  // Tile position -> position in the viewer's pager. They diverge as soon as
+  // one photo fails to resolve, since failed tiles aren't pageable.
+  const viewerIndexByPath = new Map<string, number>();
+  for (const item of resolved) {
+    if (item.url) viewerIndexByPath.set(item.path, viewerIndexByPath.size);
+  }
 
   return (
     <>
@@ -336,19 +499,39 @@ function TextWithImagesLayout({
             <TouchableOpacity
               key={item.path}
               activeOpacity={0.85}
-              onPress={() => onImagePress(url)}
+              onPress={() => onImagePress(viewerIndexByPath.get(item.path) ?? 0)}
               style={{ marginRight, marginBottom }}
               accessibilityRole="button"
               accessibilityLabel={`Photo ${index + 1} of ${imageCount}`}
-              accessibilityHint="Opens the photo full screen"
+              accessibilityHint={
+                viewerIndexByPath.size > 1
+                  ? "Opens the photo full screen. Swipe to see the others."
+                  : "Opens the photo full screen"
+              }
             >
               <Image
-                source={{ uri: url }}
+                // The grid shows the ~25 KB thumbnail; the full image is only
+                // fetched when the viewer opens.
+                source={{
+                  uri: item.thumbUrl ?? url,
+                  // Keyed by PATH, not URL. Signed URLs rotate hourly, and
+                  // expo-image caches by URL — without this every photo
+                  // re-downloaded roughly every 50 minutes despite already
+                  // being on disk, which defeated the whole cache.
+                  cacheKey: item.thumbUrl ? thumbPathFor(item.path) : item.path,
+                }}
                 style={[
                   styles.image,
                   { width: imageWidth, height: imageHeight },
                 ]}
-                resizeMode="cover"
+                contentFit="cover"
+                // Disk + memory cache: scrolling back to a card is free, and
+                // so is reopening the app.
+                cachePolicy="memory-disk"
+                // Keyed by path so a recycled row can't briefly show the
+                // previous entry's photo.
+                recyclingKey={item.path}
+                transition={120}
               />
             </TouchableOpacity>
           );
@@ -364,21 +547,43 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 6,
-    marginTop: -4,
-    marginRight: -4,
+    // Pulled up into the card's own top padding and given no bottom margin:
+    // this strip is chrome, so it shouldn't cost a full row above the text.
+    marginTop: -10,
+    marginRight: -6,
+    marginBottom: 0,
   },
   actions: {
     flexDirection: "row",
     alignItems: "center",
   },
+  headerLeft: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  placeTagHit: { alignSelf: "center" },
+  placeTag: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    letterSpacing: 0.2,
+    opacity: 0.75,
+  },
+  placeTagLink: {
+    textDecorationLine: "underline",
+    // A dotted rule reads as "provisional" rather than "link" — this is a
+    // guess the app made, and you're invited to correct it.
+    textDecorationStyle: "dotted",
+  },
   timeLabel: {
-    fontSize: 11,
-    fontWeight: "600",
+    fontSize: 12,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
     letterSpacing: 0.3,
-    opacity: 0.85,
+    opacity: 0.75,
   },
   loadingImages: {
     marginTop: 8,

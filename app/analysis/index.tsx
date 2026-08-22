@@ -20,7 +20,9 @@ export default function AnalysisScreen() {
       <ScreenHeader title="Stats & analysis" />
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: insets.bottom + 60 }}
+        // The safe-area inset already clears the home indicator; +60 on top of
+        // it left a screenful of dead paper under the last card.
+        contentContainerStyle={{ paddingBottom: insets.bottom + 16 }}
       >
         <AnalysisContent
           habits={habits}

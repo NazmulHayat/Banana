@@ -7,10 +7,75 @@
 // protected by Supabase's at-rest encryption + RLS only. v1.1 will add full
 // per-image encryption.
 
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { File } from "expo-file-system";
+import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import { supabase } from "../supabase";
+import { objectPathsFor, thumbPathFor } from "./paths";
+
+// Path conventions live in ./paths (no native imports, so they're testable).
+export { objectPathsFor, THUMB_SUFFIX, thumbPathFor } from "./paths";
 
 const BUCKET = "private-media";
+
+// ----------------------------------------------------------------------------
+// Derivatives
+// ----------------------------------------------------------------------------
+// A phone camera writes 3–5 MB, 4000px files. Nothing on a 6" screen can show
+// that, so uploading the original spends the user's data and their patience on
+// pixels they will never see. Two derivatives go up instead:
+//
+//   display — the one the viewer shows. 2048px is past Retina for any phone,
+//             so this is visually indistinguishable from the original.
+//   thumb   — the one the feed grid shows. Tiles are ~160pt; 512px covers 3x.
+//
+// The feed therefore pulls ~25 KB per photo instead of ~4 MB. That is the whole
+// speed win — everything else is caching on top of it.
+
+/** Longest edge of the full-size copy, in pixels. */
+const DISPLAY_MAX_EDGE = 2048;
+/** JPEG quality of the full-size copy. 0.8 is the usual "can't tell" threshold. */
+const DISPLAY_QUALITY = 0.8;
+/** Longest edge of the grid thumbnail. */
+const THUMB_MAX_EDGE = 512;
+const THUMB_QUALITY = 0.6;
+
+export interface ResizedImage {
+  uri: string;
+  width: number;
+  height: number;
+}
+
+/**
+ * Downscale to fit `maxEdge` and re-encode as JPEG. Never upscales: a small
+ * image is left alone rather than being blown up and re-compressed.
+ */
+async function resize(
+  localUri: string,
+  maxEdge: number,
+  quality: number,
+): Promise<ResizedImage> {
+  const context = ImageManipulator.manipulate(localUri);
+  let rendered = await context.renderAsync();
+  const longest = Math.max(rendered.width, rendered.height);
+  // Scale by the LONGEST edge, not by width: a portrait photo constrained to
+  // 2048 wide would come out 2731 tall, which is not what "max 2048" means.
+  // And never upscale — a small image is left exactly as it is rather than
+  // being blown up and re-compressed for nothing.
+  if (longest > maxEdge) {
+    const scale = maxEdge / longest;
+    context.resize({
+      width: Math.round(rendered.width * scale),
+      height: Math.round(rendered.height * scale),
+    });
+    rendered = await context.renderAsync();
+  }
+  const saved = await rendered.saveAsync({
+    format: SaveFormat.JPEG,
+    compress: quality,
+  });
+  return { uri: saved.uri, width: saved.width, height: saved.height };
+}
 
 // `list()` is capped per request, so every listing pages with an offset.
 const LIST_PAGE_SIZE = 500;
@@ -69,23 +134,83 @@ export async function uploadImage(
   localUri: string,
   entryId: string,
   userId: string,
-): Promise<string> {
-  const ext = guessExt(localUri);
+): Promise<UploadedImage> {
   const mediaId = generateMediaId();
-  const objectPath = `${userId}/${entryId}/${mediaId}.${ext}`;
+  // Always .jpg: both derivatives are re-encoded, so the source extension
+  // (HEIC especially) says nothing about what actually gets stored.
+  const objectPath = `${userId}/${entryId}/${mediaId}.jpg`;
 
-  await putObject(localUri, objectPath);
+  const display = await resize(localUri, DISPLAY_MAX_EDGE, DISPLAY_QUALITY);
+  await putObject(display.uri, objectPath);
 
-  return objectPath;
+  // The thumbnail is an optimisation, not the photo. If it fails the entry
+  // still has its image — the grid just falls back to the full one.
+  try {
+    // Derived from the 2048px copy, not the 4000px original: decoding the
+    // original twice burned CPU and battery for a 512px result nobody can
+    // tell apart.
+    const thumb = await resize(display.uri, THUMB_MAX_EDGE, THUMB_QUALITY);
+    await putObject(thumb.uri, thumbPathFor(objectPath));
+  } catch (e) {
+    if (__DEV__) console.warn("[media] thumbnail failed, using full size:", e);
+  }
+
+  return { path: objectPath, width: display.width, height: display.height };
 }
 
+// Signed URLs are cached in memory AND on disk. In-memory alone meant every
+// cold start re-minted a URL for every visible photo before anything could
+// render — a round trip per image, paid on the slowest screen in the app.
+// Storage key is a protocol constant, not branding — see CLAUDE.md.
+const URL_CACHE_STORAGE_KEY = "banana_media_urls_v1";
 const urlCache = new Map<string, { url: string; expiresAt: number }>();
+let urlCacheHydrated = false;
+let urlCacheDirty = false;
+
+/** Load the persisted URL cache once per launch. Never throws. */
+async function hydrateUrlCache(): Promise<void> {
+  if (urlCacheHydrated) return;
+  urlCacheHydrated = true;
+  try {
+    const raw = await AsyncStorage.getItem(URL_CACHE_STORAGE_KEY);
+    if (!raw) return;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return;
+    const now = Date.now();
+    for (const [path, value] of Object.entries(
+      parsed as Record<string, { url?: unknown; expiresAt?: unknown }>,
+    )) {
+      const { url, expiresAt } = value ?? {};
+      // Drop anything already expired rather than handing back a dead URL.
+      if (typeof url !== "string") continue;
+      if (typeof expiresAt !== "number" || expiresAt <= now) continue;
+      if (!urlCache.has(path)) urlCache.set(path, { url, expiresAt });
+    }
+  } catch (e) {
+    if (__DEV__) console.warn("[media] URL cache read failed:", e);
+  }
+}
+
+/** Fire-and-forget flush. A lost cache costs a re-mint, never data. */
+function persistUrlCache(): void {
+  if (!urlCacheDirty) return;
+  urlCacheDirty = false;
+  const now = Date.now();
+  const out: Record<string, { url: string; expiresAt: number }> = {};
+  for (const [path, value] of urlCache) {
+    if (value.expiresAt > now) out[path] = value;
+  }
+  void AsyncStorage.setItem(URL_CACHE_STORAGE_KEY, JSON.stringify(out)).catch(
+    () => {},
+  );
+}
 
 /**
  * Get a temporary signed URL for displaying the image.
  * Cached for ~50 minutes (signed URLs expire after 1 hour).
  */
 export async function getImageUrl(objectPath: string): Promise<string | null> {
+  await hydrateUrlCache();
   const now = Date.now();
   const cached = urlCache.get(objectPath);
   if (cached && cached.expiresAt > now) {
@@ -106,8 +231,64 @@ export async function getImageUrl(objectPath: string): Promise<string | null> {
     url: data.signedUrl,
     expiresAt: now + 50 * 60 * 1000, // 50 min, leave buffer
   });
+  urlCacheDirty = true;
+  persistUrlCache();
 
   return data.signedUrl;
+}
+
+/**
+ * Signed URLs for many paths at once. Minting is a network round trip each, so
+ * doing them in sequence made a four-photo card four times slower than it had
+ * to be. Cache hits resolve instantly and cost nothing here.
+ */
+export async function getImageUrls(
+  objectPaths: string[],
+): Promise<(string | null)[]> {
+  if (objectPaths.length === 0) return [];
+  await hydrateUrlCache();
+  const now = Date.now();
+
+  // Serve what's already cached, and collect only the misses. A scrolled feed
+  // is mostly hits, so this is usually zero network.
+  const result: (string | null)[] = new Array(objectPaths.length).fill(null);
+  const missing: string[] = [];
+  objectPaths.forEach((path, i) => {
+    const cached = urlCache.get(path);
+    if (cached && cached.expiresAt > now) result[i] = cached.url;
+    else if (!missing.includes(path)) missing.push(path);
+  });
+  if (missing.length === 0) return result;
+
+  // ONE request for every miss. Minting them individually meant a 20-entry
+  // feed issued ~160 round trips where one would do.
+  const { data, error } = await supabase.storage
+    .from(BUCKET)
+    .createSignedUrls(missing, 60 * 60);
+
+  if (error || !data) {
+    if (__DEV__) console.warn("[media] batch signed URLs failed:", error?.message);
+    return result;
+  }
+
+  const minted = new Map<string, string>();
+  for (const row of data) {
+    // A missing thumbnail is normal (entries from before they existed), so a
+    // per-row error is expected traffic, not a failure.
+    if (row.error || !row.signedUrl || !row.path) continue;
+    minted.set(row.path, row.signedUrl);
+    urlCache.set(row.path, {
+      url: row.signedUrl,
+      expiresAt: now + 50 * 60 * 1000,
+    });
+  }
+  urlCacheDirty = true;
+  persistUrlCache();
+
+  objectPaths.forEach((path, i) => {
+    if (result[i] === null) result[i] = minted.get(path) ?? null;
+  });
+  return result;
 }
 
 /** Remove a single object. Returns false if the server refused. */
@@ -135,8 +316,16 @@ export async function deleteImages(
   const deleted: string[] = [];
   const failed: string[] = [];
 
-  for (let i = 0; i < objectPaths.length; i += REMOVE_BATCH_SIZE) {
-    const batch = objectPaths.slice(i, i + REMOVE_BATCH_SIZE);
+  // Take each photo's thumbnail with it. Expanding here rather than at every
+  // call site means no delete path — entry delete, upload rollback, account
+  // purge — can leave a thumbnail orphaned in the bucket. Paths with no
+  // thumbnail (avatars, pre-thumbnail photos) simply have nothing to remove.
+  const withThumbs = objectPaths.flatMap((path) =>
+    path.includes(`/${AVATAR_FOLDER}/`) ? [path] : objectPathsFor(path),
+  );
+
+  for (let i = 0; i < withThumbs.length; i += REMOVE_BATCH_SIZE) {
+    const batch = withThumbs.slice(i, i + REMOVE_BATCH_SIZE);
     const { error } = await supabase.storage.from(BUCKET).remove(batch);
     if (error) {
       // Never log the paths themselves — they carry the user + entry ids.
@@ -173,9 +362,22 @@ export async function discardEntryImages(objectPaths: string[]): Promise<void> {
   }
 }
 
-/** Result of uploading a whole entry's worth of photos. */
+/** One stored photo: where it lives and how big it is. */
+export interface UploadedImage {
+  path: string;
+  width: number;
+  height: number;
+}
+
+/**
+ * Result of uploading a whole entry's worth of photos.
+ *
+ * `paths` stays for every existing caller (it is what the entry stores and what
+ * rollback deletes); `images` carries the dimensions alongside, so nothing has
+ * to download an image later just to find out how tall it is.
+ */
 export type UploadEntryImagesResult =
-  | { status: "ok"; paths: string[] }
+  | { status: "ok"; paths: string[]; images: UploadedImage[] }
   | { status: "failed"; reason: string };
 
 /**
@@ -196,17 +398,21 @@ export async function uploadEntryImages(
   entryId: string,
   userId: string,
 ): Promise<UploadEntryImagesResult> {
-  if (localUris.length === 0) return { status: "ok", paths: [] };
+  if (localUris.length === 0) return { status: "ok", paths: [], images: [] };
 
-  const uploaded: string[] = [];
+  const uploaded: UploadedImage[] = [];
   try {
     for (const uri of localUris) {
       uploaded.push(await uploadImage(uri, entryId, userId));
     }
-    return { status: "ok", paths: uploaded };
+    return {
+      status: "ok",
+      paths: uploaded.map((u) => u.path),
+      images: uploaded,
+    };
   } catch (err) {
     if (__DEV__) console.warn("[media] entry upload failed, rolling back:", err);
-    await discardEntryImages(uploaded);
+    await discardEntryImages(uploaded.map((u) => u.path));
     return {
       status: "failed",
       reason:
@@ -280,6 +486,8 @@ export async function discardAvatar(
 
 export function clearMediaCache(): void {
   urlCache.clear();
+  urlCacheDirty = false;
+  void AsyncStorage.removeItem(URL_CACHE_STORAGE_KEY).catch(() => {});
 }
 
 /**
@@ -375,6 +583,8 @@ export async function clearUserMedia(
 
   const { deleted, failed } = await deleteImages(paths);
   urlCache.clear();
+  urlCacheDirty = false;
+  void AsyncStorage.removeItem(URL_CACHE_STORAGE_KEY).catch(() => {});
 
   if (fullyEnumerated && failed.length === 0) {
     return { status: "complete", removed: deleted.length, remaining: 0 };

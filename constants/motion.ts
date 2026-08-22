@@ -17,6 +17,13 @@ export const Motion = {
   /** Celebratory spring — save success, ticks. */
   springBouncy: { damping: 12, stiffness: 220 },
   /**
+   * Page-level travel — a whole screen of content moving sideways (the feed's
+   * month pages). Deliberately flat: overshoot reads as lively on a button and
+   * as wobbly on a page, and `overshootClamping` guarantees it can't bounce no
+   * matter how fast the gesture was released.
+   */
+  springPage: { damping: 30, stiffness: 220, overshootClamping: true },
+  /**
    * Press feedback. Deliberately much stiffer than `spring`: the scale has to
    * settle under the thumb, not after it. This is the old inline
    * `friction: 6, tension: 140` converted to the physical model, so the feel

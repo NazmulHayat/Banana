@@ -10,12 +10,20 @@ export interface DailyEntry {
   id: string;
   date: string;
   text: string;
+  /** Where it was written, when location tagging was on. */
+  place?: EntryPlace;
   /**
    * Storage object paths inside the `private-media` bucket
    * (format: "<user_id>/<entry_id>/<media_id>.<ext>"). Resolved to signed
    * URLs at render time via lib/media/storage.getImageUrl().
    */
   mediaPaths: string[];
+  /**
+   * Dimensions for the paths above, when known. Absent on entries written
+   * before this existed — those fall back to measuring, so no migration and no
+   * re-upload. Matched to `mediaPaths` by `path`, not by index.
+   */
+  media?: EntryMedia[];
   createdAt: string;
 }
 
@@ -72,6 +80,32 @@ export type UsernameCheck =
   | { status: "unknown" };
 
 // Payloads stored as encrypted JSON in `ciphertext` columns
+/**
+ * Where an entry was written. A *snapshot*, deliberately: renaming a place
+ * later changes what new entries say, never what an old one said. A journal
+ * that rewrites its own history is worse than one with a stale label.
+ */
+/**
+ * A stored photo's shape. Written at upload time so a card can lay out its
+ * grid without downloading anything: `Image.getSize` fetches the whole file
+ * just to read its header, which made every photo arrive twice.
+ */
+export interface EntryMedia {
+  path: string;
+  width: number;
+  height: number;
+}
+
+export interface EntryPlace {
+  /** The short label shown on the card — "Haneda Airport", "Home". */
+  heading: string;
+  /** The fuller address behind it, shown when you tap to edit. */
+  address: string;
+  /** Rounded before it is ever stored — see PLACE_COORD_PRECISION. */
+  latitude: number;
+  longitude: number;
+}
+
 export interface EntryPayload {
   date: string;
   entries: Array<{
@@ -79,7 +113,36 @@ export interface EntryPayload {
     text: string;
     createdAt: string;
     mediaPaths?: string[];
+    media?: EntryMedia[];
+    /**
+     * Optional place tag. Absent on every entry written before location
+     * existed, and absent whenever the setting is off — the entries row is
+     * opaque ciphertext, so this needed no SQL migration (same as
+     * `HabitPayload.position`).
+     */
+    place?: EntryPlace;
   }>;
+}
+
+/** A place the user has named, so next time it's called what they call it. */
+export interface SavedPlace {
+  id: string;
+  /** What you call it. This is the label an entry gets. */
+  heading: string;
+  /** The address it was detected at. */
+  address: string;
+  latitude: number;
+  longitude: number;
+  createdAt: string;
+}
+
+export interface PlacePayload {
+  id: string;
+  heading: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  createdAt: string;
 }
 
 export interface HabitPayload {

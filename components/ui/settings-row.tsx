@@ -60,7 +60,18 @@ const settingsRowStyles = StyleSheet.create({
 });
 
 const sectionTitleStyles = StyleSheet.create({
-  row: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 12 },
-  dot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: Colors.accent },
-  text: { fontSize: 16, fontWeight: "700", color: Colors.ink, fontFamily: Fonts.handwriting },
+  // Section titles are the only navigation on a long scrolling page, so they
+  // have to win against the numbers under them: 22pt, semi-bold face, and
+  // real air above. At 16pt they read as another label and the page became one
+  // undifferentiated column.
+  row: { flexDirection: "row", alignItems: "center", gap: 9, marginBottom: 14 },
+  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.accent },
+  text: {
+    fontSize: 22,
+    // Custom fonts can't synthesise weight on iOS — the bold face has to be
+    // named, `fontWeight` alone does nothing here.
+    fontFamily: Fonts.handwritingSemiBold,
+    color: Colors.ink,
+    letterSpacing: 0.2,
+  },
 });

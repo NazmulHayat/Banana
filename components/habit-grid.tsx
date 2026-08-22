@@ -13,46 +13,31 @@ import Animated, {
   useSharedValue,
   withSpring,
 } from 'react-native-reanimated';
+import {
+  CELL_GAP,
+  CELL_HEIGHT,
+  computeColumnWidth,
+  DAY_COLUMN_WIDTH,
+  fitsWithoutScroll,
+  HABIT_COLUMN_WIDTH,
+} from '@/lib/grid-layout';
 import { HabitCell } from './ui/habit-cell';
 import { IconSymbol } from './ui/icon-symbol';
 import { Skeleton } from './ui/skeleton';
 
-// Column geometry — kept in sync with the styles below. One column is the
-// cell plus its 2pt right margin.
-export const CELL_GAP = 2;
-/** Every cell is 60pt tall so the habit rows line up with the DAY column. */
-export const CELL_HEIGHT = 60;
-/**
- * Vertical distance from one day row to the next (cell + its 2pt gap). The
- * screen uses this to scroll today's row into view without re-deriving the
- * grid's geometry.
- */
-export const ROW_PITCH = CELL_HEIGHT + CELL_GAP;
-/** Height of the header row above the day rows (the DAY / habit-name band). */
-export const HEADER_ROW_HEIGHT = CELL_HEIGHT;
-/** A fixed column (60pt cell + 2pt gap) — the 4-or-more-habits layout. */
-export const HABIT_COLUMN_WIDTH = 62;
-/** The pinned DAY column on the left, same width as a fixed habit column. */
-export const DAY_COLUMN_WIDTH = 62;
-/**
- * At or below this many habits the columns stretch to fill the row instead of
- * hugging the left edge with dead paper to the right — and the grid does not
- * scroll horizontally. Above it we keep fixed columns + horizontal scroll.
- */
-export const ADAPTIVE_MAX_HABITS = 3;
-
-/**
- * Width of one habit column for `habitCount` habits in `availableWidth` points
- * (the space left of the pinned DAY column). 1–3 habits divide the row evenly;
- * 4+ keep the fixed column so the month stays scannable. Never narrower than a
- * fixed column, so the 44pt touch-target floor always holds.
- */
-export function computeColumnWidth(availableWidth: number, habitCount: number): number {
-  if (habitCount <= 0 || habitCount > ADAPTIVE_MAX_HABITS || availableWidth <= 0) {
-    return HABIT_COLUMN_WIDTH;
-  }
-  return Math.max(HABIT_COLUMN_WIDTH, Math.floor(availableWidth / habitCount));
-}
+// Column geometry and the fill/scroll rule live in `lib/grid-layout.ts` so the
+// maths is testable without React Native. Re-exported here because the grid and
+// the sticky header in `app/(tabs)/index.tsx` both import from this module.
+export {
+  CELL_GAP,
+  CELL_HEIGHT,
+  computeColumnWidth,
+  DAY_COLUMN_WIDTH,
+  fitsWithoutScroll,
+  HABIT_COLUMN_WIDTH,
+  HEADER_ROW_HEIGHT,
+  ROW_PITCH,
+} from '@/lib/grid-layout';
 
 interface HabitGridProps {
   habits: Habit[];
@@ -95,7 +80,7 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, loading, er
   const [gridWidth, setGridWidth] = useState(0);
   const columnWidth = computeColumnWidth(gridWidth, habits.length);
   const cellSize = columnWidth - CELL_GAP;
-  const adaptive = habits.length > 0 && habits.length <= ADAPTIVE_MAX_HABITS;
+  const adaptive = fitsWithoutScroll(gridWidth, habits.length);
 
   // Drag-to-reorder: long-press a habit name to enter reorder mode, then drag
   // the lifted column left/right. Disabled while names are still loading
@@ -387,7 +372,7 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, loading, er
 
 /** How many day rows the loading grid draws before it fades out at the bottom. */
 const SKELETON_ROWS = 6;
-/** Placeholder columns — matches the adaptive layout's most common width. */
+/** Placeholder columns — fixed width; the real grid stretches once measured. */
 const SKELETON_COLUMNS = 3;
 
 /**
@@ -444,7 +429,7 @@ function GridSkeleton() {
  */
 interface HabitHeaderNameProps {
   name: string;
-  /** Measured cell width (adaptive when there are 1–3 habits). */
+  /** Measured cell width (stretched to fill whenever the columns fit). */
   width: number;
   canReorder: boolean;
   onLongPress: () => void;
@@ -767,7 +752,7 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwriting,
   },
   cellWrapper: {
-    // width is set inline (adaptive when there are 1-3 habits)
+    // width is set inline (stretched to fill whenever the columns fit)
     width: HABIT_COLUMN_WIDTH - CELL_GAP,
     height: CELL_HEIGHT,
     marginRight: CELL_GAP,

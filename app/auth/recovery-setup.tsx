@@ -1,8 +1,6 @@
 // Runs immediately after signup (or post-verify). Creates the accounts row,
 // sets up the encryption keyring, explains the recovery key BEFORE showing it,
-// reveals it once, and only lets the user leave after they've typed two groups
-// of it back — the reveal is genuinely one-time, so a checkbox alone was too
-// easy to tap past.
+// and reveals it once behind a saved-it checkbox.
 //
 // Setup is resumable. It used to `consume()` the signup password before doing
 // any network work, so a dropped connection burned the only copy of it and
@@ -18,7 +16,7 @@ import { PaperBackground } from "@/components/ui/paper-background";
 import { Colors, Fonts, Scrim } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { signupTransient } from "@/lib/auth/signup-transient";
-import { keyring, normalizeRecoveryKey } from "@/lib/crypto";
+import { keyring } from "@/lib/crypto";
 import { supabase } from "@/lib/supabase";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
@@ -41,8 +39,6 @@ type Phase =
   /** What a recovery key is, said before we show one. */
   | "primer"
   | "reveal"
-  /** Type two groups back, so "I saved it" is a fact and not a tick-box. */
-  | "confirm"
   | "need-password"
   | "error";
 
@@ -50,7 +46,7 @@ type Phase =
 const COPIED_FEEDBACK_MS = 1800;
 
 const GENERIC_FAILURE =
-  "We couldn't finish setting up your encryption. Check your connection and try again — nothing was lost.";
+  "We couldn't finish setting up your encryption. Check your connection and try again. Nothing was lost.";
 
 type SetupOutcome =
   | { status: "done"; recoveryKey: string | null; resumed: boolean }
@@ -140,10 +136,6 @@ export default function RecoverySetupScreen() {
   const [confirmed, setConfirmed] = useState(false);
   const [copied, setCopied] = useState(false);
   const [typedPassword, setTypedPassword] = useState("");
-  // Which two groups of the key we ask for back, and what they typed.
-  const [askIndices, setAskIndices] = useState<[number, number] | null>(null);
-  const [answers, setAnswers] = useState<[string, string]>(["", ""]);
-  const [confirmError, setConfirmError] = useState<string | null>(null);
   // Blocks a second run while one is in flight (double-tapped retry).
   const runningRef = useRef(false);
   const mountedRef = useRef(true);
@@ -213,7 +205,6 @@ export default function RecoverySetupScreen() {
     copiedTimer.current = setTimeout(() => setCopied(false), COPIED_FEEDBACK_MS);
   }
 
-  /** Move to the check: pick one group from each half of the key. */
   function handleContinue() {
     if (!confirmed) {
       Alert.alert(
@@ -222,40 +213,12 @@ export default function RecoverySetupScreen() {
       );
       return;
     }
-    const groups = recoveryKey ? recoveryKey.split("-") : [];
-    if (groups.length < 2) {
-      // Nothing sensible to ask for — don't invent a hurdle.
-      finish();
-      return;
-    }
-    const mid = Math.floor(groups.length / 2);
-    const first = Math.floor(Math.random() * mid);
-    const second = mid + Math.floor(Math.random() * (groups.length - mid));
-    setAskIndices([first, second]);
-    setAnswers(["", ""]);
-    setConfirmError(null);
-    setPhase("confirm");
+    finish();
   }
 
   function finish() {
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     router.replace("/onboarding/welcome" as Href);
-  }
-
-  function handleConfirmCheck() {
-    const groups = recoveryKey ? recoveryKey.split("-") : [];
-    if (!askIndices) return;
-    const ok = askIndices.every(
-      (groupIndex, slot) =>
-        normalizeRecoveryKey(answers[slot]) === groups[groupIndex],
-    );
-    if (!ok) {
-      setConfirmError(
-        "That doesn't match. Check your saved copy — or look at the key again.",
-      );
-      return;
-    }
-    finish();
   }
 
   if (phase === "setting-up") {
@@ -437,7 +400,7 @@ export default function RecoverySetupScreen() {
               or email it to you.
             </Text>
             <Text style={styles.tipsItem}>
-              • Lose your password and this key, and no one — including us — can
+              • Lose your password and this key, and no one, including us, can
               read your entries.
             </Text>
           </View>
@@ -460,87 +423,6 @@ export default function RecoverySetupScreen() {
     );
   }
 
-  // The check. Two groups, typed back — enough to prove the key was really
-  // saved, short enough not to be a wall.
-  if (phase === "confirm" && askIndices) {
-    const canSubmit = answers.every((a) => a.trim().length > 0);
-    return (
-      <PaperBackground>
-        <ScrollView
-          contentContainerStyle={[
-            styles.content,
-            { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 },
-          ]}
-          keyboardShouldPersistTaps="handled"
-        >
-          <View style={styles.iconCircle}>
-            <IconSymbol name="checkmark" size={32} color={Colors.paper} />
-          </View>
-          <Text style={styles.title}>Check your copy</Text>
-          <Text style={styles.subtitle}>
-            From the key you just saved, type these two groups back. Four
-            characters each.
-          </Text>
-
-          {askIndices.map((groupIndex, slot) => (
-            <View key={groupIndex} style={styles.confirmRow}>
-              <Text style={styles.confirmLabel}>Group {groupIndex + 1}</Text>
-              <TextInput
-                style={styles.confirmInput}
-                value={answers[slot]}
-                onChangeText={(value) => {
-                  setAnswers((prev) => {
-                    const next: [string, string] = [prev[0], prev[1]];
-                    next[slot] = value;
-                    return next;
-                  });
-                  setConfirmError(null);
-                }}
-                placeholder="XXXX"
-                placeholderTextColor={Colors.textSecondary}
-                autoCapitalize="characters"
-                autoCorrect={false}
-                maxLength={8}
-                accessibilityLabel={`Group ${groupIndex + 1} of your recovery key`}
-              />
-            </View>
-          ))}
-
-          {confirmError ? (
-            <Text style={styles.confirmError}>{confirmError}</Text>
-          ) : null}
-
-          <TouchableOpacity
-            style={[styles.primaryButton, !canSubmit && styles.buttonDisabled]}
-            onPress={handleConfirmCheck}
-            disabled={!canSubmit}
-            activeOpacity={0.85}
-            accessibilityRole="button"
-            accessibilityLabel="Confirm and continue"
-            accessibilityState={{ disabled: !canSubmit }}
-          >
-            <Text style={styles.primaryButtonText}>Confirm and continue</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.secondaryButton}
-            onPress={() => {
-              setConfirmError(null);
-              setPhase("reveal");
-            }}
-            activeOpacity={0.85}
-            accessibilityRole="button"
-            accessibilityLabel="Show me the key again"
-          >
-            <Text style={styles.secondaryButtonText}>
-              Show me the key again
-            </Text>
-          </TouchableOpacity>
-        </ScrollView>
-      </PaperBackground>
-    );
-  }
-
   return (
     <PaperBackground>
       <ScrollView
@@ -555,8 +437,7 @@ export default function RecoverySetupScreen() {
         <Text style={styles.title}>Save your recovery key</Text>
         <Text style={styles.subtitle}>
           This is the only way back into your encrypted journal if you forget
-          your password, and this is the only time we can show it. Save it now
-          — the next screen asks you to type two groups of it back.
+          your password, and this is the only time we can show it.
         </Text>
 
         <View style={styles.keyBox}>
@@ -679,37 +560,6 @@ const styles = StyleSheet.create({
     textAlign: "center",
     lineHeight: 20,
     marginBottom: 24,
-  },
-  confirmRow: {
-    width: "100%",
-    marginBottom: 16,
-  },
-  confirmLabel: {
-    fontSize: 13,
-    color: Colors.ink,
-    fontFamily: Fonts.handwritingSemiBold,
-    marginBottom: 8,
-  },
-  confirmInput: {
-    width: "100%",
-    height: 52,
-    borderWidth: 1.5,
-    borderColor: Colors.ink,
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    fontSize: 18,
-    fontFamily: Fonts.handwriting,
-    color: Colors.ink,
-    backgroundColor: Colors.card,
-    letterSpacing: 2,
-  },
-  confirmError: {
-    fontSize: 14,
-    lineHeight: 20,
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
-    textAlign: "center",
-    marginBottom: 12,
   },
   content: {
     flexGrow: 1,

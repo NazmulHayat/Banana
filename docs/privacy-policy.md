@@ -9,7 +9,7 @@ Aight Bet is a private habit tracker and journal. Privacy isn't a feature we add
 ## The short version
 
 - Your journal entries, habits, and habit history are **end-to-end encrypted on your device** before they ever reach our servers. We cannot read them. Nobody at Aight Bet can, even if we wanted to.
-- Photos you attach are stored privately and are only accessible by your account, but are **not yet end-to-end encrypted**. Full photo encryption is planned for an upcoming release.
+- Photos you attach are **not end-to-end encrypted**. They are stored in a private bucket only your account can reach, and encrypted at rest by our infrastructure — but unlike your writing, they are not sealed with your personal key, which means we could technically access them. Your journal text, habits, dates and place names are end-to-end encrypted and we cannot read them.
 - We don't sell data, we don't run ads, and we don't use third-party analytics or trackers.
 
 ## What we store
@@ -19,7 +19,7 @@ Aight Bet is a private habit tracker and journal. Privacy isn't a feature we add
 | Email address | Plaintext (needed for login and account recovery) |
 | Password | Never stored — only a cryptographic hash, handled by our auth provider (Supabase) |
 | Journal entries, habits, habit logs | Encrypted on your device with AES-256-GCM before upload. Even the dates of your entries are hidden from the server. |
-| Photos | Stored in a private bucket only your account can access; encrypted at rest by our infrastructure, but not end-to-end encrypted yet |
+| Photos | Stored in a private bucket only your account can access; encrypted at rest by our infrastructure. **Not** end-to-end encrypted — we could technically access them |
 | Username | Plaintext (so we can check availability) |
 
 ## How encryption works
