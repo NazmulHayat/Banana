@@ -10,6 +10,7 @@ Aight Bet is a private habit tracker and journal. Privacy isn't a feature we add
 
 - Your journal entries, habits, and habit history are **end-to-end encrypted on your device** before they ever reach our servers. We cannot read them. Nobody at Aight Bet can, even if we wanted to.
 - Photos you attach are **not end-to-end encrypted**. They are stored in a private bucket only your account can reach, and encrypted at rest by our infrastructure — but unlike your writing, they are not sealed with your personal key, which means we could technically access them. Your journal text, habits, dates and place names are end-to-end encrypted and we cannot read them.
+- **Voice dictation happens entirely on your device.** If you dictate a highlight, your speech is turned into text on your phone. The audio is never saved to a file, never uploaded, and never sent to Apple or anyone else. The app does not even hold the iOS permission that would allow it.
 - We don't sell data, we don't run ads, and we don't use third-party analytics or trackers.
 
 ## What we store
@@ -21,6 +22,7 @@ Aight Bet is a private habit tracker and journal. Privacy isn't a feature we add
 | Journal entries, habits, habit logs | Encrypted on your device with AES-256-GCM before upload. Even the dates of your entries are hidden from the server. |
 | Photos | Stored in a private bucket only your account can access; encrypted at rest by our infrastructure. **Not** end-to-end encrypted — we could technically access them |
 | Username | Plaintext (so we can check availability) |
+| Dictated speech | Never stored anywhere. Transcribed on your device, never written to an audio file, never uploaded. The resulting text is encrypted exactly like text you type |
 
 ## How encryption works
 

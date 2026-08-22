@@ -568,6 +568,24 @@ fully supported in Expo Go on SDK 54) and `aightbet://` deep links (Expo Go serv
 `exp://<lan-ip>:8081/--/…`, so the password-reset redirect must be registered in that form in
 Supabase, or tested on a native build). Both work under `npm run ios:device` or an EAS build.
 
+#### Code signing for a free Apple ID (set up 2026-08-23)
+
+`npm run ios:device` fails with `No code signing certificates are available to use.` until Xcode
+has an Apple ID: **Xcode > Settings > Accounts > + > Apple ID**. A free account gets a "Personal
+Team", which is enough for dictation testing, with two limits: the app is wiped from the phone
+after 7 days and must be reinstalled, and **Personal Teams cannot use the Push Notifications
+capability**.
+
+That second limit matters because the `expo-notifications` config plugin always writes
+`aps-environment` into `ios/AightBet/AightBet.entitlements`, and signing fails on it. The
+entitlement is emptied by hand to get past it. This costs nothing: `lib/reminder.ts` only calls
+`scheduleNotificationAsync`, i.e. *local* notifications, which never needed `aps-environment` -
+only remote APNs push does. `ios/` is gitignored, so the edit is local and must be redone after
+any `npx expo prebuild --clean`.
+
+The paid Apple Developer Program ($99/yr, tasks.md M8) removes both limits and is required for
+TestFlight regardless.
+
 `eas.json` carries two profiles, `preview` (internal distribution) and `production`. There is no
 dev-client profile on purpose — installing `expo-dev-client` makes bare `expo start` default away
 from Expo Go, which breaks the scan-the-QR workflow above. EAS cloud builds can't read `.env` (it

@@ -15,7 +15,7 @@
     "build:preview:android": "npx --yes eas-cli build --profile preview --platform android",
     "reset-project": "node ./scripts/reset-project.js",
     "lint": "expo lint",
-    "test": "npx tsx tests/crypto.test.ts && npx tsx tests/stats.test.ts && npx tsx tests/gamification.test.ts && npx tsx tests/pending-writes.test.ts && npx tsx tests/dates.test.ts && npx tsx tests/grid-layout.test.ts && npx tsx tests/db-cache.test.ts && npx tsx tests/db-writes.test.ts"
+    "test": "npx tsx tests/crypto.test.ts && npx tsx tests/stats.test.ts && npx tsx tests/gamification.test.ts && npx tsx tests/pending-writes.test.ts && npx tsx tests/dates.test.ts && npx tsx tests/grid-layout.test.ts && npx tsx tests/db-cache.test.ts && npx tsx tests/db-writes.test.ts && npx tsx tests/dictation.test.ts"
   },
   "dependencies": {
     "@expo-google-fonts/shantell-sans": "^0.4.1",
@@ -45,6 +45,7 @@
     "expo-router": "~6.0.24",
     "expo-secure-store": "^15.0.8",
     "expo-sharing": "~14.0.8",
+    "expo-speech-recognition": "^3.1.3",
     "expo-splash-screen": "~31.0.13",
     "expo-status-bar": "~3.0.9",
     "expo-symbols": "~1.0.8",

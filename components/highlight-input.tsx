@@ -1,6 +1,8 @@
 import { Motion } from "@/constants/motion";
 import { Colors, Fonts, Hairline } from "@/constants/theme";
 import type { WriteOutcome } from "@/lib/db";
+import { useDictation } from "@/lib/dictation";
+import { useReduceMotion } from "@/lib/use-reduce-motion";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import * as MediaLibrary from "expo-media-library";
@@ -20,10 +22,14 @@ import Animated, {
   FadeInUp,
   FadeOut,
   useAnimatedProps,
+  useAnimatedStyle,
   useSharedValue,
+  withRepeat,
   withTiming,
 } from "react-native-reanimated";
 import Svg, { Path } from "react-native-svg";
+import { ConfirmDialog } from "./ui/confirm-dialog";
+import { IconButton } from "./ui/icon-button";
 import { IconSymbol } from "./ui/icon-symbol";
 import { PaperCard } from "./ui/paper-card";
 import { PressableScale } from "./ui/pressable-scale";
@@ -78,6 +84,32 @@ function DrawnCheckmark({ size = 20 }: { size?: number }) {
   );
 }
 
+/**
+ * Slow breathing dot for the listening state. Deliberately not a red record
+ * light — this is a paper journal, not a voice recorder. Decorative motion, so
+ * it holds still when Reduce Motion is on.
+ */
+function ListeningDot() {
+  const reduceMotion = useReduceMotion();
+  const pulse = useSharedValue(1);
+
+  useEffect(() => {
+    if (reduceMotion) {
+      pulse.value = 1;
+      return;
+    }
+    pulse.value = withRepeat(
+      withTiming(0.3, { duration: Motion.pulse, easing: Easing.inOut(Easing.quad) }),
+      -1,
+      true,
+    );
+  }, [reduceMotion, pulse]);
+
+  const animatedStyle = useAnimatedStyle(() => ({ opacity: pulse.value }));
+
+  return <Animated.View style={[styles.listeningDot, animatedStyle]} />;
+}
+
 interface HighlightInputProps {
   todayEntryCount: number;
   /**
@@ -114,7 +146,15 @@ export function HighlightInput({
   const [justSaved, setJustSaved] = useState(false);
   // User-safe reason from the last failed save. Non-null keeps the retry row up.
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Clearing throws away unsaved words, so it asks first (FR-UX1).
+  const [confirmClear, setConfirmClear] = useState(false);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const dictation = useDictation();
+  // Whatever was already in the field when dictation started. Speech is
+  // appended to it rather than replacing it, so a half-typed sentence survives
+  // reaching for the mic.
+  const [baseText, setBaseText] = useState("");
 
   useEffect(
     () => () => {
@@ -122,6 +162,58 @@ export function HighlightInput({
     },
     [],
   );
+
+  // Stream the transcript into the field as it arrives. The composer owns the
+  // text, the hook only reports what was heard.
+  useEffect(() => {
+    if (!dictation.transcript) return;
+    const joined = baseText
+      ? `${baseText.trimEnd()} ${dictation.transcript}`
+      : dictation.transcript;
+    if (joined.length >= MAX_HIGHLIGHT_LENGTH) {
+      // The save path enforces this cap, so the recognizer is not allowed to
+      // run past it and pretend the extra words were kept.
+      setText(joined.slice(0, MAX_HIGHLIGHT_LENGTH));
+      dictation.stop();
+      return;
+    }
+    setText(joined);
+    // `dictation` is a fresh object each render; the transcript is the signal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dictation.transcript]);
+
+  const handleMicPress = () => {
+    if (dictation.listening) {
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      dictation.stop();
+      return;
+    }
+    void Haptics.selectionAsync();
+    setBaseText(text);
+    dictation.reset();
+    void dictation.start();
+  };
+
+  const handleClear = () => {
+    setConfirmClear(false);
+    // The mic writes into the field, so a live recognizer would immediately
+    // refill what was just cleared.
+    if (dictation.listening) dictation.stop();
+    dictation.reset();
+    setText("");
+    setBaseText("");
+    setPickedUris([]);
+    setPickerOpen(false);
+    setSaveError(null);
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  };
+
+  const handleChangeText = (next: string) => {
+    // Typing while the mic is open means the user has taken over. Stop rather
+    // than fight them for the field on the next transcript update.
+    if (dictation.listening) dictation.stop();
+    setText(next);
+  };
 
   const pickFromLibrary = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -226,6 +318,9 @@ export function HighlightInput({
 
   const handleSave = async () => {
     if (saving || justSaved) return;
+    // Safe to save immediately without waiting for a final result: every
+    // interim already went into `text`, so what's on screen is what's heard.
+    if (dictation.listening) dictation.stop();
     const trimmed = text.trim();
     if (!trimmed && pickedUris.length === 0) return;
     setSaveError(null);
@@ -257,7 +352,24 @@ export function HighlightInput({
 
   return (
     <PaperCard style={styles.container}>
-      <Text style={styles.title}>Highlight of the day</Text>
+      <View style={styles.header}>
+        <Text style={styles.title}>Highlight of the day</Text>
+        {/* Only rendered when there is something to lose. A permanently
+            visible Clear on an empty card is a dead control. */}
+        {!nothingToSave && !saving && !justSaved && (
+          <PressableScale
+            onPress={() => {
+              void Haptics.selectionAsync();
+              setConfirmClear(true);
+            }}
+            hitSlop={12}
+            accessibilityLabel="Clear this highlight"
+            accessibilityHint="Removes the text and photos you haven't saved yet"
+          >
+            <Text style={styles.clearText}>Clear</Text>
+          </PressableScale>
+        )}
+      </View>
       {/* Browsing March and typing here used to file the words under today
           with no warning. The grid stays back-fillable; the journal is
           today-only, so say which day this is. */}
@@ -272,7 +384,7 @@ export function HighlightInput({
       <TextInput
         style={styles.input}
         value={text}
-        onChangeText={setText}
+        onChangeText={handleChangeText}
         placeholder={
           todayEntryCount === 0
             ? "Tell me something about today..."
@@ -291,6 +403,19 @@ export function HighlightInput({
           {MAX_HIGHLIGHT_LENGTH - text.length} characters left
         </Text>
       )}
+      {/* Dictation runs on this device only, so the one thing the user needs
+          to know is whether the mic is currently open. */}
+      {dictation.listening && (
+        <View style={styles.listeningRow} accessibilityLiveRegion="polite">
+          <ListeningDot />
+          <Text style={styles.listeningText}>Listening...</Text>
+        </View>
+      )}
+      {!dictation.listening && dictation.error ? (
+        <Text style={styles.listeningText} accessibilityLiveRegion="polite">
+          {dictation.error}
+        </Text>
+      ) : null}
       {pickedUris.length > 0 && (
         <View style={styles.mediaPreviewContainer}>
           {pickedUris.map((uri, index) => (
@@ -322,63 +447,69 @@ export function HighlightInput({
         </View>
       )}
       <View style={styles.footer}>
-        <View style={styles.mediaWrapper}>
-          {pickerOpen && (
-            <Animated.View
-              entering={FadeInUp.duration(Motion.fast)}
-              exiting={FadeOut.duration(Motion.quick)}
-              style={styles.popover}
+        <View style={styles.footerLeft}>
+          <View style={styles.mediaWrapper}>
+            {pickerOpen && (
+              <Animated.View
+                entering={FadeInUp.duration(Motion.fast)}
+                exiting={FadeOut.duration(Motion.quick)}
+                style={styles.popover}
+              >
+                {/* Both rows were bare Pressables — no scale, no opacity, no
+                    haptic. On the most-used menu in the app, that reads as a
+                    dead tap. */}
+                <PressableScale
+                  style={styles.popoverItem}
+                  onPress={() => {
+                    void Haptics.selectionAsync();
+                    setPickerOpen(false);
+                    void takePhoto();
+                  }}
+                  accessibilityLabel="Take photo"
+                >
+                  <View style={styles.popoverItemContent}>
+                    <IconSymbol name="camera.fill" size={16} color={Colors.ink} />
+                    <Text style={styles.popoverText}>Take Photo</Text>
+                  </View>
+                </PressableScale>
+                <View style={styles.popoverDivider} />
+                <PressableScale
+                  style={styles.popoverItem}
+                  onPress={() => {
+                    void Haptics.selectionAsync();
+                    setPickerOpen(false);
+                    void pickFromLibrary();
+                  }}
+                  accessibilityLabel="Choose from library"
+                >
+                  <View style={styles.popoverItemContent}>
+                    <IconSymbol name="photo.fill" size={16} color={Colors.ink} />
+                    <Text style={styles.popoverText}>Choose from Library</Text>
+                  </View>
+                </PressableScale>
+                <View style={styles.popoverArrow} />
+              </Animated.View>
+            )}
+            {/* Icon-only, to pair with the mic beside it. The attachment count
+                lived in the label; it now rides on the accessibility label,
+                and sighted users read it off the thumbnails above. */}
+            <IconButton
+              onPress={handleAddPhoto}
+              disabled={pickedUris.length >= MAX_IMAGES || saving}
+              accessibilityLabel={
+                pickerOpen
+                  ? "Close photo picker"
+                  : `Add photo, ${pickedUris.length} of ${MAX_IMAGES} attached`
+              }
+              accessibilityState={{ expanded: pickerOpen }}
+              style={[
+                styles.mediaButton,
+                ...(pickerOpen ? [styles.mediaButtonOpen] : []),
+                ...(pickedUris.length >= MAX_IMAGES || saving
+                  ? [styles.mediaButtonDisabled]
+                  : []),
+              ]}
             >
-              {/* Both rows were bare Pressables — no scale, no opacity, no
-                  haptic. On the most-used menu in the app, that reads as a
-                  dead tap. */}
-              <PressableScale
-                style={styles.popoverItem}
-                onPress={() => {
-                  void Haptics.selectionAsync();
-                  setPickerOpen(false);
-                  void takePhoto();
-                }}
-                accessibilityLabel="Take photo"
-              >
-                <View style={styles.popoverItemContent}>
-                  <IconSymbol name="camera.fill" size={16} color={Colors.ink} />
-                  <Text style={styles.popoverText}>Take Photo</Text>
-                </View>
-              </PressableScale>
-              <View style={styles.popoverDivider} />
-              <PressableScale
-                style={styles.popoverItem}
-                onPress={() => {
-                  void Haptics.selectionAsync();
-                  setPickerOpen(false);
-                  void pickFromLibrary();
-                }}
-                accessibilityLabel="Choose from library"
-              >
-                <View style={styles.popoverItemContent}>
-                  <IconSymbol name="photo.fill" size={16} color={Colors.ink} />
-                  <Text style={styles.popoverText}>Choose from Library</Text>
-                </View>
-              </PressableScale>
-              <View style={styles.popoverArrow} />
-            </Animated.View>
-          )}
-          <PressableScale
-            style={[
-              styles.mediaButton,
-              (pickedUris.length >= MAX_IMAGES || saving) &&
-                styles.mediaButtonDisabled,
-            ]}
-            onPress={handleAddPhoto}
-            disabled={pickedUris.length >= MAX_IMAGES || saving}
-            accessibilityLabel={
-              pickerOpen
-                ? "Close photo picker"
-                : `Add photo, ${pickedUris.length} of ${MAX_IMAGES} attached`
-            }
-          >
-            <View style={styles.mediaButtonContent}>
               <IconSymbol
                 name={pickerOpen ? "xmark" : "camera.fill"}
                 size={18}
@@ -388,20 +519,37 @@ export function HighlightInput({
                     : Colors.ink
                 }
               />
-              <Text
-                style={[
-                  styles.mediaButtonText,
-                  (pickedUris.length >= MAX_IMAGES || saving) &&
-                    styles.mediaButtonTextDisabled,
-                ]}
-              >
-                {pickerOpen ? "Close" : "Add Photo"}
-                {!pickerOpen && pickedUris.length > 0
-                  ? ` (${pickedUris.length}/${MAX_IMAGES})`
-                  : ""}
-              </Text>
-            </View>
-          </PressableScale>
+            </IconButton>
+          </View>
+          {/* Hidden entirely when the device can't transcribe locally. A mic
+              that only works by shipping audio to Apple is not a mic we ship. */}
+          {dictation.available && (
+            <IconButton
+              onPress={handleMicPress}
+              disabled={!!saving}
+              accessibilityLabel={
+                dictation.listening ? "Stop dictating" : "Dictate highlight"
+              }
+              accessibilityState={{ busy: dictation.listening }}
+              style={[
+                styles.micButton,
+                ...(dictation.listening ? [styles.micButtonActive] : []),
+                ...(saving ? [styles.micButtonDisabled] : []),
+              ]}
+            >
+              <IconSymbol
+                name={dictation.listening ? "stop.fill" : "mic.fill"}
+                size={18}
+                color={
+                  saving
+                    ? Colors.textSecondary
+                    : dictation.listening
+                      ? Colors.paper
+                      : Colors.ink
+                }
+              />
+            </IconButton>
+          )}
         </View>
         <PressableScale
           style={[
@@ -452,17 +600,36 @@ export function HighlightInput({
           </Text>
         </View>
       )}
+      <ConfirmDialog
+        visible={confirmClear}
+        title="Clear this highlight?"
+        message="The words and photos will be cleared."
+        confirmLabel="Clear"
+        onConfirm={handleClear}
+        onCancel={() => setConfirmClear(false)}
+      />
     </PaperCard>
   );
 }
 
 const styles = StyleSheet.create({
   container: { marginHorizontal: 16, marginTop: 16, marginBottom: 16 },
+  header: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 4,
+  },
   title: {
     fontSize: 18,
-    fontWeight: "600",
     color: Colors.ink,
-    marginBottom: 4,
+    // Custom fonts can't synthesize weight on iOS, so the weight has to come
+    // from the family. `fontWeight: "600"` alone rendered as plain regular.
+    fontFamily: Fonts.handwritingSemiBold,
+  },
+  clearText: {
+    fontSize: 13,
+    color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
   },
   dateNote: {
@@ -482,12 +649,14 @@ const styles = StyleSheet.create({
   input: {
     fontSize: 16,
     color: Colors.ink,
-    minHeight: 60,
+    // Opens taller than one line so an empty card reads as somewhere to
+    // write, not a single-line box.
+    minHeight: 84,
     fontFamily: Fonts.handwriting,
     // Keeps the old rhythm now that the hint lives inside the field rather
     // than as a line of its own above it.
     marginTop: 8,
-    marginBottom: 12,
+    marginBottom: 20,
   },
   footer: {
     flexDirection: "row",
@@ -527,19 +696,52 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.paper,
     borderRadius: 12,
   },
+  footerLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  listeningRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 8,
+  },
+  listeningDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: Colors.accent,
+  },
+  listeningText: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+  },
+  micButton: {
+    borderWidth: 1.5,
+    borderColor: Colors.ink,
+    borderRadius: 12,
+  },
+  micButtonActive: {
+    backgroundColor: Colors.ink,
+  },
+  micButtonDisabled: {
+    borderColor: Colors.textSecondary,
+    opacity: 0.35,
+  },
   mediaWrapper: {
     position: "relative",
   },
   mediaButton: {
-    minHeight: 44,
-    paddingHorizontal: 14,
-    borderRadius: 12,
     borderWidth: 1.5,
     borderColor: Colors.ink,
-    backgroundColor: "transparent",
-    justifyContent: "center",
+    borderRadius: 12,
   },
-  mediaButtonDisabled: { borderColor: Colors.textSecondary, opacity: 0.35 },
+  // The picker is open, so the icon has flipped to a close affordance.
+  mediaButtonOpen: { backgroundColor: Hairline.faint },
+  // Matches micButtonDisabled — the two sit side by side and grey out together.
+  mediaButtonDisabled: { borderColor: Colors.textSecondary },
   popover: {
     position: "absolute",
     bottom: "100%",
@@ -592,15 +794,6 @@ const styles = StyleSheet.create({
     borderColor: Hairline.raised,
     transform: [{ rotate: "45deg" }],
   },
-  mediaButtonContent: { flexDirection: "row", alignItems: "center" },
-  mediaButtonText: {
-    fontSize: 14,
-    color: Colors.ink,
-    fontFamily: Fonts.handwriting,
-    fontWeight: "500",
-    marginLeft: 6,
-  },
-  mediaButtonTextDisabled: { color: Colors.textSecondary },
   saveButton: {
     minHeight: 44,
     paddingHorizontal: 18,

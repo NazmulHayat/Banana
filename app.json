@@ -72,7 +72,14 @@
           "savePhotosPermission": "Aight Bet saves a photo to your library when you tap Save on it.",
           "isAccessMediaLocationEnabled": false
         }
-      ]
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Aight Bet uses the microphone only while you are dictating a highlight. Your speech is turned into text on this device and the audio never leaves it."
+        }
+      ],
+      "./plugins/with-mic-only-speech"
     ],
     "experiments": {
       "typedRoutes": true,

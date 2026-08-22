@@ -34,9 +34,19 @@ export default function PrivacyScreen() {
           cannot read them. Nobody at Aight Bet can, even if we wanted to.
         </Text>
         <Text style={styles.bullet}>
-          • Photos you attach are stored privately and are only accessible by
-          your account, but are not yet end-to-end encrypted. Full photo
-          encryption is planned for an upcoming release.
+          • Photos you attach are not end-to-end encrypted. They are stored in
+          a private bucket only your account can reach, and encrypted at rest
+          by our infrastructure, but unlike your writing they are not sealed
+          with your personal key, which means we could technically access
+          them. Your journal text, habits, dates and place names are
+          end-to-end encrypted and we cannot read them.
+        </Text>
+        <Text style={styles.bullet}>
+          • Voice dictation happens entirely on your device. If you dictate a
+          highlight, your speech is turned into text on your phone. The audio
+          is never saved to a file, never uploaded, and never sent to Apple or
+          anyone else. The app does not even hold the iOS permission that
+          would allow it.
         </Text>
         <Text style={styles.bullet}>
           • We don&apos;t sell data, we don&apos;t run ads, and we don&apos;t
@@ -58,11 +68,16 @@ export default function PrivacyScreen() {
         </Text>
         <Text style={styles.paragraph}>
           Photos — stored in a private bucket only your account can access;
-          encrypted at rest by our infrastructure, but not end-to-end
-          encrypted yet.
+          encrypted at rest by our infrastructure. Not end-to-end encrypted,
+          so we could technically access them.
         </Text>
         <Text style={styles.paragraph}>
           Username — plaintext, so we can check availability.
+        </Text>
+        <Text style={styles.paragraph}>
+          Dictated speech — never stored anywhere. Transcribed on your device,
+          never written to an audio file, never uploaded. The resulting text
+          is encrypted exactly like text you type.
         </Text>
 
         <Text style={styles.heading}>How encryption works</Text>
