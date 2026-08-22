@@ -220,7 +220,7 @@ export default function ResetPasswordScreen() {
     return (
       <PaperBackground>
         <View style={[styles.loadingContainer, { paddingTop: insets.top }]}>
-          <ActivityIndicator size="small" color={Colors.textSecondary} />
+          <ActivityIndicator size="small" color={Colors.ink} />
           <Text style={styles.loadingText}>
             {stage === "opening"
               ? "Opening your account…"

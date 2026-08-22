@@ -343,7 +343,7 @@ export default function EditProfileScreen() {
                 {loadingProfile ? (
                   <Skeleton width={96} height={96} borderRadius={48} />
                 ) : photoBusy || avatarResolving ? (
-                  <ActivityIndicator color={Colors.textSecondary} />
+                  <ActivityIndicator color={Colors.ink} />
                 ) : avatarUrl ? (
                   <Image source={{ uri: avatarUrl }} style={styles.avatarImage} />
                 ) : (

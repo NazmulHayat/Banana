@@ -32,7 +32,7 @@ The aesthetic is a deliberate **paper journal** — warm `#fbf8e9` paper, dot gr
 
 Any view that loads data or media renders **three** states, never a blank frame:
 
-1. **Loading** — `Skeleton`, or an `ActivityIndicator` with `color={Colors.textSecondary}`. Reference `feed-entry-card.tsx`: show the text immediately, spinner only the images until dimensions resolve. Show whatever you already have; don't gate the whole card on the slowest piece.
+1. **Loading** — `Skeleton`, or an `ActivityIndicator` with `color={Colors.ink}` (it was `textSecondary`, which read as washed out on paper). Reference `feed-entry-card.tsx`: show the text immediately, spinner only the images until dimensions resolve. Show whatever you already have; don't gate the whole card on the slowest piece.
 2. **Loaded** — the content.
 3. **Empty / error** — a calm, on-brand message in `Colors.textSecondary` + handwriting font. Never surface a raw error string or a red crash. Image failures fall back gracefully (`Image.getSize` → default dims), they don't break layout.
 
