@@ -1,3 +1,4 @@
+import { IconSymbol } from "@/components/ui/icon-symbol";
 import { InkIcon } from "@/components/ui/ink-icon";
 import { PaperCard } from "@/components/ui/paper-card";
 import { PressableScale } from "@/components/ui/pressable-scale";
@@ -59,8 +60,13 @@ interface CardActionProps {
 }
 
 /**
- * The card's footer action. A real button — filled with the accent wash, with
- * its own press target — not the underlined-looking text link it used to be.
+ * The card's footer action, in the app's primary-button language: ink fill,
+ * paper text, same as "Create Account" and "Finish setup".
+ *
+ * It used to wear the card fill + hairline of a Manage row, which was quieter
+ * but left the whole card reading as a passive readout — users didn't know the
+ * numbers went anywhere. A filled button is the one control on the page that
+ * can't be mistaken for text.
  *
  * It nests inside the card-wide PressableScale on purpose: React Native's
  * responder system hands the touch to the innermost pressable, so a tap on the
@@ -75,7 +81,7 @@ function CardAction({ label, chart, onPress, accessibilityHint }: CardActionProp
       accessibilityLabel={label}
       accessibilityHint={accessibilityHint}
     >
-      {chart ? <InkIcon name="chart" size={18} /> : null}
+      {chart ? <InkIcon name="chart" size={18} color={Colors.paper} /> : null}
       <Text style={styles.actionLabel}>{label}</Text>
       <Text style={styles.arrow}>→</Text>
     </PressableScale>
@@ -135,7 +141,14 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
         accessibilityHint="Opens your habits"
       >
         <PaperCard style={styles.card}>
-          <Text style={styles.eyebrow}>your momentum</Text>
+          <View style={styles.header}>
+            <Text style={styles.eyebrow}>your momentum</Text>
+            <IconSymbol
+              name="chevron.right"
+              size={13}
+              color={Colors.textSecondary}
+            />
+          </View>
           <Text style={styles.emptyText}>
             Nothing to measure yet. Add a habit and your streaks, records and
             story start filling in from day one.
@@ -162,7 +175,7 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
   );
   const standing =
     overall.totalCompletions === 0
-      ? "Nothing ticked yet — today can be day one."
+      ? "Nothing ticked yet. Today can be day one."
       : overall.bestLongestStreak === 0
         ? "Your first streak starts with two days in a row."
         : toRecord > 0
@@ -179,7 +192,15 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
       accessibilityHint="Opens your full analysis"
     >
       <PaperCard style={styles.card}>
-        <Text style={styles.eyebrow}>your momentum</Text>
+        <View style={styles.header}>
+          <Text style={styles.eyebrow}>your momentum</Text>
+          <Text style={styles.headerHint}>tap for details</Text>
+          <IconSymbol
+            name="chevron.right"
+            size={13}
+            color={Colors.textSecondary}
+          />
+        </View>
 
         {/* Hero band: the label sits ABOVE its number (same order as the
             analysis screen's hero), so the big figure isn't chased by a
@@ -210,13 +231,13 @@ export function ProfileStats({ habits, refreshToken = 0 }: ProfileStatsProps) {
           {overall.perfectDays > 0 ? (
             <>
               <View style={styles.metricRule} />
-              <Metric value={overall.perfectDays} label="perfect" />
+              <Metric value={overall.perfectDays} label="perfect days" />
             </>
           ) : null}
         </View>
 
         <CardAction
-          label="Stats & analysis"
+          label="See your full stats"
           chart
           onPress={() => open("/analysis")}
           accessibilityHint="Opens your full analysis"
@@ -235,13 +256,27 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     marginTop: 4,
   },
+  // The card is a door, so it says so at the top: eyebrow, a quiet hint, and
+  // the same chevron the Manage rows use. The bottom button alone sat below
+  // the fold of the eye's first pass over the numbers.
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 10,
+  },
   eyebrow: {
+    flex: 1,
     fontSize: 12,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwritingMedium,
     letterSpacing: 0.4,
     textTransform: "uppercase",
-    marginBottom: 10,
+  },
+  headerHint: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
   },
   // The headline gets its own line now. Sharing a row with the supporting
   // numbers squeezed both: a 44pt figure beside a three-line column left the
@@ -312,25 +347,23 @@ const styles = StyleSheet.create({
     marginTop: 14,
   },
   action: {
-    // Same surface language as the Manage rows — card fill, ink hairline —
-    // so it reads as one of the app's category rows rather than a stray
-    // accent-washed button.
+    // The app's primary button: solid ink, paper text. The card fill + hairline
+    // it wore before matched the Manage rows, which was exactly the problem —
+    // it read as another line of the readout instead of the way out of it.
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
     height: 48,
-    paddingHorizontal: 14,
+    paddingHorizontal: 16,
     borderRadius: 12,
-    backgroundColor: Colors.card,
-    borderWidth: 1,
-    borderColor: Hairline.base,
+    backgroundColor: Colors.ink,
     marginTop: 16,
   },
   actionLabel: {
     flex: 1,
     fontSize: 15,
-    color: Colors.ink,
+    color: Colors.paper,
     fontFamily: Fonts.handwritingSemiBold,
   },
-  arrow: { fontSize: 17, color: Colors.ink },
+  arrow: { fontSize: 17, color: Colors.paper },
 });
