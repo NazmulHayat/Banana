@@ -60,8 +60,10 @@ export default function OnboardingLayout() {
       }}
     >
       <Stack.Screen name="welcome" />
+      <Stack.Screen name="explore" />
       <Stack.Screen name="habits" />
-      <Stack.Screen name="feed-demo" />
+      <Stack.Screen name="survey" />
+      <Stack.Screen name="entry" />
     </Stack>
   );
 }

@@ -1,4 +1,4 @@
-// Onboarding step 2 of 3 — pick starter habits.
+// Onboarding step 1 of 3 — pick starter habits.
 //
 // This screen used to run a scripted demo before letting anyone touch it: a
 // timed fake scroll, a "transition" message, and three chained setTimeouts,
@@ -10,12 +10,12 @@
 // The selection is mirrored to the onboarding draft, so backgrounding the app
 // or a failed save never costs the user their picks.
 //
-// There is no "Skip for now" here, deliberately. Habits are the product, and a
-// hard minimum next to a skip button is a contradiction — one control says
-// "you must pick two", the other says "or don't". Skipping straight past this
-// step lands the user on an empty tracker, which is the worst first screen we
-// can hand them. The way out of the flow is still one tap away: Back returns
-// to step 1, which keeps its "Skip for now".
+// This step writes to the DRAFT only. Nothing persists to the server here:
+// a guest has no account yet, and a signed-in straggler's picks are saved in
+// one place, at the end of the flow (see entry.tsx). One save site, not two.
+//
+// Skip is quiet but real — the flow promises you can leave any step, and an
+// empty tracker now has an empty state that invites rather than accuses.
 
 import { HabitCell } from "@/components/ui/habit-cell";
 import { IconSymbol } from "@/components/ui/icon-symbol";
@@ -24,10 +24,7 @@ import { PaperCard } from "@/components/ui/paper-card";
 import { PressableScale } from "@/components/ui/pressable-scale";
 import { Motion } from "@/constants/motion";
 import { Colors, Fonts, Hairline } from "@/constants/theme";
-import { useAuth } from "@/lib/auth-context";
-import { useDataStore } from "@/lib/data-store";
 import { toDayKey, todayKey } from "@/lib/dates";
-import type { Habit } from "@/lib/db";
 import { HabitLimits } from "@/lib/db";
 import {
   loadOnboardingDraft,
@@ -276,16 +273,9 @@ function TrackerPreview({ habits }: TrackerPreviewProps) {
 
 export default function OnboardingHabitsScreen() {
   const insets = useSafeAreaInsets();
-  const { session } = useAuth();
-  const dataStore = useDataStore();
 
   const [selectedHabits, setSelectedHabits] = useState<string[]>([]);
   const [customHabit, setCustomHabit] = useState("");
-  const [saving, setSaving] = useState(false);
-  // User-safe reason from the last failed save; keeps the user on this step.
-  const [saveError, setSaveError] = useState<string | null>(null);
-  // Second tap while a save is in flight must not start a second write.
-  const submittingRef = useRef(false);
 
   const fade = useRef(new Animated.Value(0)).current;
   const rise = useRef(new Animated.Value(16)).current;
@@ -335,7 +325,7 @@ export default function OnboardingHabitsScreen() {
   }
 
   const atLimit = selectedHabits.length >= MAX_STARTER_HABITS;
-  const canContinue = selectedHabits.length >= MIN_STARTER_HABITS && !saving;
+  const canContinue = selectedHabits.length >= MIN_STARTER_HABITS;
 
   function toggleHabit(name: string) {
     const isSelected = selectedHabits.includes(name);
@@ -347,7 +337,6 @@ export default function OnboardingHabitsScreen() {
     } else {
       void Haptics.selectionAsync();
     }
-    setSaveError(null);
     commitSelection(
       isSelected
         ? selectedHabits.filter((h) => h !== name)
@@ -368,57 +357,21 @@ export default function OnboardingHabitsScreen() {
     // A habit typed by hand counts toward the minimum exactly like a tapped
     // suggestion — they all land in the same list.
     void Haptics.selectionAsync();
-    setSaveError(null);
     commitSelection([...selectedHabits, name]);
     setCustomHabit("");
   }
 
-  async function handleContinue() {
-    if (selectedHabits.length < MIN_STARTER_HABITS || submittingRef.current) {
-      return;
-    }
-    submittingRef.current = true;
-    setSaving(true);
-    setSaveError(null);
+  function handleContinue() {
+    if (selectedHabits.length < MIN_STARTER_HABITS) return;
+    // Draft only — the real save happens once, at the end of the flow
+    // (entry.tsx for a signed-in user, account setup for a guest).
+    saveOnboardingDraft({ habits: selectedHabits });
+    router.push("/onboarding/survey" as Href);
+  }
 
-    try {
-      if (!session) {
-        setSaveError("You're signed out. Sign in to save your habits.");
-        return;
-      }
-
-      // Existing habits come from the store (memory → storage → network), so an
-      // offline retry merges against what we already have instead of nothing.
-      const existingHabits = await dataStore.refreshHabits();
-      const existingNames = new Set(
-        existingHabits.map((h) => h.name.toLowerCase()),
-      );
-      const createdAt = new Date().toISOString();
-      const newHabits: Habit[] = selectedHabits
-        .filter((name) => !existingNames.has(name.toLowerCase()))
-        .map((name, index) => ({
-          id: `${Date.now()}${index}`,
-          name,
-          createdAt,
-        }));
-
-      // The store never throws. `queued` means the write is in the durable
-      // queue and will replay, so onboarding carries on — only `failed` holds
-      // the user here, with the retry on the same button. Either way the draft
-      // still holds the selection.
-      const outcome = await dataStore.saveHabits([
-        ...existingHabits,
-        ...newHabits,
-      ]);
-      if (outcome.status === "failed") {
-        setSaveError(outcome.reason);
-        return;
-      }
-      router.push("/onboarding/feed-demo" as Href);
-    } finally {
-      submittingRef.current = false;
-      setSaving(false);
-    }
+  function handleSkip() {
+    saveOnboardingDraft({ habits: selectedHabits });
+    router.push("/onboarding/survey" as Href);
   }
 
   return (
@@ -529,12 +482,6 @@ export default function OnboardingHabitsScreen() {
             {selectionStatus(selectedHabits.length)}
           </Text>
 
-          {saveError ? (
-            <Text style={styles.saveError}>
-              {saveError} Tap continue to try again.
-            </Text>
-          ) : null}
-
           <PressableScale
             style={[styles.continueButton, !canContinue && styles.disabled]}
             disabled={!canContinue}
@@ -549,14 +496,22 @@ export default function OnboardingHabitsScreen() {
                 ? `Choose at least ${MIN_STARTER_HABITS} habits to continue`
                 : undefined
             }
-            accessibilityState={{ disabled: !canContinue, busy: saving }}
+            accessibilityState={{ disabled: !canContinue }}
           >
-            <Text style={styles.continueText}>
-              {saving ? "Saving…" : "Continue"}
-            </Text>
+            <Text style={styles.continueText}>Continue</Text>
           </PressableScale>
 
-          <OnboardingProgress step={2} />
+          <TouchableOpacity
+            style={styles.skipButton}
+            onPress={handleSkip}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Skip picking habits for now"
+          >
+            <Text style={styles.skipLinkText}>Skip for now</Text>
+          </TouchableOpacity>
+
+          <OnboardingProgress step={1} />
         </View>
       </KeyboardAvoidingView>
     </PaperBackground>
@@ -746,13 +701,11 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginBottom: 10,
   },
-  saveError: {
-    fontSize: 14,
-    lineHeight: 20,
+  skipButton: { alignItems: "center", paddingVertical: 10 },
+  skipLinkText: {
+    fontSize: 15,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
-    textAlign: "center",
-    marginBottom: 10,
   },
   continueButton: {
     backgroundColor: Colors.ink,
