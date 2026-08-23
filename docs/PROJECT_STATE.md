@@ -218,14 +218,14 @@ fail and permanently destroys the user's data. The app brands as "Aight Bet"; th
 | `app/habits/index.tsx` | Habit management: create / rename / delete / drag-reorder. |
 | `app/security/index.tsx` | Security settings: change password, reveal + regenerate recovery key. |
 | `app/auth/_layout.tsx` | Auth stack. |
-| `app/auth/signup.tsx` | Email + username + password signup; stashes the password in `signupTransient`. |
-| `app/auth/verify.tsx` | Email-verification wait/resume; consumes `signupTransient`. |
-| `app/auth/recovery-setup.tsx` | Post-signup: create the `accounts` row, run `keyring.setupNewUser`, show the recovery key once, require explicit confirmation. |
+| `app/auth/signup.tsx` | Email + password signup (no username since 2026-08-23; usernames are claimed later in Profile); stashes the password in `signupTransient`. |
+| `app/auth/verify.tsx` | 6-digit email code screen; auto-submits at six digits; consumes `signupTransient`. Live once `mailer_autoconfirm` is off. |
+| `app/auth/recovery-setup.tsx` | Post-signup: create the `accounts` row (id only), run `keyring.setupNewUser`, persist the onboarding draft (habits + first entry) through the store, mark onboarding complete, then reveal the recovery key once ("screenshot or save it", single I-saved-it button) and land in the app. |
 | `app/auth/signin.tsx` | Login + `keyring.unlock`. |
 | `app/auth/login.tsx` | Landing/marketing screen with `BrandMark`. |
 | `app/auth/forgot-password.tsx` | Supabase password-reset email. |
 | `app/auth/recover-with-key.tsx` | `keyring.unlockWithRecoveryKey` after a fresh password reset. |
-| `app/onboarding/_layout.tsx` · `welcome.tsx` · `habits.tsx` · `feed-demo.tsx` | 3-step first run: welcome animation → pick habits → feed demo. Several uncleared `setTimeout`/`rAF` chains (D19). |
+| `app/onboarding/_layout.tsx` · `welcome.tsx` · `explore.tsx` · `habits.tsx` · `survey.tsx` · `entry.tsx` | Guest-first onboarding (2026-08-23 redesign): welcome (Get started / tour / sign in, needs NO session) → optional 4-page example tour → pick habits (draft only) → one survey tap → mood-seeded first entry. A guest exits into signup; a signed-in straggler saves directly via `lib/onboarding-persist.ts` and finishes. |
 
 ### `components/` — shared components
 | File | Exports / owns |
@@ -269,7 +269,8 @@ fail and permanently destroys the user's data. The app brands as "Aight Bet"; th
 | `stats.ts` | Pure, deterministic math over decrypted `HabitLog[]` (no React/network/crypto; `today` is always injected). `computeHabitStats`, `computeAllHabitStats`, `computeOverallStats`, `completionRateForMonth`, `monthOverMonthTrend`, `monthlyRateSeries`, `heatmapCells`, `longestStreakRange`, `daysToRecord`, `bestDayOfWeek`, `weekendComparison`, `hadRecentComeback`, `buildInsight`; types `HabitStats`, `OverallStats`, `HeatCell`, `HeatLevel`, `RatePoint`, `TrendResult`, `StreakRange`, `InsightParts`. |
 | `use-recent-logs.ts` | `useRecentHabitLogs(monthsBack = 12, refreshToken = 0)` — merges N months of logs from the store via `allSettled`. |
 | `layout-algorithm.ts` | `determineLayout`, `LayoutType`, `ImageDimension`, `LayoutDecision` — feed image layout math. |
-| `auth/signup-transient.ts` | `signupTransient` — in-memory password bridge between signup and verify; self-clears after consumption or 10 minutes. Never persisted. |
+| `auth/signup-transient.ts` | `signupTransient` — in-memory password bridge between signup and verify/setup; self-clears after consumption or 10 minutes. Never persisted. Email + password only (no username). |
+| `onboarding-persist.ts` | The ONE save site for the guest onboarding draft (habit merge + first entry) — called from `onboarding/entry.tsx` (signed-in path) and `auth/recovery-setup.tsx` (new-account path), and from signin's save-your-draft offer. |
 | `media/storage.ts` (+ `media/index.ts`) | `uploadImage`, `getImageUrl` (signed URLs, cached), `deleteImage`, `clearMediaCache`, `clearUserMedia`. Bucket `private-media`, path `<userId>/<entryId>/<mediaId>.<ext>`. Bytes are **not** E2E-encrypted in v1. |
 
 ### `lib/crypto/`
@@ -617,9 +618,11 @@ those URLs carry live recovery tokens.
 Two Auth items remain open **on purpose**:
 - **Leaked-password protection is off** — it is a Supabase Pro-plan feature and this project is on
   Free. The script attempts it, reports, and continues. Revisit on upgrade.
-- **`mailer_autoconfirm` is on** — no email verification. A launch gate, not a bug: turning it on
-  makes every signup wait for an email, which breaks throwaway test accounts. Flip it as the last
-  pre-ship change.
+- **`mailer_autoconfirm`** — flip it OFF with `bash scripts/supabase-verify-email-on.sh` (also sets
+  the confirmation email to carry the 6-digit `{{ .Token }}` code the verify screen expects). The
+  client handles both states: with autoconfirm on, signup skips straight to keyring setup; with it
+  off, the verify screen runs first. `tests/e2e.test.ts` is unaffected either way — its disposable
+  users are created with `admin.createUser({ email_confirm: true })`.
 
 **Environment.** `.env` holds the public client vars only — `EXPO_PUBLIC_SUPABASE_URL` and
 `EXPO_PUBLIC_SUPABASE_KEY` (the anon key is public by design; RLS is the boundary).
