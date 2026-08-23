@@ -2,23 +2,28 @@
 #
 # Turn REAL email verification on for signup (onboarding redesign, 2026-08-23).
 #
-# Two changes, both Auth config (Management API, like supabase-auth-config.sh):
+# Two changes, both Auth config (Management API, like supabase-auth-config.sh),
+# and the ORDER is load-bearing:
 #
-#   mailer_autoconfirm -> false
-#     signUp() stops returning an instant session; the client's verify screen
-#     (app/auth/verify.tsx) takes over: user types the 6-digit code, verifyOtp
-#     creates the session, keyring setup runs after.
+#   1. confirmation email template -> shows {{ .Token }} (the 6-digit code)
+#      The stock template only carries a confirmation LINK, no code. The app
+#      asks for a code, so the email must contain one.
 #
-#   confirmation email template -> shows {{ .Token }} (the 6-digit code)
-#     The stock template only carries a confirmation LINK. The app asks for a
-#     code, so the email must contain one. Plain text on purpose: it renders
-#     everywhere and there is nothing to get wrong.
+#   2. mailer_autoconfirm -> false, ONLY IF step 1 succeeded
+#      Flipping autoconfirm without the template would strand every new user:
+#      a link-only email on one side, a code screen on the other. So a failed
+#      template patch leaves autoconfirm ON (and this script forces it back on
+#      if it ever finds it half-flipped), and signup keeps working instantly.
 #
-# Safe to re-run (PATCH). Test accounts are unaffected: tests/e2e.test.ts
-# creates its users with admin.createUser({ email_confirm: true }).
+# KNOWN LIMIT (hit 2026-08-23): template customization is refused on the Free
+# plan with the default email provider. The ways through:
+#   a. configure a custom SMTP provider (Resend/Brevo have free tiers) in
+#      Dashboard -> Project Settings -> Auth -> SMTP, then re-run this script;
+#   b. or upgrade the plan, then re-run.
+# Until one of those happens this script is a safe no-op that reports status.
 #
-# To roll back (verification off again):
-#   patch '{"mailer_autoconfirm": true}'
+# Test accounts are unaffected either way: tests/e2e.test.ts creates its users
+# with admin.createUser({ email_confirm: true }).
 #
 # Usage:  ./scripts/supabase-verify-email-on.sh
 
@@ -36,17 +41,29 @@ if [ -z "${SUPABASE_ACCESS_TOKEN:-}" ]; then
   exit 1
 fi
 
+get_config() {
+  curl -sS "https://api.supabase.com/v1/projects/$PROJECT_REF/config/auth" \
+    -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN"
+}
+
 patch() {
   curl -sS -X PATCH "https://api.supabase.com/v1/projects/$PROJECT_REF/config/auth" \
     -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
     -H "Content-Type: application/json" -d "$1"
 }
 
-echo "turning email verification on for $PROJECT_REF ..."
+echo "current state:"
+get_config | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print("  mailer_autoconfirm:", d.get("mailer_autoconfirm"))
+print("  smtp_host:", d.get("smtp_host") or "(default provider)")
+'
 
-patch "$(cat <<'JSON'
+echo
+echo "step 1: confirmation template with the 6-digit code ..."
+TEMPLATE_OK="$(patch "$(cat <<'JSON'
 {
-  "mailer_autoconfirm": false,
   "mailer_subjects_confirmation": "Your Aight Bet code: {{ .Token }}",
   "mailer_templates_confirmation_content": "<h2>Almost there</h2><p>Your verification code is:</p><p style=\"font-size:28px;letter-spacing:6px;font-weight:bold\">{{ .Token }}</p><p>Enter it in the app to seal your journal. The code expires in an hour.</p><p>If you didn't create an Aight Bet account, you can ignore this email.</p>"
 }
@@ -55,8 +72,35 @@ JSON
 import json, sys
 d = json.load(sys.stdin)
 if "message" in d:
-    print("FAILED:", d["message"]); raise SystemExit(1)
-print("done:")
+    print("no")
+    print("  FAILED:", d["message"], file=sys.stderr)
+else:
+    print("yes")
+')"
+
+if [ "$TEMPLATE_OK" = "yes" ]; then
+  echo "  template set."
+  echo
+  echo "step 2: turning autoconfirm off ..."
+  patch '{"mailer_autoconfirm": false}' | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if "message" in d:
+    print("  FAILED:", d["message"]); raise SystemExit(1)
 print("  mailer_autoconfirm:", d.get("mailer_autoconfirm"))
-print("  confirmation subject:", d.get("mailer_subjects_confirmation"))
+print()
+print("done: email verification is ON. New signups get a 6-digit code.")
 '
+else
+  echo
+  echo "step 2: SKIPPED. Making sure autoconfirm is still on ..."
+  patch '{"mailer_autoconfirm": true}' | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print("  mailer_autoconfirm:", d.get("mailer_autoconfirm"))
+print()
+print("verification stays OFF (signup still works, instantly, no code email).")
+print("to enable it: add a custom SMTP provider (free: Resend, Brevo) under")
+print("Dashboard -> Project Settings -> Auth -> SMTP, then re-run this script.")
+'
+fi
