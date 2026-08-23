@@ -1,10 +1,24 @@
+// Create the account — email and password, nothing else.
+//
+// This screen sits at the END of onboarding now, not the front: by the time
+// someone lands here they have usually picked habits, answered the survey tap
+// and written a first line, all riding in the local draft. The copy leans on
+// that ("your first entry is written") because it is the honest reason to make
+// an account: sealing what they just made.
+//
+// No username field. Usernames are optional and claimed later from Profile →
+// Edit; the accounts row is created without one during setup. The password is
+// not just a login credential here — it derives the key that wraps the master
+// key (see lib/crypto/keyring.ts), which is why it has real rules.
+
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
 import { Colors, Fonts } from "@/constants/theme";
 import { signupTransient } from "@/lib/auth/signup-transient";
+import { loadOnboardingDraft } from "@/lib/onboarding-draft";
 import { supabase } from "@/lib/supabase";
-import { router } from "expo-router";
-import { useState } from "react";
+import { Href, router } from "expo-router";
+import { useEffect, useState } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
@@ -20,28 +34,28 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 export default function SignupScreen() {
   const insets = useSafeAreaInsets();
-  const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const [checkingUsername, setCheckingUsername] = useState(false);
-  const [usernameError, setUsernameError] = useState("");
-  const [usernameAvailable, setUsernameAvailable] = useState(false);
   const [passwordError, setPasswordError] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  // Whether a first entry is waiting in the draft — it changes the pitch.
+  const [hasDraftEntry, setHasDraftEntry] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadOnboardingDraft().then((draft) => {
+      if (cancelled) return;
+      setHasDraftEntry(draft.highlight.trim().length > 0);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const validateEmail = (e: string): boolean =>
     /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
-
-  const validateUsername = (value: string): string | null => {
-    const clean = value.toLowerCase().trim();
-    if (clean.length < 3) return "At least 3 characters";
-    if (clean.length > 20) return "Max 20 characters";
-    if (!/^[a-z0-9_]+$/.test(clean))
-      return "Only letters, numbers, underscores";
-    return null;
-  };
 
   const validatePassword = (pass: string): string | null => {
     if (pass.length < 8) return "At least 8 characters";
@@ -51,58 +65,7 @@ export default function SignupScreen() {
     return null;
   };
 
-  const checkUsernameAvailability = async (value: string) => {
-    const clean = value.toLowerCase().trim();
-    const validationError = validateUsername(clean);
-    if (validationError) {
-      setUsernameError(validationError);
-      setUsernameAvailable(false);
-      return;
-    }
-
-    setCheckingUsername(true);
-    setUsernameError("");
-
-    try {
-      const { data, error } = await supabase.rpc("username_available", {
-        check_username: clean,
-      });
-
-      if (error) {
-        // Best effort — let signup attempt handle the real check
-        setUsernameError("");
-        setUsernameAvailable(true);
-        return;
-      }
-      if (data === false) {
-        setUsernameError("Username taken");
-        setUsernameAvailable(false);
-      } else {
-        setUsernameError("");
-        setUsernameAvailable(true);
-      }
-    } finally {
-      setCheckingUsername(false);
-    }
-  };
-
   const handleSignup = async () => {
-    if (!username.trim()) {
-      setUsernameError("Username is required");
-      return;
-    }
-    const usernameValidation = validateUsername(username);
-    if (usernameValidation) {
-      setUsernameError(usernameValidation);
-      return;
-    }
-    if (!usernameAvailable) {
-      Alert.alert(
-        "Username unavailable",
-        "Please choose a different username.",
-      );
-      return;
-    }
     if (!email.trim() || !validateEmail(email)) {
       Alert.alert("Invalid email", "Please enter a valid email address.");
       return;
@@ -122,12 +85,10 @@ export default function SignupScreen() {
 
     try {
       const cleanEmail = email.trim().toLowerCase();
-      const cleanUsername = username.toLowerCase().trim();
 
       const { data, error } = await supabase.auth.signUp({
         email: cleanEmail,
         password,
-        options: { data: { username: cleanUsername } },
       });
 
       if (error) {
@@ -147,12 +108,8 @@ export default function SignupScreen() {
         return;
       }
 
-      // Stash password so verify screen can derive the encryption keyring
-      signupTransient.set({
-        email: cleanEmail,
-        username: cleanUsername,
-        password,
-      });
+      // Stash password so setup can derive the encryption keyring
+      signupTransient.set({ email: cleanEmail, password });
 
       if (data.session) {
         // Email confirmation disabled — go straight to keyring setup
@@ -163,11 +120,7 @@ export default function SignupScreen() {
       } else {
         router.push({
           pathname: "/auth/verify",
-          params: {
-            email: cleanEmail,
-            username: cleanUsername,
-            isNewUser: "true",
-          },
+          params: { email: cleanEmail, isNewUser: "true" },
         });
       }
     } catch {
@@ -193,56 +146,24 @@ export default function SignupScreen() {
             onPress={() => {
               // Can be the first screen in the stack (replace from sign-in).
               if (router.canGoBack()) router.back();
-              else router.replace("/auth/login");
+              else router.replace("/onboarding/welcome" as Href);
             }}
             activeOpacity={0.85}
             accessibilityRole="button"
             accessibilityLabel="Back"
           >
-            <IconSymbol name="chevron.left" size={24} color={Colors.ink} />
+            <IconSymbol name="chevron.left" size={22} color={Colors.ink} />
             <Text style={styles.backText}>Back</Text>
           </TouchableOpacity>
 
-          <Text style={styles.title}>Create Account</Text>
-          <Text style={styles.subtitle}>Private by default.</Text>
+          <Text style={styles.title}>Create your private journal</Text>
+          <Text style={styles.subtitle}>
+            {hasDraftEntry
+              ? "Your first entry is written. An account seals it so only you can ever read it."
+              : "Takes about a minute. Private by default."}
+          </Text>
 
           <View style={styles.form}>
-            <Text style={styles.label}>Username</Text>
-            <View style={styles.usernameContainer}>
-              <Text style={styles.prefix}>@</Text>
-              <TextInput
-                style={styles.usernameInput}
-                value={username}
-                onChangeText={(text) => {
-                  const clean = text.toLowerCase().replace(/[^a-z0-9_]/g, "");
-                  setUsername(clean);
-                  setUsernameAvailable(false);
-                  setUsernameError("");
-                }}
-                onBlur={() => {
-                  if (username.length >= 3) checkUsernameAvailability(username);
-                }}
-                placeholder="yourname"
-                placeholderTextColor={Colors.textSecondary}
-                autoCapitalize="none"
-                autoCorrect={false}
-                maxLength={20}
-              />
-              {checkingUsername && <Text style={styles.checking}>...</Text>}
-              {usernameAvailable && !checkingUsername && (
-                <IconSymbol
-                  name="checkmark.circle.fill"
-                  size={20}
-                  color={Colors.success}
-                />
-              )}
-            </View>
-            {usernameError ? (
-              <Text style={styles.error}>{usernameError}</Text>
-            ) : (
-              <Text style={styles.hint}>3 to 20 · a-z 0-9 _</Text>
-            )}
-
             <Text style={styles.label}>Email</Text>
             <TextInput
               style={styles.input}
@@ -250,10 +171,10 @@ export default function SignupScreen() {
               onChangeText={setEmail}
               placeholder="you@example.com"
               placeholderTextColor={Colors.textSecondary}
-              keyboardType="email-address"
               autoCapitalize="none"
               autoCorrect={false}
-              autoComplete="email"
+              keyboardType="email-address"
+              textContentType="emailAddress"
             />
 
             <Text style={styles.label}>Password</Text>
@@ -261,8 +182,8 @@ export default function SignupScreen() {
               <TextInput
                 style={styles.passwordInput}
                 value={password}
-                onChangeText={(t) => {
-                  setPassword(t);
+                onChangeText={(v) => {
+                  setPassword(v);
                   setPasswordError("");
                 }}
                 placeholder="Create a password"
@@ -270,32 +191,30 @@ export default function SignupScreen() {
                 secureTextEntry={!showPassword}
                 autoCapitalize="none"
                 autoCorrect={false}
+                textContentType="newPassword"
               />
               <TouchableOpacity
-                onPress={() => setShowPassword(!showPassword)}
                 style={styles.eyeButton}
+                onPress={() => setShowPassword(!showPassword)}
                 activeOpacity={0.85}
                 accessibilityRole="button"
                 accessibilityLabel={
                   showPassword ? "Hide password" : "Show password"
                 }
-                accessibilityState={{ selected: showPassword }}
               >
-                <IconSymbol
-                  name={showPassword ? "eye.slash" : "eye"}
-                  size={20}
-                  color={Colors.textSecondary}
-                />
+                <Text style={styles.eyeText}>
+                  {showPassword ? "Hide" : "Show"}
+                </Text>
               </TouchableOpacity>
             </View>
-            <Text style={styles.hint}>8+ · upper, lower, number</Text>
+            <Text style={styles.hint}>8+ characters, upper, lower, number</Text>
 
             <Text style={styles.label}>Confirm Password</Text>
             <TextInput
               style={styles.input}
               value={confirmPassword}
-              onChangeText={(t) => {
-                setConfirmPassword(t);
+              onChangeText={(v) => {
+                setConfirmPassword(v);
                 setPasswordError("");
               }}
               placeholder="Confirm your password"
@@ -303,22 +222,29 @@ export default function SignupScreen() {
               secureTextEntry={!showPassword}
               autoCapitalize="none"
               autoCorrect={false}
+              textContentType="newPassword"
             />
             {passwordError ? (
               <Text style={styles.error}>{passwordError}</Text>
             ) : null}
 
+            <Text style={styles.privacyNote}>
+              Your password also locks your encryption. We never see it and we
+              can&apos;t reset it for you, so you&apos;ll get a recovery key
+              next.
+            </Text>
+
             <TouchableOpacity
               style={[styles.button, loading && styles.buttonDisabled]}
               onPress={handleSignup}
-              disabled={loading || checkingUsername}
+              disabled={loading}
               activeOpacity={0.85}
               accessibilityRole="button"
-              accessibilityLabel="Create account"
-              accessibilityState={{ disabled: loading || checkingUsername }}
+              accessibilityLabel="Create journal"
+              accessibilityState={{ disabled: loading, busy: loading }}
             >
               <Text style={styles.buttonText}>
-                {loading ? "Creating account..." : "Create Account"}
+                {loading ? "Creating..." : "Create journal"}
               </Text>
             </TouchableOpacity>
           </View>
@@ -354,23 +280,22 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 28,
-    fontWeight: "700",
     color: Colors.ink,
-    fontFamily: Fonts.handwriting,
+    fontFamily: Fonts.handwritingSemiBold,
     marginBottom: 8,
   },
   subtitle: {
     fontSize: 16,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
+    lineHeight: 24,
     marginBottom: 24,
   },
   form: { width: "100%", maxWidth: 400 },
   label: {
     fontSize: 14,
-    fontWeight: "600",
     color: Colors.ink,
-    fontFamily: Fonts.handwriting,
+    fontFamily: Fonts.handwritingSemiBold,
     marginBottom: 8,
     marginTop: 8,
   },
@@ -387,33 +312,6 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.card,
     marginBottom: 4,
   },
-  usernameContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    width: "100%",
-    height: 52,
-    borderWidth: 1.5,
-    borderColor: Colors.ink,
-    borderRadius: 12,
-    backgroundColor: Colors.card,
-    marginBottom: 4,
-  },
-  prefix: {
-    fontSize: 18,
-    color: Colors.textSecondary,
-    fontFamily: Fonts.handwriting,
-    paddingLeft: 16,
-  },
-  usernameInput: {
-    flex: 1,
-    height: "100%",
-    paddingHorizontal: 4,
-    paddingRight: 12,
-    fontSize: 16,
-    fontFamily: Fonts.handwriting,
-    color: Colors.ink,
-  },
-  checking: { fontSize: 14, color: Colors.textSecondary, paddingRight: 12 },
   passwordContainer: {
     flexDirection: "row",
     alignItems: "center",
@@ -434,6 +332,11 @@ const styles = StyleSheet.create({
     color: Colors.ink,
   },
   eyeButton: { padding: 12 },
+  eyeText: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwritingMedium,
+  },
   error: {
     fontSize: 13,
     color: Colors.danger,
@@ -445,6 +348,13 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
     marginBottom: 8,
+  },
+  privacyNote: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    lineHeight: 19,
+    marginTop: 12,
   },
   button: {
     width: "100%",
@@ -458,9 +368,8 @@ const styles = StyleSheet.create({
   buttonDisabled: { opacity: 0.6 },
   buttonText: {
     fontSize: 16,
-    fontWeight: "600",
     color: Colors.paper,
-    fontFamily: Fonts.handwriting,
+    fontFamily: Fonts.handwritingSemiBold,
   },
   signinContainer: {
     flexDirection: "row",
@@ -474,8 +383,8 @@ const styles = StyleSheet.create({
   },
   signinLink: {
     fontSize: 14,
-    color: Colors.accent,
-    fontFamily: Fonts.handwriting,
-    fontWeight: "600",
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingSemiBold,
+    textDecorationLine: "underline",
   },
 });

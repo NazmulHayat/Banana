@@ -5,6 +5,11 @@ import { useAuth } from "@/lib/auth-context";
 import { keyring } from "@/lib/crypto";
 import { useDataStore } from "@/lib/data-store";
 import { useOnboarding } from "@/lib/onboarding-context";
+import {
+  clearOnboardingDraft,
+  loadOnboardingDraft,
+} from "@/lib/onboarding-draft";
+import { persistOnboardingDraft } from "@/lib/onboarding-persist";
 import { supabase } from "@/lib/supabase";
 import { Href, router } from "expo-router";
 import { useEffect, useRef, useState } from "react";
@@ -97,6 +102,46 @@ export default function SigninScreen() {
       if (!mountedRef.current) return;
       setPendingUserId(null);
       releaseAccountCheck();
+
+      // A guest can write a first entry BEFORE tapping Sign in. For an
+      // account that skips onboarding, that draft would die silently here —
+      // so offer it. The not-done path needs no offer: the flow they're being
+      // sent into restores the draft on its own.
+      if (done) {
+        const draft = await loadOnboardingDraft();
+        const drafted = draft.highlight.trim();
+        if (drafted) {
+          Alert.alert(
+            "Save what you wrote?",
+            "You wrote an entry before signing in. Add it to today's journal?",
+            [
+              {
+                text: "Discard",
+                style: "destructive",
+                onPress: () => {
+                  void clearOnboardingDraft();
+                  router.replace("/(tabs)");
+                },
+              },
+              {
+                text: "Save it",
+                isPreferred: true,
+                onPress: () => {
+                  void (async () => {
+                    const result = await persistOnboardingDraft(dataStore);
+                    // `queued` still clears — the write is durable. Only a
+                    // hard failure keeps the draft for another try.
+                    if (result.ok) await clearOnboardingDraft();
+                    router.replace("/(tabs)");
+                  })();
+                },
+              },
+            ],
+          );
+          return;
+        }
+      }
+
       router.replace(done ? "/(tabs)" : ("/onboarding/welcome" as Href));
     })();
   }, [

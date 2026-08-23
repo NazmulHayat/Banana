@@ -368,7 +368,20 @@ export default function ProfileScreen() {
             </View>
           ) : (
             <>
-              {username && <Text style={styles.username}>@{username}</Text>}
+              {username ? (
+                <Text style={styles.username}>@{username}</Text>
+              ) : (
+                <TouchableOpacity
+                  onPress={goToEdit}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel="Pick a username"
+                >
+                  <Text style={styles.claimHint}>
+                    No username yet. Tap to pick one.
+                  </Text>
+                </TouchableOpacity>
+              )}
               <Text style={styles.email}>{user?.email}</Text>
               {joinedLabel && <Text style={styles.joinedText}>{joinedLabel}</Text>}
             </>
@@ -582,6 +595,7 @@ const styles = StyleSheet.create({
   },
   avatarInitial: { fontSize: 28, fontWeight: "800", color: Colors.ink, fontFamily: Fonts.handwriting },
   username: { fontSize: 20, fontWeight: "700", color: Colors.ink, fontFamily: Fonts.handwriting, marginBottom: 4 },
+  claimHint: { fontSize: 15, color: Colors.textSecondary, fontFamily: Fonts.handwriting, marginBottom: 4 },
   email: { fontSize: 14, color: Colors.textSecondary, fontFamily: Fonts.handwriting },
   joinedText: { fontSize: 12, color: Colors.textSecondary, fontFamily: Fonts.handwriting, marginTop: 4 },
   userLoading: { alignItems: "center", gap: 8, paddingVertical: 8 },

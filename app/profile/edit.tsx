@@ -110,7 +110,7 @@ export default function EditProfileScreen() {
   useEffect(() => {
     if (seededRef.current || !profile) return;
     seededRef.current = true;
-    setUsername(profile.username);
+    setUsername(profile.username ?? "");
   }, [profile]);
 
   // Live availability, debounced. Local rules answer instantly; only a
