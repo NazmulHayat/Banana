@@ -618,6 +618,11 @@ those URLs carry live recovery tokens.
 Two Auth items remain open **on purpose**:
 - **Leaked-password protection is off** — it is a Supabase Pro-plan feature and this project is on
   Free. The script attempts it, reports, and continues. Revisit on upgrade.
+- **Email sending is capped at 2/hour** on the built-in provider, project-wide, best-effort, no SLA
+  — Supabase documents it as non-production. Password reset works today but shares that budget with
+  everything else, and it is the same limitation that refuses template edits. `scripts/supabase-smtp.sh`
+  points Auth at a real provider (Resend/Brevo free tiers), which lifts the cap to 30/hour and
+  unlocks templates. Pre-beta gate.
 - **`mailer_autoconfirm`** — flip it OFF with `bash scripts/supabase-verify-email-on.sh` (also sets
   the confirmation email to carry the 6-digit `{{ .Token }}` code the verify screen expects). The
   client handles both states: with autoconfirm on, signup skips straight to keyring setup; with it
