@@ -3,6 +3,7 @@ import { PaperBackground } from "@/components/ui/paper-background";
 import { Colors, Fonts, Scrim } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { keyring } from "@/lib/crypto";
+import { isEmailShaped } from "@/lib/email";
 import { useDataStore } from "@/lib/data-store";
 import { useOnboarding } from "@/lib/onboarding-context";
 import {
@@ -157,8 +158,7 @@ export default function SigninScreen() {
   // working and must not accept a second tap.
   const busy = loading || pendingUserId !== null;
 
-  const validateEmail = (e: string): boolean =>
-    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+
 
   const handleSignin = async () => {
     const cleanEmail = email.trim().toLowerCase();
@@ -167,7 +167,7 @@ export default function SigninScreen() {
       Alert.alert("Required", "Please enter your email.");
       return;
     }
-    if (!validateEmail(cleanEmail)) {
+    if (!isEmailShaped(cleanEmail)) {
       Alert.alert("Invalid email", "Please enter a valid email address.");
       return;
     }

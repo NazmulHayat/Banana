@@ -13,8 +13,10 @@
 
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
-import { Colors, Fonts } from "@/constants/theme";
+import { Colors, Fonts, Scrim } from "@/constants/theme";
 import { signupTransient } from "@/lib/auth/signup-transient";
+import type { EmailCheck } from "@/lib/email";
+import { checkEmail, normalizeEmail } from "@/lib/email";
 import { loadOnboardingDraft } from "@/lib/onboarding-draft";
 import { supabase } from "@/lib/supabase";
 import { Href, router } from "expo-router";
@@ -40,6 +42,9 @@ export default function SignupScreen() {
   const [loading, setLoading] = useState(false);
   const [passwordError, setPasswordError] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  // Structure, typo and throwaway checks — all on-device, shown once the
+  // field loses focus so nobody is corrected mid-word.
+  const [emailCheck, setEmailCheck] = useState<EmailCheck | null>(null);
   // Whether a first entry is waiting in the draft — it changes the pitch.
   const [hasDraftEntry, setHasDraftEntry] = useState(false);
 
@@ -54,9 +59,6 @@ export default function SignupScreen() {
     };
   }, []);
 
-  const validateEmail = (e: string): boolean =>
-    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
-
   const validatePassword = (pass: string): string | null => {
     if (pass.length < 8) return "At least 8 characters";
     if (!/[A-Z]/.test(pass)) return "Include an uppercase letter";
@@ -65,8 +67,25 @@ export default function SignupScreen() {
     return null;
   };
 
+  /** Run the checks when the field loses focus, not on every keystroke. */
+  const handleEmailBlur = () => {
+    setEmailCheck(email.trim() ? checkEmail(email) : null);
+  };
+
+  /** One tap on "Did you mean ...?" rewrites the field. */
+  const acceptSuggestion = () => {
+    const fixed = emailCheck?.suggestion;
+    if (!fixed) return;
+    setEmail(fixed);
+    setEmailCheck(checkEmail(fixed));
+  };
+
   const handleSignup = async () => {
-    if (!email.trim() || !validateEmail(email)) {
+    const check = checkEmail(email);
+    setEmailCheck(email.trim() ? check : null);
+    // Only structural nonsense blocks. A typo or throwaway warning is advice:
+    // the address may be perfectly real and we are not the authority on it.
+    if (!check.valid) {
       Alert.alert("Invalid email", "Please enter a valid email address.");
       return;
     }
@@ -84,7 +103,7 @@ export default function SignupScreen() {
     setPasswordError("");
 
     try {
-      const cleanEmail = email.trim().toLowerCase();
+      const cleanEmail = normalizeEmail(email);
 
       const { data, error } = await supabase.auth.signUp({
         email: cleanEmail,
@@ -168,7 +187,12 @@ export default function SignupScreen() {
             <TextInput
               style={styles.input}
               value={email}
-              onChangeText={setEmail}
+              onChangeText={(v) => {
+                setEmail(v);
+                // Clear a stale warning the moment they start fixing it.
+                if (emailCheck) setEmailCheck(null);
+              }}
+              onBlur={handleEmailBlur}
               placeholder="you@example.com"
               placeholderTextColor={Colors.textSecondary}
               autoCapitalize="none"
@@ -176,6 +200,28 @@ export default function SignupScreen() {
               keyboardType="email-address"
               textContentType="emailAddress"
             />
+
+            {/* A typo offers a one-tap fix; every other warning is just a
+                heads-up. None of them block the button. */}
+            {emailCheck?.problem === "typo" && emailCheck.suggestion ? (
+              <TouchableOpacity
+                style={styles.suggestionRow}
+                onPress={acceptSuggestion}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityLabel={`Use ${emailCheck.suggestion} instead`}
+              >
+                <Text style={styles.suggestionText}>
+                  Did you mean{" "}
+                  <Text style={styles.suggestionFix}>
+                    {emailCheck.suggestion}
+                  </Text>
+                  ?
+                </Text>
+              </TouchableOpacity>
+            ) : emailCheck?.message && emailCheck.problem !== "invalid" ? (
+              <Text style={styles.emailWarning}>{emailCheck.message}</Text>
+            ) : null}
 
             <Text style={styles.label}>Password</Text>
             <View style={styles.passwordContainer}>
@@ -348,6 +394,31 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
     marginBottom: 8,
+  },
+  suggestionRow: {
+    backgroundColor: Scrim.accent,
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginTop: 6,
+    marginBottom: 4,
+  },
+  suggestionText: {
+    fontSize: 14,
+    color: Colors.ink,
+    fontFamily: Fonts.handwriting,
+  },
+  suggestionFix: {
+    fontFamily: Fonts.handwritingSemiBold,
+    textDecorationLine: "underline",
+  },
+  emailWarning: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    lineHeight: 19,
+    marginTop: 6,
+    marginBottom: 4,
   },
   privacyNote: {
     fontSize: 13,
