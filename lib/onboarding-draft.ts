@@ -14,14 +14,29 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 // New protocol string, new suffix — existing `banana_*` keys are never renamed.
 const STORAGE_KEY = "banana_onboarding_draft_v1";
 
+/** The one survey answer, step 2. Copy downstream adapts to it. */
+export type PriorExperience = "never" | "fell_off" | "doing_it";
+
+/** The mood tap that seeds the first entry, step 3. */
+export type MoodId = "rough" | "flat" | "good" | "great";
+
 export interface OnboardingDraft {
-  /** Starter habit names picked on step 2. */
+  /** Starter habit names picked on step 1. */
   habits: string[];
   /** First highlight typed on step 3. */
   highlight: string;
+  /** Survey answer from step 2, null until tapped. */
+  priorExperience: PriorExperience | null;
+  /** Mood tapped on step 3, null until tapped. */
+  mood: MoodId | null;
 }
 
-const EMPTY: OnboardingDraft = { habits: [], highlight: "" };
+const EMPTY: OnboardingDraft = {
+  habits: [],
+  highlight: "",
+  priorExperience: null,
+  mood: null,
+};
 
 let cached: OnboardingDraft | null = null;
 
@@ -37,6 +52,19 @@ export async function loadOnboardingDraft(): Promise<OnboardingDraft> {
           ? parsed.habits.filter((h): h is string => typeof h === "string")
           : [],
         highlight: typeof parsed.highlight === "string" ? parsed.highlight : "",
+        priorExperience:
+          parsed.priorExperience === "never" ||
+          parsed.priorExperience === "fell_off" ||
+          parsed.priorExperience === "doing_it"
+            ? parsed.priorExperience
+            : null,
+        mood:
+          parsed.mood === "rough" ||
+          parsed.mood === "flat" ||
+          parsed.mood === "good" ||
+          parsed.mood === "great"
+            ? parsed.mood
+            : null,
       };
       return cached;
     }

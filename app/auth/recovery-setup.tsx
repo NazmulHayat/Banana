@@ -1,6 +1,8 @@
-// Runs immediately after signup (or post-verify). Creates the accounts row,
-// sets up the encryption keyring, explains the recovery key BEFORE showing it,
-// and reveals it once behind a saved-it checkbox.
+// Runs immediately after signup (or post-verify). Creates the accounts row
+// (no username — that's claimed later in Profile), sets up the encryption
+// keyring, saves everything the guest onboarding drafted (habit picks, the
+// first entry), then reveals the recovery key once with a screenshot-it
+// instruction. Continue lands in the app proper.
 //
 // Setup is resumable. It used to `consume()` the signup password before doing
 // any network work, so a dropped connection burned the only copy of it and
@@ -17,6 +19,10 @@ import { Colors, Fonts, Scrim } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { signupTransient } from "@/lib/auth/signup-transient";
 import { keyring } from "@/lib/crypto";
+import { useDataStore } from "@/lib/data-store";
+import { useOnboarding } from "@/lib/onboarding-context";
+import { clearOnboardingDraft } from "@/lib/onboarding-draft";
+import { persistOnboardingDraft } from "@/lib/onboarding-persist";
 import { supabase } from "@/lib/supabase";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
@@ -24,7 +30,6 @@ import { Href, router } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   ScrollView,
   StyleSheet,
   Text,
@@ -36,8 +41,6 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 type Phase =
   | "setting-up"
-  /** What a recovery key is, said before we show one. */
-  | "primer"
   | "reveal"
   | "need-password"
   | "error";
@@ -81,31 +84,14 @@ async function runAccountSetup(typedPassword?: string): Promise<SetupOutcome> {
   }
   const userId = session.user.id;
 
-  // Username: from the signup form if we still have it, else the copy Supabase
-  // kept in user metadata when the account was created.
-  const metaUsername = session.user.user_metadata?.username;
-  const username =
-    pending?.username ??
-    (typeof metaUsername === "string" ? metaUsername : null);
-  if (!username) {
-    return {
-      status: "error",
-      message: "Sign in again so we can finish setting up your account.",
-    };
-  }
-
-  // Idempotent by design — a retry re-upserts the same row.
+  // The accounts row ships without a username — it's optional now, claimed
+  // later from Profile -> Edit. Idempotent by design: a retry re-upserts the
+  // same row, and the upsert never overwrites a username that already exists
+  // (the row's other columns are untouched on conflict).
   const { error: accountErr } = await supabase
     .from("accounts")
-    .upsert({ id: userId, username }, { onConflict: "id" });
+    .upsert({ id: userId }, { onConflict: "id", ignoreDuplicates: true });
   if (accountErr) {
-    if (accountErr.code === "23505") {
-      return {
-        status: "error",
-        message:
-          "Someone took this username while you were signing up. Sign in again and pick another.",
-      };
-    }
     if (__DEV__) console.warn("[setup] accounts upsert failed:", accountErr.message);
     return { status: "error", message: GENERIC_FAILURE };
   }
@@ -130,11 +116,15 @@ async function runAccountSetup(typedPassword?: string): Promise<SetupOutcome> {
 export default function RecoverySetupScreen() {
   const insets = useSafeAreaInsets();
   const { markKeyringReady } = useAuth();
+  const { completeOnboarding } = useOnboarding();
+  const dataStore = useDataStore();
   const [phase, setPhase] = useState<Phase>("setting-up");
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>("");
-  const [confirmed, setConfirmed] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Whether the drafted first entry made it in — the reveal screen says so.
+  const [entrySaved, setEntrySaved] = useState(false);
+  const [entryQueued, setEntryQueued] = useState(false);
   const [typedPassword, setTypedPassword] = useState("");
   // Blocks a second run while one is in flight (double-tapped retry).
   const runningRef = useRef(false);
@@ -146,9 +136,7 @@ export default function RecoverySetupScreen() {
     if (!alive() || !mountedRef.current) return;
     if (outcome.status === "done") {
       markKeyringReady(true);
-      setRecoveryKey(outcome.recoveryKey);
-      // Explain first; the key itself is one tap away.
-      setPhase("primer");
+      void finalize(outcome.recoveryKey, alive);
       return;
     }
     if (outcome.status === "need-password") {
@@ -157,6 +145,32 @@ export default function RecoverySetupScreen() {
     }
     setErrorMsg(outcome.message);
     setPhase("error");
+  }
+
+  /**
+   * The keyring is up — now everything the guest flow drafted gets written for
+   * real: habit picks and the first entry, encrypted, through the store. Then
+   * onboarding is marked done (so a kill on the reveal screen reopens into the
+   * app, where the key stays viewable under Security), and the reveal shows.
+   *
+   * A persist failure is near-impossible here (network trouble queues rather
+   * than fails), but if it happens the draft is deliberately NOT cleared, the
+   * words survive on the device, and setup still completes — the recovery key
+   * matters more than re-running a write that will not improve.
+   */
+  async function finalize(key: string | null, alive: () => boolean) {
+    const result = await persistOnboardingDraft(dataStore);
+    if (result.ok) {
+      await clearOnboardingDraft();
+    } else if (__DEV__) {
+      console.warn("[setup] draft persist failed:", result.reason);
+    }
+    await completeOnboarding();
+    if (!alive() || !mountedRef.current) return;
+    setEntrySaved(result.entrySaved);
+    setEntryQueued(result.queued);
+    setRecoveryKey(key);
+    setPhase("reveal");
   }
 
   useEffect(() => {
@@ -205,20 +219,9 @@ export default function RecoverySetupScreen() {
     copiedTimer.current = setTimeout(() => setCopied(false), COPIED_FEEDBACK_MS);
   }
 
-  function handleContinue() {
-    if (!confirmed) {
-      Alert.alert(
-        "Confirm you saved it",
-        "Tap the checkbox to confirm you've written down or saved your recovery key.",
-      );
-      return;
-    }
-    finish();
-  }
-
   function finish() {
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    router.replace("/onboarding/welcome" as Href);
+    router.replace("/(tabs)" as Href);
   }
 
   if (phase === "setting-up") {
@@ -226,9 +229,9 @@ export default function RecoverySetupScreen() {
       <PaperBackground>
         <View style={[styles.loadingContainer, { paddingTop: insets.top }]}>
           <ActivityIndicator size="small" color={Colors.ink} />
-          <Text style={styles.loadingText}>Setting up your encryption...</Text>
+          <Text style={styles.loadingText}>Sealing your journal...</Text>
           <Text style={styles.loadingSub}>
-            This takes a couple of seconds.
+            Setting up your encryption. A couple of seconds.
           </Text>
         </View>
       </PaperBackground>
@@ -358,7 +361,7 @@ export default function RecoverySetupScreen() {
           </Text>
           <TouchableOpacity
             style={styles.primaryButton}
-            onPress={() => router.replace("/onboarding/welcome" as Href)}
+            onPress={finish}
             activeOpacity={0.85}
             accessibilityRole="button"
             accessibilityLabel="Continue"
@@ -366,59 +369,6 @@ export default function RecoverySetupScreen() {
             <Text style={styles.primaryButtonText}>Continue</Text>
           </TouchableOpacity>
         </View>
-      </PaperBackground>
-    );
-  }
-
-  // What the key is, and what happens if it's lost — said while there is still
-  // nothing secret on screen, so the user can go and open their password
-  // manager before the one-time reveal.
-  if (phase === "primer") {
-    return (
-      <PaperBackground>
-        <ScrollView
-          contentContainerStyle={[
-            styles.content,
-            { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 },
-          ]}
-        >
-          <View style={styles.iconCircle}>
-            <IconSymbol name="key.fill" size={32} color={Colors.paper} />
-          </View>
-          <Text style={styles.title}>Next: your recovery key</Text>
-          <Text style={styles.subtitle}>
-            Your journal is encrypted with your password, and we never hold a
-            copy of it. The recovery key is the spare.
-          </Text>
-
-          <View style={styles.tips}>
-            <Text style={styles.tipsItem}>
-              • It unlocks your journal if you ever forget your password.
-            </Text>
-            <Text style={styles.tipsItem}>
-              • We show it once, on the next screen. We can&apos;t show it again
-              or email it to you.
-            </Text>
-            <Text style={styles.tipsItem}>
-              • Lose your password and this key, and no one, including us, can
-              read your entries.
-            </Text>
-          </View>
-
-          <Text style={styles.primerHint}>
-            Have your password manager, notes app or a pen ready.
-          </Text>
-
-          <TouchableOpacity
-            style={styles.primaryButton}
-            onPress={() => setPhase("reveal")}
-            activeOpacity={0.85}
-            accessibilityRole="button"
-            accessibilityLabel="Show my recovery key"
-          >
-            <Text style={styles.primaryButtonText}>Show my recovery key</Text>
-          </TouchableOpacity>
-        </ScrollView>
       </PaperBackground>
     );
   }
@@ -434,11 +384,26 @@ export default function RecoverySetupScreen() {
         <View style={styles.iconCircle}>
           <IconSymbol name="key.fill" size={32} color={Colors.paper} />
         </View>
-        <Text style={styles.title}>Save your recovery key</Text>
+        <Text style={styles.title}>One last thing. Your recovery key</Text>
         <Text style={styles.subtitle}>
-          This is the only way back into your encrypted journal if you forget
-          your password, and this is the only time we can show it.
+          If you ever forget your password, this key is the only way back into
+          your journal. Take a screenshot now, or copy it somewhere safe.
         </Text>
+
+        {entrySaved && (
+          <View style={styles.entrySavedRow}>
+            <IconSymbol
+              name="checkmark.circle.fill"
+              size={18}
+              color={Colors.success}
+            />
+            <Text style={styles.entrySavedText}>
+              {entryQueued
+                ? "Your first entry is safe on this device. It syncs when you're back online."
+                : "Your first entry is encrypted and saved."}
+            </Text>
+          </View>
+        )}
 
         <View style={styles.keyBox}>
           <Text style={styles.keyText} selectable>
@@ -466,40 +431,24 @@ export default function RecoverySetupScreen() {
         </TouchableOpacity>
 
         <View style={styles.tips}>
-          <Text style={styles.tipsTitle}>Where to save it:</Text>
-          <Text style={styles.tipsItem}>• A password manager (best)</Text>
-          <Text style={styles.tipsItem}>• A note in iCloud / Google Drive</Text>
-          <Text style={styles.tipsItem}>• Written on paper, somewhere safe</Text>
+          <Text style={styles.tipsTitle}>Anywhere safe works:</Text>
+          <Text style={styles.tipsItem}>• A screenshot in your photos</Text>
+          <Text style={styles.tipsItem}>• Your password manager</Text>
+          <Text style={styles.tipsItem}>• A note, or paper in a drawer</Text>
         </View>
 
-        <TouchableOpacity
-          style={styles.checkboxRow}
-          onPress={() => setConfirmed(!confirmed)}
-          activeOpacity={0.85}
-          accessibilityRole="checkbox"
-          accessibilityLabel="I've saved my recovery key in a safe place"
-          accessibilityState={{ checked: confirmed }}
-        >
-          <View style={[styles.checkbox, confirmed && styles.checkboxOn]}>
-            {confirmed && (
-              <IconSymbol name="checkmark" size={14} color={Colors.paper} />
-            )}
-          </View>
-          <Text style={styles.checkboxLabel}>
-            I&apos;ve saved my recovery key in a safe place
-          </Text>
-        </TouchableOpacity>
+        <Text style={styles.revealFootnote}>
+          You can see this key again any time in Profile, under Security.
+        </Text>
 
         <TouchableOpacity
-          style={[styles.primaryButton, !confirmed && styles.buttonDisabled]}
-          onPress={handleContinue}
-          disabled={!confirmed}
+          style={styles.primaryButton}
+          onPress={finish}
           activeOpacity={0.85}
           accessibilityRole="button"
-          accessibilityLabel="Continue"
-          accessibilityState={{ disabled: !confirmed }}
+          accessibilityLabel="I saved it, take me to my journal"
         >
-          <Text style={styles.primaryButtonText}>Continue</Text>
+          <Text style={styles.primaryButtonText}>I saved it</Text>
         </TouchableOpacity>
       </ScrollView>
     </PaperBackground>
@@ -553,13 +502,30 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     maxWidth: 320,
   },
-  primerHint: {
+  entrySavedRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: Scrim.accent,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginBottom: 20,
+  },
+  entrySavedText: {
+    flex: 1,
     fontSize: 14,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingMedium,
+    lineHeight: 20,
+  },
+  revealFootnote: {
+    fontSize: 13,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
     textAlign: "center",
-    lineHeight: 20,
-    marginBottom: 24,
+    lineHeight: 19,
+    marginBottom: 20,
   },
   content: {
     flexGrow: 1,
@@ -649,30 +615,6 @@ const styles = StyleSheet.create({
     color: Colors.ink,
     fontFamily: Fonts.handwriting,
     lineHeight: 20,
-  },
-  checkboxRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    marginBottom: 20,
-    paddingHorizontal: 4,
-  },
-  checkbox: {
-    width: 24,
-    height: 24,
-    borderRadius: 6,
-    borderWidth: 1.5,
-    borderColor: Colors.ink,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: Colors.card,
-  },
-  checkboxOn: { backgroundColor: Colors.ink },
-  checkboxLabel: {
-    flex: 1,
-    fontSize: 14,
-    color: Colors.ink,
-    fontFamily: Fonts.handwriting,
   },
   primaryButton: {
     width: "100%",

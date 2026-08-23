@@ -8,6 +8,7 @@
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
 import { Colors, Fonts } from "@/constants/theme";
+import { isEmailShaped } from "@/lib/email";
 import { supabase } from "@/lib/supabase";
 import * as Linking from "expo-linking";
 import { Href, router } from "expo-router";
@@ -31,12 +32,10 @@ export default function ForgotPasswordScreen() {
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);
 
-  const validateEmail = (e: string): boolean =>
-    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 
   const handleSendReset = async () => {
     const clean = email.trim().toLowerCase();
-    if (!validateEmail(clean)) {
+    if (!isEmailShaped(clean)) {
       Alert.alert("Invalid email", "Please enter a valid email address.");
       return;
     }

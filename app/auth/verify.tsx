@@ -26,7 +26,6 @@ export default function VerifyScreen() {
   const insets = useSafeAreaInsets();
   const { email, isNewUser } = useLocalSearchParams<{
     email: string;
-    username?: string;
     isNewUser: string;
   }>();
   const [code, setCode] = useState("");
@@ -48,8 +47,20 @@ export default function VerifyScreen() {
     }
   }, [resendCooldown]);
 
-  const handleVerify = async () => {
-    const cleanCode = code.trim();
+  /**
+   * Six digits in the box (typed or pasted from the email) submit themselves —
+   * nobody should have to type a code AND find a button.
+   */
+  const handleCodeChange = (value: string) => {
+    const digits = value.replace(/[^0-9]/g, "").slice(0, 6);
+    setCode(digits);
+    if (digits.length === 6 && !loading) {
+      void handleVerify(digits);
+    }
+  };
+
+  const handleVerify = async (submitted?: string) => {
+    const cleanCode = (submitted ?? code).trim();
     if (!cleanCode || cleanCode.length < 6) {
       Alert.alert(
         "Invalid code",
@@ -155,17 +166,18 @@ export default function VerifyScreen() {
               ref={inputRef}
               style={styles.input}
               value={code}
-              onChangeText={setCode}
-              placeholder="Enter code"
+              onChangeText={handleCodeChange}
+              placeholder="6-digit code"
               placeholderTextColor={Colors.textSecondary}
               keyboardType="number-pad"
-              maxLength={8}
+              maxLength={6}
               autoComplete="one-time-code"
+              textContentType="oneTimeCode"
             />
 
             <TouchableOpacity
               style={[styles.button, loading && styles.buttonDisabled]}
-              onPress={handleVerify}
+              onPress={() => handleVerify()}
               disabled={loading}
               activeOpacity={0.7}
             >

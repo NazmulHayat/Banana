@@ -197,9 +197,10 @@ export function HabitGrid({ habits, logs, currentMonth, currentYear, loading, er
           <View style={styles.emptyIconWrap}>
             <IconSymbol name="leaf.fill" size={32} color={Colors.accent} />
           </View>
-          <Text style={styles.emptyTitle}>Start tracking</Text>
+          <Text style={styles.emptyTitle}>Ready when you are</Text>
           <Text style={styles.emptyHint}>
-            Add habits like Exercise, Read, or Hydrate to build your routine.
+            Pick a habit or two, Exercise, Read, anything you want to keep.
+            One tap a day and this grid starts filling in.
           </Text>
           <TouchableOpacity
             style={styles.emptyCta}

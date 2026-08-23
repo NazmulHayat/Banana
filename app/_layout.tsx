@@ -45,7 +45,7 @@ const POST_SESSION_AUTH_SCREENS = new Set([
   "verify",
 ]);
 
-// DEV: start every reload on the intro flow (splash → login) even when a
+// DEV: start every reload on the intro flow (splash → welcome) even when a
 // session exists, and never auto-kick off the auth/onboarding screens —
 // so the first-run experience is easy to iterate on. Dev builds only;
 // flip to false to get normal routing back.
@@ -89,13 +89,15 @@ function RootLayoutNav() {
 
     if (DEV_FORCE_INTRO && !forcedIntro.current) {
       forcedIntro.current = true;
-      router.replace("/auth/login");
+      router.replace("/onboarding/welcome" as Href);
       return;
     }
 
-    if (!session && !inAuthGroup) {
-      // No session, redirect to login
-      router.replace("/auth/login");
+    if (!session && !inAuthGroup && !inOnboarding) {
+      // No session. The onboarding group IS the guest experience now — the
+      // welcome, the tour and the three steps all run before any account
+      // exists — so guests are only bounced when they wander outside it.
+      router.replace("/onboarding/welcome" as Href);
       return;
     }
 

@@ -1,7 +1,10 @@
-// Onboarding step 1 of 3 — the promise.
+// The front door — the promise, and three ways in.
 //
-// States what the app is (private habits + journal) and waits. Nothing
-// auto-advances: the user leaves this screen by tapping Continue.
+// This screen now runs BEFORE any account exists. A brand-new install lands
+// here: Get started walks into the guest onboarding steps (habits, one survey
+// tap, first entry), Take a look around opens the example tour, and Sign in is
+// for people who already have a journal. Nothing here needs a session and
+// nothing auto-advances.
 //
 // The entrance is choreographed rather than simultaneous. Everything used to
 // fade up at once on one `Motion.slow` timing, which reads as a screen
@@ -10,22 +13,15 @@
 // page being made. All decorative, all native-driver, all held in two handles
 // (entrance + idle float) that are stopped on unmount, and all skipped
 // entirely when Reduce Motion is on.
-//
-// There is no back button here on purpose — this screen is a `replace` target
-// from account setup, so "back" would mean the signup form of an account that
-// already exists. Skip is here, though, and it matters more than it used to:
-// step 2 now requires two habits and has no skip of its own, so this is the
-// one door out of the flow (step 3's entry stays optional). A flow you can't
-// leave is not a welcome.
 
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
 import { PressableScale } from "@/components/ui/pressable-scale";
 import { Motion } from "@/constants/motion";
 import { Colors, Fonts } from "@/constants/theme";
-import { useOnboarding } from "@/lib/onboarding-context";
-import { clearOnboardingDraft } from "@/lib/onboarding-draft";
+import { useAuth } from "@/lib/auth-context";
 import { useReduceMotion } from "@/lib/use-reduce-motion";
+import * as Haptics from "expo-haptics";
 import { Href, router } from "expo-router";
 import { useEffect, useRef } from "react";
 import {
@@ -37,7 +33,6 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { OnboardingProgress } from "./_layout";
 
 /** How far each block travels on its way in. */
 const RISE_FROM = 18;
@@ -82,8 +77,10 @@ function useEntrance(beat: number) {
 
 export default function WelcomeScreen() {
   const insets = useSafeAreaInsets();
-  const { completeOnboarding } = useOnboarding();
   const reduceMotion = useReduceMotion();
+  // A signed-in user can land here too (an account that never finished
+  // onboarding). They get the same flow; only the sign-in link goes away.
+  const { session } = useAuth();
 
   // The mark gets a spring rather than a timing — it's the one thing on the
   // screen that should feel like it has weight.
@@ -172,12 +169,14 @@ export default function WelcomeScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reduceMotion]);
 
-  // Leaving early still counts as done — the tracker and the composer teach
-  // the rest, and nobody should be walked through this twice.
-  async function skipSetup() {
-    await clearOnboardingDraft();
-    await completeOnboarding();
-    router.replace("/(tabs)");
+  function begin() {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push("/onboarding/habits" as Href);
+  }
+
+  function explore() {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push("/onboarding/explore" as Href);
   }
 
   return (
@@ -202,8 +201,8 @@ export default function WelcomeScreen() {
         >
           {/* Drawn glyph, not a character: the typed check was a bare
               codepoint the handwriting font doesn't carry, so it fell back to
-              a system face (or a tofu box) — and step 3's saved mark already
-              uses this icon. One mark, both ends of the flow. */}
+              a system face (or a tofu box) — and the saved mark at the end of
+              the flow already uses this icon. One mark, both ends. */}
           <View style={styles.mark}>
             <IconSymbol name="checkmark" size={38} color={Colors.paper} />
           </View>
@@ -223,7 +222,8 @@ export default function WelcomeScreen() {
 
           <Animated.View style={body.style}>
             <Text style={styles.body}>
-              Habits and a daily line, encrypted on this phone.
+              Track a few habits, write one line a day. All of it encrypted on
+              your phone.
             </Text>
           </Animated.View>
         </View>
@@ -231,24 +231,48 @@ export default function WelcomeScreen() {
         <Animated.View style={[styles.footer, footer.style]}>
           <PressableScale
             style={styles.button}
-            onPress={() => router.push("/onboarding/habits" as Href)}
+            onPress={begin}
             accessibilityRole="button"
-            accessibilityLabel="Let's begin"
+            accessibilityLabel="Get started"
           >
-            <Text style={styles.buttonText}>Let&apos;s begin</Text>
+            <Text style={styles.buttonText}>Get started</Text>
           </PressableScale>
 
-          <TouchableOpacity
-            style={styles.skipButton}
-            onPress={skipSetup}
-            activeOpacity={0.85}
+          <PressableScale
+            style={styles.secondaryButton}
+            onPress={explore}
             accessibilityRole="button"
-            accessibilityLabel="Skip setup for now"
+            accessibilityLabel="Take a look around"
           >
-            <Text style={styles.skipText}>Skip for now</Text>
-          </TouchableOpacity>
+            <Text style={styles.secondaryButtonText}>Take a look around</Text>
+          </PressableScale>
 
-          <OnboardingProgress step={1} bottomInset={insets.bottom + 20} />
+          {!session && (
+            <TouchableOpacity
+              style={styles.signInButton}
+              onPress={() => router.push("/auth/signin")}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel="Sign in to an existing account"
+            >
+              <Text style={styles.signInText}>
+                Already have an account?{" "}
+                <Text style={styles.signInLink}>Sign in</Text>
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          {__DEV__ && (
+            <TouchableOpacity
+              style={styles.devLink}
+              onPress={() => router.replace("/(tabs)" as Href)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.devLinkText}>Skip to app →</Text>
+            </TouchableOpacity>
+          )}
+
+          <View style={{ height: insets.bottom + 16 }} />
         </Animated.View>
       </View>
     </PaperBackground>
@@ -256,8 +280,8 @@ export default function WelcomeScreen() {
 }
 
 const styles = StyleSheet.create({
-  // 24pt gutters, like steps 2 and 3 — the three screens share one page
-  // rhythm so nothing shifts sideways as the flow advances.
+  // 24pt gutters, like the steps that follow — the flow shares one page
+  // rhythm so nothing shifts sideways as it advances.
   container: {
     flex: 1,
     paddingHorizontal: 24,
@@ -266,7 +290,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginBottom: 40,
   },
-  // Same 72pt disc as the saved mark on step 3.
+  // Same 72pt disc as the saved mark at the end of the flow.
   mark: {
     width: 72,
     height: 72,
@@ -285,8 +309,8 @@ const styles = StyleSheet.create({
     textAlign: "center",
     lineHeight: 42,
   },
-  // The accent rule under a title — the one orange mark, repeated on all
-  // three steps at the same 48x2.
+  // The accent rule under a title — the one orange mark, repeated on every
+  // step at the same 48x2.
   rule: {
     height: 2,
     width: 48,
@@ -300,12 +324,13 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwriting,
     textAlign: "center",
     lineHeight: 26,
+    maxWidth: 300,
   },
   footer: {
     marginTop: "auto",
   },
-  // Full-width pill, 16pt tall, radius 30 — the same primary button steps 2
-  // and 3 end on, so the eye doesn't have to re-find it each step.
+  // Full-width pill, 16pt tall, radius 30 — the same primary button every
+  // step ends on, so the eye doesn't have to re-find it.
   button: {
     backgroundColor: Colors.ink,
     paddingVertical: 16,
@@ -317,10 +342,35 @@ const styles = StyleSheet.create({
     color: Colors.paper,
     fontFamily: Fonts.handwritingSemiBold,
   },
-  skipButton: { alignItems: "center", paddingVertical: 12, marginTop: 4 },
-  skipText: {
+  secondaryButton: {
+    marginTop: 12,
+    paddingVertical: 15,
+    borderRadius: 30,
+    borderWidth: 1.5,
+    borderColor: Colors.ink,
+    alignItems: "center",
+  },
+  secondaryButtonText: {
+    fontSize: 17,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingMedium,
+  },
+  signInButton: { alignItems: "center", paddingVertical: 14, marginTop: 4 },
+  signInText: {
     fontSize: 15,
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
+  },
+  signInLink: {
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingSemiBold,
+    textDecorationLine: "underline",
+  },
+  devLink: { alignItems: "center", paddingVertical: 6 },
+  devLinkText: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
+    textDecorationLine: "underline",
   },
 });

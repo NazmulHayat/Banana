@@ -4,7 +4,6 @@
 
 interface Pending {
   email: string;
-  username: string;
   password: string;
   setAt: number;
 }

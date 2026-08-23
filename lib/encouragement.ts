@@ -27,7 +27,7 @@ export function earlyLine(days: number): string | null {
   }
   if (days < 7) {
     const left = 7 - days;
-    return `${days} days down — the first shapes show up in ${left} more.`;
+    return `${days} days down. The first shapes show up in ${left} more.`;
   }
   if (days < 14) return "A week in. The grid is starting to say something.";
   if (days < 21) return "Two weeks. Give it a month and the trend gets honest.";
@@ -40,7 +40,7 @@ export function earlyLine(days: number): string | null {
  * own line rather than borrowing one that promises something sooner.
  */
 export function earlyProgressLine(days: number): string {
-  if (days <= 1) return "Keep going — this starts comparing once you have a month behind you.";
+  if (days <= 1) return "Keep going. This starts comparing once you have a month behind you.";
   if (days < 14) return "Keep going. This chart wakes up when you've got a second month to compare.";
-  return "Almost — one more month and there's something to compare against.";
+  return "Almost there. One more month and there's something to compare against.";
 }

@@ -1,16 +1,22 @@
-// Onboarding step 3 of 3 — "One line about today".
+// Onboarding step 3 of 3 — the first entry.
 //
-// The file name is a leftover: renaming the route means regenerating the typed
-// route table, so the rename is queued rather than done here. Nothing on this
-// screen is a demo — the entry the user writes is their real first entry.
+// Nothing here asks for free writing up front. A mood tap seeds a first
+// sentence, the chips extend it, and the text box stays fully editable for
+// anyone who wants to say it their own way. The opening line adapts to the
+// step 2 survey answer, so the screen talks to the person who is actually
+// standing in front of it.
 //
-// The old version auto-advanced through the composer on a 600ms setTimeout and
-// sat on an Animated.delay(1000) before showing the feed, none of it cleared on
-// unmount. Now the composer is live immediately, the entry is optional, and
-// success is a still card — no timers at all.
+// Two exits, both real:
+//   guest    — the entry (and the habit picks) live in the draft; Save walks
+//              into signup, and account setup persists everything after the
+//              keyring exists.
+//   signed in — an existing account that never finished onboarding lands here
+//              too; Save writes habits + entry through the store right now
+//              and finishes the flow without ever showing signup.
 //
-// Deliberately does NOT ask for photo permission: the first thing we do is not
-// going to be a permission prompt. Photos are offered later, in the composer.
+// Deliberately does NOT ask for photo permission: the first thing we do is
+// not going to be a permission prompt. Photos are offered later, in the
+// composer.
 
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PaperBackground } from "@/components/ui/paper-background";
@@ -21,13 +27,14 @@ import { Colors, Fonts, Hairline } from "@/constants/theme";
 import { useAuth } from "@/lib/auth-context";
 import { useDataStore } from "@/lib/data-store";
 import { fromDayKey, todayKey } from "@/lib/dates";
-import type { DailyEntry } from "@/lib/db";
 import { useOnboarding } from "@/lib/onboarding-context";
+import type { MoodId } from "@/lib/onboarding-draft";
 import {
   clearOnboardingDraft,
   loadOnboardingDraft,
   saveOnboardingDraft,
 } from "@/lib/onboarding-draft";
+import { persistOnboardingDraft } from "@/lib/onboarding-persist";
 import * as Haptics from "expo-haptics";
 import { Href, router } from "expo-router";
 import { useEffect, useRef, useState } from "react";
@@ -50,14 +57,45 @@ const MAX_HIGHLIGHT_LENGTH = 500;
 
 type Stage = "compose" | "saved";
 
-export default function FirstHighlightScreen() {
+interface MoodOption {
+  id: MoodId;
+  label: string;
+  /** The sentence this mood writes when the page is still blank. */
+  seed: string;
+}
+
+const MOODS: MoodOption[] = [
+  { id: "rough", label: "Rough", seed: "Today was rough." },
+  { id: "flat", label: "Okay", seed: "Today was okay, nothing special." },
+  { id: "good", label: "Good", seed: "Today was a good one." },
+  { id: "great", label: "Great", seed: "Today was a great day." },
+];
+
+/** Tappable half-sentences that extend whatever is already written. */
+const CHIPS = [
+  "One thing on my mind:",
+  "Something good:",
+  "Tomorrow I want to",
+];
+
+/** The line under the title, tuned by the step 2 answer. */
+function openingLine(prior: string | null): string {
+  if (prior === "fell_off") return "We'll keep it light. No guilt here, ever.";
+  if (prior === "doing_it") return "Then let's make it stick this time.";
+  if (prior === "never") return "Starting small is the whole trick.";
+  return "A line or two is plenty. It's also fine to skip.";
+}
+
+export default function FirstEntryScreen() {
   const insets = useSafeAreaInsets();
   const { completeOnboarding } = useOnboarding();
-  const { session } = useAuth();
+  const { session, keyringReady } = useAuth();
   const dataStore = useDataStore();
 
   const [stage, setStage] = useState<Stage>("compose");
   const [text, setText] = useState("");
+  const [mood, setMood] = useState<MoodId | null>(null);
+  const [opening, setOpening] = useState(openingLine(null));
   const [saving, setSaving] = useState(false);
   // User-safe reason from the last failed save — the words stay on screen.
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -65,6 +103,12 @@ export default function FirstHighlightScreen() {
   const [queued, setQueued] = useState(false);
   // A second tap while the write is in flight must not create a second entry.
   const submittingRef = useRef(false);
+  // The last sentence a mood tap wrote, so switching moods swaps it instead of
+  // stacking a second one — but never touches words the user typed.
+  const lastSeedRef = useRef<string | null>(null);
+
+  // Signed in with the keyring open: Save can persist right now, no signup.
+  const canSaveDirectly = !!session && keyringReady;
 
   // "Mon, Mar 4" — the day this entry files under, formatted from the same
   // local day key the write uses so the label can't disagree with the entry.
@@ -92,15 +136,16 @@ export default function FirstHighlightScreen() {
     ]);
     entrance.start();
     return () => entrance.stop();
-    // Animated.Value refs are stable across renders (useRef).
   }, [fade, rise]);
 
-  // Restore a draft written before a background/relaunch.
+  // Restore the draft (text, mood, survey answer) after a background/relaunch.
   useEffect(() => {
     let cancelled = false;
     void loadOnboardingDraft().then((draft) => {
-      if (cancelled || !draft.highlight) return;
-      setText(draft.highlight);
+      if (cancelled) return;
+      if (draft.highlight) setText(draft.highlight);
+      if (draft.mood) setMood(draft.mood);
+      setOpening(openingLine(draft.priorExperience));
     });
     return () => {
       cancelled = true;
@@ -110,10 +155,47 @@ export default function FirstHighlightScreen() {
   // Persist on the way to the background rather than on every keystroke.
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state) => {
-      if (state !== "active") saveOnboardingDraft({ highlight: text });
+      if (state !== "active") saveOnboardingDraft({ highlight: text, mood });
     });
     return () => sub.remove();
-  }, [text]);
+  }, [text, mood]);
+
+  function tapMood(option: MoodOption) {
+    void Haptics.selectionAsync();
+    setMood(option.id);
+    setSaveError(null);
+    const current = text.trim();
+    // Blank page, or still exactly a previous mood's sentence: write over it.
+    if (current === "" || current === lastSeedRef.current) {
+      setText(option.seed);
+      lastSeedRef.current = option.seed;
+    }
+    saveOnboardingDraft({ mood: option.id });
+  }
+
+  function tapChip(chip: string) {
+    void Haptics.selectionAsync();
+    setSaveError(null);
+    setText((prev) => {
+      const base = prev.trimEnd();
+      const next = base === "" ? `${chip} ` : `${base}\n${chip} `;
+      return next.slice(0, MAX_HIGHLIGHT_LENGTH);
+    });
+  }
+
+  /** Persist habits + entry through the store (signed-in path only). */
+  async function saveDirectly(): Promise<boolean> {
+    // Shared with account setup — one save site for the whole draft. `queued`
+    // is durable and replays, so the flow carries on; only `failed` holds the
+    // user here with a retry on the same button.
+    const result = await persistOnboardingDraft(dataStore);
+    if (!result.ok) {
+      setSaveError(result.reason ?? "Couldn't save that. Please try again.");
+      return false;
+    }
+    setQueued(result.queued);
+    return true;
+  }
 
   async function handleSave() {
     const trimmed = text.trim();
@@ -123,33 +205,22 @@ export default function FirstHighlightScreen() {
     setSaveError(null);
 
     try {
-      if (!session) {
-        setSaveError("You're signed out. Sign in to save your first entry.");
+      // Keep the words safe before anything else, so a background kill or a
+      // failed write can't take them.
+      saveOnboardingDraft({ highlight: trimmed, mood });
+
+      if (!canSaveDirectly) {
+        // Guest: the entry rides the draft into signup. Account setup encrypts
+        // and saves it once the keyring exists.
+        router.push("/auth/signup");
         return;
       }
 
-      // Keep the words safe before the write, so a failure (or a background
-      // kill mid-write) can't take them.
-      saveOnboardingDraft({ highlight: trimmed });
-
-      const entry: DailyEntry = {
-        id: `onboarding-${Date.now()}`,
-        date: todayKey(),
-        text: trimmed,
-        mediaPaths: [],
-        createdAt: new Date().toISOString(),
-      };
-
-      // The store never throws. A `queued` write is durable and replays on
-      // reconnect, so onboarding carries on; only `failed` sends the user back
-      // to the composer with their words intact.
-      const outcome = await dataStore.saveEntry(entry);
-      if (outcome.status === "failed") {
-        setSaveError(outcome.reason);
-        return;
-      }
+      const ok = await saveDirectly();
+      if (!ok) return;
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setQueued(outcome.status === "queued");
+      await clearOnboardingDraft();
+      await completeOnboarding();
       setStage("saved");
     } finally {
       submittingRef.current = false;
@@ -157,10 +228,27 @@ export default function FirstHighlightScreen() {
     }
   }
 
-  async function finish(destination: Href) {
-    await clearOnboardingDraft();
-    await completeOnboarding();
-    router.replace(destination);
+  async function handleSkip() {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    try {
+      saveOnboardingDraft({ highlight: text.trim(), mood });
+      if (!canSaveDirectly) {
+        router.push("/auth/signup");
+        return;
+      }
+      // Signed in: still save the habit picks, just no entry.
+      saveOnboardingDraft({ highlight: "", mood });
+      setSaving(true);
+      const ok = await saveDirectly();
+      setSaving(false);
+      if (!ok) return;
+      await clearOnboardingDraft();
+      await completeOnboarding();
+      router.replace("/(tabs)" as Href);
+    } finally {
+      submittingRef.current = false;
+    }
   }
 
   if (stage === "saved") {
@@ -179,13 +267,13 @@ export default function FirstHighlightScreen() {
             <Text style={styles.savedTitle} accessibilityRole="header">
               That&apos;s your first entry.
             </Text>
-            {/* Mark, title, accent rule — the same stack step 1 opens with,
-                so the flow closes the way it started. */}
+            {/* Mark, title, accent rule — the same stack the welcome opens
+                with, so the flow closes the way it started. */}
             <View style={styles.savedRule} />
             <Text style={styles.savedSub}>
               {queued
-                ? "Saved on this device — it'll sync as soon as you're back online."
-                : "It's encrypted and saved. Your Feed builds from here."}
+                ? "Saved on this device. It syncs as soon as you're back online."
+                : "It's encrypted and saved. Your feed builds from here."}
             </Text>
 
             <PaperCard style={styles.savedCard}>
@@ -194,12 +282,9 @@ export default function FirstHighlightScreen() {
           </View>
 
           <View>
-            {/* "Start tracking" used to land on the Feed — saving your first
-                entry sent you away from the thing you'd just been set up to
-                do. Both ways out of this step now end on the tracker. */}
             <PressableScale
               style={styles.primaryButton}
-              onPress={() => finish("/(tabs)" as Href)}
+              onPress={() => router.replace("/(tabs)" as Href)}
               accessibilityRole="button"
               accessibilityLabel="Start tracking"
             >
@@ -243,17 +328,37 @@ export default function FirstHighlightScreen() {
             style={{ opacity: fade, transform: [{ translateY: rise }] }}
           >
             <Text style={styles.title} accessibilityRole="header">
-              One line about today
+              How was today?
             </Text>
-            {/* Same accent rule as steps 1 and 2 — one mark, three screens. */}
+            {/* Same accent rule as the other steps — one mark, one flow. */}
             <View style={styles.titleRule} />
-            <Text style={styles.subtitle}>
-              A highlight, a thought, anything. It&apos;s encrypted before it
-              leaves your phone — and it&apos;s optional.
-            </Text>
+            <Text style={styles.subtitle}>{opening}</Text>
 
-            {/* Section label + rule, matching step 2's headings. The date is
-                real: this entry is filed under today, and saying so beats a
+            {/* Mood row — the one tap that starts the page. */}
+            <View style={styles.moodRow}>
+              {MOODS.map((option) => {
+                const active = mood === option.id;
+                return (
+                  <PressableScale
+                    key={option.id}
+                    style={[styles.moodPill, active && styles.moodPillActive]}
+                    onPress={() => tapMood(option)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Mood: ${option.label}`}
+                    accessibilityState={{ selected: active }}
+                  >
+                    <Text
+                      style={[styles.moodText, active && styles.moodTextActive]}
+                    >
+                      {option.label}
+                    </Text>
+                  </PressableScale>
+                );
+              })}
+            </View>
+
+            {/* Section label + rule, matching step 1's headings. The date is
+                real: this entry files under today, and saying so beats a
                 composer that just appears. */}
             <View style={styles.sectionHead}>
               <Text style={styles.sectionLabel}>Today</Text>
@@ -269,12 +374,29 @@ export default function FirstHighlightScreen() {
                   setText(value);
                   setSaveError(null);
                 }}
-                placeholder="What's on your mind today?"
+                placeholder="Tap a mood above, or just write"
                 placeholderTextColor={Colors.textSecondary}
                 maxLength={MAX_HIGHLIGHT_LENGTH}
                 multiline
                 textAlignVertical="top"
               />
+            </View>
+
+            {/* Prompt chips — each one is a sentence the user doesn't have to
+                start themselves. */}
+            <View style={styles.chipRow}>
+              {CHIPS.map((chip) => (
+                <TouchableOpacity
+                  key={chip}
+                  style={styles.chip}
+                  onPress={() => tapChip(chip)}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Add prompt: ${chip}`}
+                >
+                  <Text style={styles.chipText}>{chip}</Text>
+                </TouchableOpacity>
+              ))}
             </View>
 
             {saveError ? (
@@ -301,16 +423,12 @@ export default function FirstHighlightScreen() {
 
             <TouchableOpacity
               style={styles.skipButton}
-              onPress={() => finish("/(tabs)" as Href)}
-              disabled={saving}
+              onPress={handleSkip}
               activeOpacity={0.85}
               accessibilityRole="button"
-              accessibilityLabel="Skip writing an entry for now"
-              accessibilityState={{ disabled: saving }}
+              accessibilityLabel="Skip writing for now"
             >
-              <Text style={[styles.skipText, saving && styles.disabled]}>
-                Skip for now
-              </Text>
+              <Text style={styles.skipText}>I&apos;ll write later</Text>
             </TouchableOpacity>
 
             <OnboardingProgress step={3} />
@@ -323,10 +441,14 @@ export default function FirstHighlightScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
-  container: { flexGrow: 1, paddingHorizontal: 24 },
+  container: {
+    flexGrow: 1,
+    paddingHorizontal: 24,
+  },
   backButton: {
     flexDirection: "row",
     alignItems: "center",
+    paddingVertical: 8,
     marginBottom: 16,
     alignSelf: "flex-start",
   },
@@ -355,8 +477,29 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     fontFamily: Fonts.handwriting,
     lineHeight: 24,
+    marginBottom: 20,
+  },
+  moodRow: {
+    flexDirection: "row",
+    gap: 8,
     marginBottom: 24,
   },
+  moodPill: {
+    flex: 1,
+    borderWidth: 1.5,
+    borderColor: Colors.ink,
+    borderRadius: 22,
+    paddingVertical: 11,
+    alignItems: "center",
+    backgroundColor: Colors.card,
+  },
+  moodPillActive: { backgroundColor: Colors.ink },
+  moodText: {
+    fontSize: 15,
+    color: Colors.ink,
+    fontFamily: Fonts.handwritingMedium,
+  },
+  moodTextActive: { color: Colors.paper },
   sectionHead: {
     flexDirection: "row",
     alignItems: "center",
@@ -386,8 +529,8 @@ const styles = StyleSheet.create({
     borderColor: Colors.ink,
     borderRadius: 16,
     padding: 16,
-    minHeight: 150,
-    marginBottom: 20,
+    minHeight: 130,
+    marginBottom: 12,
   },
   textInput: {
     fontSize: 18,
@@ -395,6 +538,25 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.handwriting,
     lineHeight: 28,
     flex: 1,
+  },
+  chipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 20,
+  },
+  chip: {
+    borderWidth: 1,
+    borderColor: Hairline.raised,
+    borderRadius: 16,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    backgroundColor: Colors.card,
+  },
+  chipText: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.handwriting,
   },
   saveError: {
     fontSize: 14,

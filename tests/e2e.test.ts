@@ -168,6 +168,23 @@ test("insert accounts row with username", async () => {
   if (error) throw new Error(`accounts insert: ${error.message}`);
 });
 
+test("accounts row without a username is allowed (signup no longer asks)", async () => {
+  // Signup creates the row with only the id; the username is claimed later
+  // from Profile. Requires the 20260823120000_username_optional migration.
+  const { error } = await clientA
+    .from("accounts")
+    .upsert({ id: userAId }, { onConflict: "id", ignoreDuplicates: true });
+  if (error) throw new Error(`accounts upsert without username: ${error.message}`);
+  // ignoreDuplicates means the existing row (with its username) is untouched.
+  const { data, error: readErr } = await clientA
+    .from("accounts")
+    .select("username")
+    .eq("id", userAId)
+    .maybeSingle();
+  if (readErr) throw new Error(readErr.message);
+  assertEq(data?.username ?? null, USER_A.username, "existing username must survive the id-only upsert");
+});
+
 test("RPC reports the just-claimed username as unavailable", async () => {
   const { data, error } = await clientA.rpc("username_available", {
     check_username: USER_A.username,

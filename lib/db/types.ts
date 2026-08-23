@@ -45,7 +45,9 @@ export interface MonthRef {
  */
 export interface AccountRow {
   id: string;
-  username: string;
+  /** Null until the user claims one from Profile -> Edit (optional since the
+   * 2026-08-23 onboarding redesign — signup no longer asks). */
+  username: string | null;
   avatar_path: string | null;
   created_at: string;
 }
@@ -62,7 +64,8 @@ export interface AccountRow {
  */
 export interface Account {
   id: string;
-  username: string;
+  /** Null when the account never claimed a username. */
+  username: string | null;
   /** Storage key "<uid>/avatar/<id>.<ext>" in `private-media`, or null. */
   avatarPath: string | null;
   created_at: string;

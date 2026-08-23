@@ -712,11 +712,13 @@ export default function FeedScreen() {
                   </View>
                   <Text style={styles.emptyText}>
                     {isCurrentMonthView
-                      ? "Your feed is empty"
+                      ? "Your story starts here"
                       : `Nothing written in ${monthName}`}
                   </Text>
                   <Text style={styles.emptyHint}>
-                    Capture a highlight on the Tracker tab to start your journal.
+                    {isCurrentMonthView
+                      ? "Write one line about today and this page starts filling up. Future you will read it."
+                      : "That month stayed blank. The one you're living in doesn't have to."}
                   </Text>
                   <PressableScale
                     style={styles.emptyCta}
